@@ -1,0 +1,283 @@
+"""Exercises the host module against a byte-faithful simulation of the sketch.
+
+The fake reproduces what CtrlLink.cpp actually puts on the wire, CRLF on
+println() lines and bare LF on telemetry rows included, so the decoder is tested
+against the real framing rather than an idealised version of it.
+"""
+import sys, time, struct
+sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
+
+import numpy as np
+
+PARAMS = {'dec': ('u16', 1), 'kp': ('f32', 0.5), 'ki': ('f32', 0.0),
+          'ref': ('i16', 0), 'mode': ('u8', 0)}
+CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
+         ('e', 'i16', 0.0878906, 'deg'), ('u', 'i16', 1.0, 'pwm')]
+WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
+
+
+class FakeUno:
+    """Device-side state machine; `out` is what the host would read."""
+
+    def __init__(self, rate_hz=1000, start_tick=0):
+        self.out = bytearray()
+        self.line = bytearray()
+        self.params = dict(PARAMS)
+        self.streaming = False
+        self.tick = start_tick
+        self.rows = 0
+        self.rate = rate_hz
+        self.t0 = None
+        self.y = 0
+
+    def println(self, s=''):
+        self.out += (s + '\r\n').encode()   # Arduino println appends CRLF
+
+    def feed(self, data):
+        for byte in data:
+            if byte == 0x0A:
+                self.command(bytes(self.line).decode().strip())
+                self.line.clear()
+            else:
+                self.line.append(byte)
+
+    def command(self, cmd):
+        head, _, rest = cmd.partition(' ')
+        if head == 'id':
+            self.println('# id CtrlLink 1 ControlDemo chans=4 row=21 dt_us=1000')
+            self.println('# ok')
+        elif head == 'params':
+            for name, (type_, value) in self.params.items():
+                shown = f'{value:.6f}' if type_ == 'f32' else str(value)
+                self.println(f'# p {name} {type_} {shown}')
+            self.println('# ok')
+        elif head == 'chans':
+            for i, (name, type_, scale, unit) in enumerate(CHANS):
+                self.println(f'# c {i} {name} {type_} {scale:.7f} {unit}')
+            self.println('# ok')
+        elif head == 'get':
+            self._show(rest)
+            self.println('# ok')
+        elif head == 'set':
+            name, _, value = rest.partition(' ')
+            type_ = self.params[name][0]
+            self.params[name] = (type_, float(value) if type_ == 'f32' else int(value))
+            if self.streaming:
+                self._pump()   # the mark lands on the tick reached so far
+                type_, value = self.params[name]
+                shown = f'{value:.6f}' if type_ == 'f32' else str(value)
+                self.println(f'# mark {self.tick} {name} {shown}')
+            self._show(name)
+            self.println('# ok')
+        elif head == 'start':
+            self.rows = 0
+            self.println('# begin')
+            self.println(f'# rate dt_us=1000 dec={self.params["dec"][1]}')
+            self.println('# col tick u16 1 tick')
+            for name, type_, scale, unit in CHANS:
+                self.println(f'# col {name} {type_} {scale:.7f} {unit}')
+            self.println('# data')
+            self.streaming = True
+            self.t0 = time.monotonic()
+        elif head == 'stop':
+            self._pump()
+            self.streaming = False
+            self.println(f'# end rows={self.rows} drops=0')
+            self.println('# ok')
+        else:
+            self.println('# err unknown command')
+
+    def _show(self, name):
+        type_, value = self.params[name]
+        shown = f'{value:.6f}' if type_ == 'f32' else str(value)
+        self.println(f'# v {name} {shown}')
+
+    def _pump(self):
+        """Emits the rows that should have been produced by now."""
+        if not self.streaming:
+            return
+        due = int((time.monotonic() - self.t0) * self.rate)
+        dec = self.params['dec'][1]
+        while self.rows < due:
+            ref = self.params['ref'][1]
+            self.y += (ref - self.y) // 8          # visibly first-order
+            err = ref - self.y
+            u = max(-255, min(255, err // 4))
+            if self.tick % dec == 0:
+                row = ''.join(f'{v & 0xFFFF:04X}'
+                              for v in (self.tick, ref, self.y, err, u))
+                self.out += (row + '\n').encode()  # rows use a bare LF
+            self.tick = (self.tick + 1) & 0xFFFF
+            self.rows += 1
+
+
+class FakeSerial:
+    def __init__(self, uno):
+        self.uno = uno
+        self.is_open = True
+        self.pos = 0
+
+    @property
+    def in_waiting(self):
+        self.uno._pump()
+        return len(self.uno.out) - self.pos
+
+    def write(self, data):
+        self.uno._pump()
+        self.uno.feed(data)
+        return len(data)
+
+    def read(self, n=1):
+        self.uno._pump()
+        chunk = bytes(self.uno.out[self.pos:self.pos + n])
+        self.pos += len(chunk)
+        return chunk
+
+    def readline(self):
+        for _ in range(400):
+            self.uno._pump()
+            nl = self.uno.out.find(b'\n', self.pos)
+            if nl >= 0:
+                line = bytes(self.uno.out[self.pos:nl + 1])
+                self.pos = nl + 1
+                return line
+            time.sleep(0.001)
+        return b''
+
+    def reset_input_buffer(self):
+        self.uno._pump()
+        self.pos = len(self.uno.out)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.is_open = False
+
+
+def connect(uno):
+    import ctrllink
+    dev = ctrllink.CtrlLink.__new__(ctrllink.CtrlLink)
+    dev.ser = FakeSerial(uno)
+    dev.info = dev.sync()
+    dev._params = dev._read_params()
+    dev.channels = dev._read_channels()
+    return dev
+
+
+failures = []
+
+
+def check(label, condition, detail=''):
+    print(f'{"PASS" if condition else "FAIL"}  {label}' + (f'  -- {detail}' if detail and not condition else ''))
+    if not condition:
+        failures.append(label)
+
+
+# ---------------------------------------------------------------- discovery
+dev = connect(FakeUno())
+check('id parsed', dev.info.startswith('CtrlLink 1 ControlDemo'), dev.info)
+check('params discovered', set(dev._params) == set(PARAMS), str(dev._params))
+check('channels discovered', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
+check('float param typed', dev._params['kp'] == 'f32')
+
+# ------------------------------------------------------------- param access
+dev.kp = 2.5
+check('float set/get round trip', abs(dev.kp - 2.5) < 1e-6, str(dev.kp))
+dev.ref = 1024
+check('int set/get round trip', dev.ref == 1024, str(dev.ref))
+check('int stays int', isinstance(dev.ref, int))
+check('params snapshot', dev.params['kp'] == 2.5, str(dev.params))
+try:
+    dev.nonexistent
+    check('unknown attribute raises', False)
+except AttributeError:
+    check('unknown attribute raises', True)
+
+# ------------------------------------------------------------------ capture
+dev.ref = 0
+df = dev.capture(0.30)
+check('capture returned rows', len(df) > 100, f'{len(df)} rows')
+check('columns as declared', list(df.columns) == ['t', 'ref', 'y', 'e', 'u'], str(list(df.columns)))
+check('no tick gaps', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
+check('time increases uniformly',
+      np.allclose(np.diff(df['t']), 1e-3, atol=1e-9), str(np.unique(np.diff(df['t']))[:3]))
+check('device row count agrees', abs(df.attrs['rows'] - len(df)) <= 2,
+      f"device {df.attrs['rows']} vs host {len(df)}")
+check('drops reported', df.attrs['drops'] == 0)
+check('scaled channel is float', df['y'].dtype == float)
+check('unscaled channel stays integer', np.issubdtype(df['u'].dtype, np.integer), str(df['u'].dtype))
+check('units carried', df.attrs['units']['y'] == 'deg')
+check('columns are native byte order',
+      all(df[c].values.dtype.byteorder in '=|' for c in df.columns if c != 't'),
+      str({c: df[c].values.dtype.str for c in df.columns}))
+check('boolean indexing works on every column',
+      all(len(df[c][df['t'] > df['t'].median()]) > 0 for c in df.columns))
+
+# --------------------------------------------------------------------- step
+dev.ref = 0
+df = dev.step('ref', 2048, pre=0.10, post=0.25)
+marks = df.attrs['marks']
+check('step produced a mark', len(marks) == 1 and marks[0][1] == 'ref', str(marks))
+check('t is exactly zero at the step', (df['t'] == 0.0).sum() == 1,
+      str(df['t'].abs().min()))
+check('step sample is not counted as pre-step',
+      df['u'][df['t'] < 0].nunique() <= 1, str(df['u'][df['t'] < 0].unique()))
+check('step has pre-trigger data', (df['t'] < 0).sum() > 50, str((df['t'] < 0).sum()))
+check('step has post-trigger data', (df['t'] > 0).sum() > 100, str((df['t'] > 0).sum()))
+check('ref actually stepped', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100,
+      f"{df['ref'].iloc[0]} -> {df['ref'].iloc[-1]}")
+check('response settles toward ref',
+      abs(df['y'].iloc[-1] - df['ref'].iloc[-1]) < abs(df['y'].iloc[0] - df['ref'].iloc[-1]))
+check('scaling applied', abs(df['ref'].max() - 2048 * 0.0878906) < 0.01, str(df['ref'].max()))
+
+# ---------------------------------------------------------------- decimation
+dev.set('dec', 4)
+dev.ref = 0
+df = dev.capture(0.30)
+check('decimation reported', df.attrs['dec'] == 4)
+check('decimated sample spacing',
+      np.allclose(np.diff(df['t']), 4e-3, atol=1e-9), str(np.unique(np.diff(df['t']))[:3]))
+check('decimated run has no gaps', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
+dev.set('dec', 1)
+
+# ------------------------------------------------------- 16-bit tick rollover
+uno = FakeUno(start_tick=65500)
+dev2 = connect(uno)
+df = dev2.capture(0.20)
+tick = df.attrs['tick']
+check('tick wrapped during the run', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
+check('unwrapped tick is monotonic', bool(np.all(np.diff(tick) == 1)))
+check('time is monotonic across the wrap', bool(np.all(np.diff(df['t']) > 0)))
+
+# --------------------------------------- step whose mark lands across the wrap
+uno = FakeUno(start_tick=65450)
+dev4 = connect(uno)
+dev4.ref = 0
+df = dev4.step('ref', 2048, pre=0.10, post=0.20)
+tick = df.attrs['tick']
+check('rollover step wrapped', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
+check('rollover step zeroed at the mark',
+      abs(df['t'].abs().min()) < 1.5e-3, str(df['t'].abs().min()))
+check('rollover step has both sides',
+      (df['t'] < 0).sum() > 50 and (df['t'] > 0).sum() > 50,
+      f"{(df['t'] < 0).sum()} before, {(df['t'] > 0).sum()} after")
+check('rollover step ref actually moved', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100)
+
+# ------------------------------------------------------------ malformed input
+uno = FakeUno()
+dev3 = connect(uno)
+uno.out += b'GARBAGE\nDEADBEE\n'          # wrong-width rows before the header
+df = dev3.capture(0.15)
+check('short rows discarded', len(df) > 50 and df.attrs['gaps'] == 0, f'{len(df)} rows')
+
+# ----------------------------------------------------------- device-side error
+try:
+    dev3.cmd('bogus')
+    check('device error raises', False)
+except Exception as exc:
+    check('device error raises', 'unknown command' in str(exc), str(exc))
+
+print()
+print(f'{len(failures)} failure(s)' + (': ' + ', '.join(failures) if failures else ''))
+sys.exit(1 if failures else 0)
