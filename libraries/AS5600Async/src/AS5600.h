@@ -44,6 +44,16 @@ class AS5600
     static const uint8_t STATUS_ML = _BV(4);  // desborde de ganancia máxima del AGC, imán muy débil
     static const uint8_t STATUS_MD = _BV(5);  // se detectó el imán
 
+    // Fallas de transferencia seguidas a partir de las cuales se da el sensor
+    // por desconectado. Treinta y dos a 5 kHz son 6,4 ms: lo bastante como para
+    // no confundir un chispazo del bus con una desconexión.
+    static const uint8_t MISSING_AFTER = 32;
+
+    // Dado por ausente, una de cada RETRY_SAMPLES muestras vuelve a intentar de
+    // verdad. A 5 kHz son dos sondeos por segundo, que alcanzan para que el
+    // sensor se detecte solo al reconectarlo y no le cuestan nada al lazo.
+    static const uint16_t RETRY_SAMPLES = 2500;
+
     // Llamar una vez, antes de que arranque el lazo de muestreo. El puntero de
     // direcciones lo prepara el primer do_transfer(), así que esto no toca el bus
     // y no puede fallar.
@@ -63,6 +73,17 @@ class AS5600
             m_overruns++;
             return;
         }
+
+        // Con el sensor desconectado cada intento falla, y a 5 kHz esa tormenta
+        // de errores le come al lazo de control casi la mitad de sus períodos:
+        // el bus y la ISR de TWI se quedan con el tiempo que el lazo necesita.
+        // Una vez dado por ausente se lo sondea de a ratos, así el lazo recupera
+        // su período y el sensor se sigue detectando solo si vuelve.
+        if (!m_present && ++m_backoff < RETRY_SAMPLES)
+        {
+            return;
+        }
+        m_backoff = 0;
 
         m_inflight = true;
 
@@ -89,7 +110,7 @@ class AS5600
         if (!started)
         {
             m_inflight = false;
-            m_errors++;
+            fail();
         }
     }
 
@@ -103,6 +124,14 @@ class AS5600
     static uint16_t overruns(void) { return snapshot(m_overruns); }
     static uint16_t errors(void)   { return snapshot(m_errors); }
 
+    // Si el sensor contestó alguna de las últimas transferencias. Falso quiere
+    // decir que no está en el bus: desconectado, sin alimentación o sin
+    // pull-ups. El muestreo sigue corriendo igual, en modo de sondeo espaciado.
+    static bool present(void) { return m_present; }
+
+    // Fallas seguidas; vuelve a cero con cada transferencia exitosa.
+    static uint8_t consecutive_errors(void) { return m_consecutive; }
+
     // Busca el registro STATUS. Le encarga el trabajo al lazo de muestreo, que lo
     // hace en su próximo tick en lugar de una muestra, y después espera el
     // resultado. Quien llama se bloquea a lo sumo un período de muestreo; el lazo
@@ -111,6 +140,13 @@ class AS5600
     // corriendo.
     static bool read_status(uint8_t& out, uint16_t timeout_ms = 5)
     {
+        // Sin sensor en el bus la petición no se puede satisfacer, y esperar el
+        // tiempo completo sólo serviría para bloquear a quien llama.
+        if (!m_present)
+        {
+            return false;
+        }
+
         m_status_ready = false;
         m_status_request = true;
 
@@ -130,6 +166,26 @@ class AS5600
 
     private:
 
+    // Contabiliza una transferencia fallida y, pasadas MISSING_AFTER seguidas,
+    // da el sensor por desconectado. Corre en la ISR de TWI.
+    static void fail(void)
+    {
+        m_errors++;
+
+        if (m_consecutive < MISSING_AFTER && ++m_consecutive == MISSING_AFTER)
+        {
+            m_present = false;
+        }
+    }
+
+    // Cualquier transferencia que el sensor conteste lo declara presente, así
+    // que reconectarlo alcanza para que el muestreo vuelva al ritmo pleno.
+    static void succeed(void)
+    {
+        m_consecutive = 0;
+        m_present     = true;
+    }
+
     // Corre en la ISR de TWI.
     static void process_read_data(uint8_t status)
     {
@@ -139,12 +195,13 @@ class AS5600
             m_counts = (((uint16_t)m_rx[0] << 8) | m_rx[1]) & 0x0FFF;
             m_samples++;
             m_armed = true;
+            succeed();
         }
         else
         {
             // Una transferencia fallida puede haber dejado el puntero en
             // cualquier lado.
-            m_errors++;
+            fail();
             m_armed = false;
         }
 
@@ -158,10 +215,11 @@ class AS5600
         {
             m_status = m_rx[0];
             m_status_ready = true;
+            succeed();
         }
         else
         {
-            m_errors++;
+            fail();
         }
 
         // El puntero autoincrementó hasta RAW ANGLE, pero la supresión sólo está
@@ -191,6 +249,11 @@ class AS5600
     static volatile uint16_t m_samples;
     static volatile uint16_t m_overruns;
     static volatile uint16_t m_errors;
+    static volatile bool     m_present;
+    static volatile uint8_t  m_consecutive;
+
+    // Sólo se toca en la ISR del temporizador, así que va sin calificar.
+    static uint16_t m_backoff;
 };
 
 template <class Bus> uint8_t           AS5600<Bus>::m_rx[2];
@@ -203,5 +266,8 @@ template <class Bus> volatile uint16_t AS5600<Bus>::m_counts         = 0;
 template <class Bus> volatile uint16_t AS5600<Bus>::m_samples        = 0;
 template <class Bus> volatile uint16_t AS5600<Bus>::m_overruns       = 0;
 template <class Bus> volatile uint16_t AS5600<Bus>::m_errors         = 0;
+template <class Bus> volatile bool     AS5600<Bus>::m_present        = true;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_consecutive    = 0;
+template <class Bus> uint16_t          AS5600<Bus>::m_backoff        = 0;
 
 #endif  // AS5600_H

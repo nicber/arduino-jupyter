@@ -66,6 +66,14 @@ _GARBLED = ('comando desconocido', 'comando demasiado largo', 'necesita')
 #   serr     transferencias del sensor que fallaron
 _HEALTH = ('missed', 'maxlate', 'sovr', 'serr')
 
+# Parámetros de estado. Se leen después de una captura como los de salud, pero
+# NO se ponen en cero antes: no son cuentas acumuladas sino el estado del equipo
+# en este momento, y ponerlos en cero sería inventar una lectura.
+#
+#   spres    el sensor contesta en el bus (0 = no está)
+#   mstat    registro STATUS del AS5600: imán detectado, muy débil, muy fuerte
+_STATUS = ('spres', 'mstat')
+
 # Fracción del período de control a partir de la cual vale la pena mencionar un
 # retardo de atención, aunque todavía no se haya perdido nada.
 _LATE_WARN = 0.5
@@ -156,9 +164,24 @@ def find_port(hint=None):
 
 
 def _ended(buf):
-    """True cuando hay una linea "# end ..." completa en el buffer."""
+    """True cuando la respuesta completa a `stop` está en el buffer.
+
+    El dispositivo contesta "# end rows=... drops=..." y **después** "# ok".
+    Darse por satisfecho con la línea "# end" deja el "# ok" todavía en el
+    puerto, y entonces el comando siguiente lo lee como si fuera su propio
+    terminador y vuelve sin datos: de ahí un "no hay valor en la respuesta para
+    'missed'" intermitente al terminar una captura. Así que se espera también la
+    línea que cierra.
+    """
     at = buf.find(b'# end ')
-    return at >= 0 and buf.find(b'\n', at) >= 0
+    if at < 0:
+        return False
+
+    end_of_line = buf.find(b'\n', at)
+    if end_of_line < 0:
+        return False
+
+    return buf.find(b'\n', end_of_line + 1) >= 0
 
 
 @dataclass
@@ -310,9 +333,22 @@ class CtrlLink:
         """
         params = {}
         for text in self.cmd('params'):
-            if text.startswith('# p '):
-                name, type_, frac, value = text[4:].split(None, 3)
-                params[name] = Param(name, type_, int(frac))
+            if not text.startswith('# p '):
+                continue
+
+            fields = text[4:].split(None, 3)
+            if len(fields) < 4:
+                # Antes de que los parámetros cruzaran el cable en punto fijo no
+                # existía la columna de bits fraccionarios. Vale la pena decirlo
+                # con todas las letras: lo que se ve si no es un ValueError de
+                # desempaquetado, que no lleva a ninguna parte.
+                raise CtrlLinkError(
+                    f'el dispositivo declara sus parametros en un formato '
+                    f'anterior ({text!r}): tiene grabado un sketch viejo. '
+                    f'Volver a grabarlo -- sync_board(force_upload=True) lo hace.')
+
+            name, type_, frac, _value = fields
+            params[name] = Param(name, type_, int(frac))
         return params
 
     def _read_channels(self) -> list[Column]:
@@ -345,6 +381,11 @@ class CtrlLink:
         de __init__.
         """
         return tuple(name for name in _HEALTH if name in self._params)
+
+    @property
+    def _state(self) -> tuple:
+        """Los parámetros de estado que este sketch exponga. Ver _STATUS."""
+        return tuple(name for name in _STATUS if name in self._params)
 
     @property
     def params(self) -> dict:
@@ -508,12 +549,22 @@ class CtrlLink:
         else:
             raise CtrlLinkError('el dispositivo no dejo de emitir')
 
+        # Duración real de la ventana de emisión, medida entre el momento en que
+        # el dispositivo confirmó `start` y aquel en que confirmó `stop`. Es la
+        # única referencia de tiempo independiente que hay: los ticks los cuenta
+        # el dispositivo y avanzan una vez por período *atendido*, así que
+        # dividir filas por ticks da el período nominal pase lo que pase y no
+        # puede delatar un lazo que no llega.
+        wall = time.monotonic() - started
+
         df = self._decode(buf, columns, dt_us, dec)
+        df.attrs['wall'] = wall
 
         # Se leen una vez que el flujo paró, no durante: un `get` en medio de una
         # captura cuesta milisegundos de tráfico de comandos, que es justamente lo
         # que se está midiendo.
-        df.attrs.update({name: self.get(name) for name in self._health})
+        df.attrs.update({name: self.get(name)
+                         for name in self._health + self._state})
         df.attrs['health'] = self._health_notes(df)
 
         if warn:
@@ -523,8 +574,11 @@ class CtrlLink:
         return df
 
     def health(self):
-        """Los contadores de salud del dispositivo, como dict. Vacío si no expone ninguno."""
-        return {name: self.get(name) for name in self._health}
+        """Los contadores de salud del dispositivo y su estado, como dict.
+
+        Vacío si el sketch no expone ninguno.
+        """
+        return {name: self.get(name) for name in self._health + self._state}
 
     def _health_notes(self, df):
         """Quejas en castellano llano sobre una captura, la peor primero.
@@ -537,6 +591,16 @@ class CtrlLink:
         notes = []
         dt_us = df.attrs['dt_us']
         rate = 1e6 / dt_us if dt_us else 0
+
+        # Primero, porque si el sensor no está todo lo demás que se mida es
+        # consecuencia de eso y no un problema por derecho propio.
+        absent = df.attrs.get('spres') == 0
+        if absent:
+            notes.append(
+                'el AS5600 no contesta en el bus I2C: revisar SDA (A4), '
+                'SCL (A5), la alimentacion y los pull-ups. El lazo sigue '
+                'corriendo, pero el angulo queda congelado y todo lo que se '
+                'mida de posicion no significa nada.')
 
         missed = df.attrs.get('missed') or 0
         if missed:
@@ -578,8 +642,11 @@ class CtrlLink:
                 f'terminado cuando vencia la muestra siguiente, asi que esa muestra '
                 f'repite la anterior.')
 
+        # Con el sensor ausente las fallas son las del sondeo espaciado, que ya
+        # quedaron explicadas arriba; contarlas de nuevo sólo agrega ruido. Con
+        # el sensor presente, en cambio, son intermitencias y ésas sí importan.
         serr = df.attrs.get('serr') or 0
-        if serr:
+        if serr and not absent:
             notes.append(f'fallaron {serr} transferencia(s) del sensor -- revisar '
                          f'el cableado y los pull-ups del bus.')
 

@@ -56,9 +56,14 @@ pull-ups del bus; un chip pelado en modo 3,3 V necesita adaptación de niveles.
 **Se puede empezar sin motor y sin medición de corriente.** Comentando
 `#define MOTOR_PWM_PIN 5` en `ControlDemo/ControlDemo.ino` el lazo corre igual y
 la telemetría se comporta de manera idéntica: alcanza con girar el imán a mano
-para ver al sensor y al filtro trabajar. Sin ACS712, el canal `i` lee ruido de una
-entrada flotante y la verificación de corriente del `bringup()` va a quejarse; todo
-lo demás sigue en pie.
+para ver al sensor y al filtro trabajar. Sin ACS712, `bringup()` detecta que la
+entrada quedó contra el riel del ADC y lo dice; todo lo demás sigue en pie.
+
+Incluso sin el AS5600 el lazo mantiene su período: al no obtener respuesta, el
+muestreo pasa a sondear el bus dos veces por segundo en lugar de cinco mil, y
+`bringup()` informa `sensor: no contesta`. Sirve para probar la cadena completa
+—compilar, grabar, capturar, graficar— antes de tener el sensor sobre la mesa,
+teniendo en cuenta que el ángulo queda congelado en cero.
 
 > ⚠️ **Con el motor conectado, el motor se mueve.** Conviene revisar que el eje
 > esté libre antes de correr cualquier celda.
@@ -154,6 +159,7 @@ Los parámetros son atributos, siempre en unidades reales:
 | `alpha_y`, `alpha_i`, `alpha_e` | polos de los filtros de posición, corriente y error |
 | `offset` | cuenta del sensor que se lee como cero |
 | `maxlate`, `missed`, `sovr`, `serr` | contadores de salud del lazo |
+| `spres`, `mstat` | estado del sensor: si contesta en el bus, y qué dice del imán |
 
 `bench.py` agrega encima las conversiones de este equipo, que son las que conviene
 usar: `dev.gains(kp, ki, kd)` toma las ganancias **en tiempo continuo** y las
@@ -177,8 +183,11 @@ no hay nada que cambiar.
 | `sync_board()` no encuentra `arduino-cli` | está en el `PATH`? En Windows hay que reabrir la terminal después de instalarlo: el `PATH` se lee una sola vez al arrancar |
 | «no se pudo abrir el puerto» | algo más lo tiene tomado: el monitor serie del IDE, o un kernel de una sesión anterior. Un puerto serie es exclusivo |
 | «no se encontro ningun puerto serie USB» | placa desenchufada, o cable de sólo alimentación |
-| `bringup` marca falla en `iman` | imán ausente, muy lejos o muy cerca; el mensaje dice cuál de las tres |
-| `bringup` marca falla en `bus i2c` | cableado de SDA/SCL, o pull-ups |
+| `bringup` marca falla en `sensor` | el AS5600 no contesta en el bus: SDA (A4), SCL (A5), alimentación, pull-ups |
+| `bringup` marca falla en `iman` | el sensor contesta pero el imán está ausente, muy lejos o muy cerca; el mensaje dice cuál |
+| `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
+| `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
+| «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se pierden períodos de control | subir `tickdiv`, o sacarle trabajo al paso de control |
 | se descartan filas de telemetría | subir `dec`, o emitir menos canales |
 

@@ -45,6 +45,11 @@ POSITION,  CURRENT             = 0, 1
 # Bits del registro STATUS del AS5600.
 _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
 
+# La corriente se mide como `SENSE_ZERO - adc`, así que su recorrido es +/-512
+# LSB y los extremos son los rieles del ADC. Una lectura ahí arriba no es una
+# corriente grande: es una entrada al aire, o un cable suelto.
+_ADC_RAILED = 460
+
 _link = None
 
 
@@ -150,24 +155,46 @@ class Bench(CtrlLink):
 
         self.rest()
 
-        # 1. El lazo de control, y si está respetando su período.
+        # 1. El lazo de control, medido contra el reloj de esta máquina. Con el
+        #    contador de ticks del dispositivo no se puede: avanza una vez por
+        #    período *atendido*, así que filas sobre ticks devuelve el período
+        #    nominal aunque se pierda la mitad de los períodos, y la verificación
+        #    daría siempre por bueno lo que tiene que detectar.
         df = self.capture(1.0, warn=False)
-        span = df['t'].iloc[-1] - df['t'].iloc[0]
-        rate = len(df) / span
-        want = 1e6 / df.attrs['dt_us']
-        report('lazo de control', abs(rate - want) < want * 0.02,
-               f'{rate:.0f} Hz contra {want:.0f} nominales, '
-               f'{df.attrs["missed"]} perdidos, {df.attrs["drops"]} descartados')
+        served = len(df) * df.attrs['dec']
+        missed = df.attrs['missed']
+        rate   = served / df.attrs['wall']
+        want   = 1e6 / df.attrs['dt_us']
+        report('lazo de control', missed == 0 and abs(rate - want) < want * 0.05,
+               f'{rate:.0f} Hz reales contra {want:.0f} nominales, '
+               f'{missed} perdidos, {df.attrs["drops"]} descartados')
 
-        report('margen de tiempo', df.attrs['maxlate'] < df.attrs['dt_us'] // 2,
-               f'peor retardo de atencion {df.attrs["maxlate"]} us de '
-               f'{df.attrs["dt_us"]} us')
+        # El margen es un aviso, no un veredicto: mientras no se pierda ningun
+        # periodo el lazo esta llegando, y con seis canales a 1 kHz el retardo
+        # ronda el 60 % del periodo por el solo costo de emitir la fila. Lo que
+        # si es una falla es no tener margen alguno.
+        late   = df.attrs['maxlate']
+        margin = late / df.attrs['dt_us']
+        report('margen de tiempo',
+               True if margin < 0.5 else (None if margin < 1.0 else False),
+               f'peor retardo de atencion {late} us de {df.attrs["dt_us"]} us '
+               f'({margin:.0%})')
 
-        # 2. El imán, tal como lo ve el propio AS5600. Ésta es la verificación que
+        # 2. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
+        #    que diga su registro del imán no significa nada, y conviene decir
+        #    cuál de los dos problemas es.
+        present = bool(df.attrs.get('spres', 1))
+        report('sensor', present,
+               'contesta en el bus' if present else
+               'no contesta -- revisar SDA (A4), SCL (A5), alimentacion y pull-ups')
+
+        # 3. El imán, tal como lo ve el propio AS5600. Ésta es la verificación que
         #    detecta un imán montado demasiado lejos del chip, que si no aparece
         #    sólo como un ángulo ruidoso en el que nadie confía.
-        status = self.mstat
-        if not status & _MAGNET_PRESENT:
+        status = df.attrs.get('mstat', 0)
+        if not present:
+            report('iman', None, 'no se puede evaluar sin el sensor')
+        elif not status & _MAGNET_PRESENT:
             report('iman', False, 'no se detecta -- esta montado sobre el chip?')
         elif status & _MAGNET_WEAK:
             report('iman', False, 'muy debil (AGC al maximo) -- acercarlo')
@@ -176,12 +203,17 @@ class Bench(CtrlLink):
         else:
             report('iman', True, 'detectado, AGC en rango')
 
-        # 3. El bus que transporta el ángulo, por separado del imán que está en la
+        # 4. El bus que transporta el ángulo, por separado del imán que está en la
         #    otra punta: un problema de pull-ups y uno de montaje se ven igual en
-        #    los datos y se arreglan en lugares distintos.
-        report('bus i2c', df.attrs['serr'] == 0 and df.attrs['sovr'] == 0,
-               f'{df.attrs["serr"]} errores de transferencia, '
-               f'{df.attrs["sovr"]} desbordes')
+        #    los datos y se arreglan en lugares distintos. Con el sensor ausente
+        #    las fallas son las del sondeo espaciado, así que no dicen nada nuevo.
+        if present:
+            report('bus i2c', df.attrs['serr'] == 0 and df.attrs['sovr'] == 0,
+                   f'{df.attrs["serr"]} errores de transferencia, '
+                   f'{df.attrs["sovr"]} desbordes')
+        else:
+            report('bus i2c', None,
+                   f'{df.attrs["serr"]} fallas, todas del sondeo al sensor ausente')
 
         spread = df['y_uw'].max() - df['y_uw'].min()
         report('angulo', None if spread < 0.5 else True,
@@ -189,16 +221,30 @@ class Bench(CtrlLink):
                f'en el segundo' + ('  (girar el iman para verlo seguir)'
                                    if spread < 0.5 else ''))
 
-        # 4. La medición de corriente en reposo. Un sensor que lee lejos de cero
+        # 5. La medición de corriente en reposo. Un sensor que lee lejos de cero
         #    sin nada accionado es un offset que se va a integrar en toda medición
-        #    posterior.
+        #    posterior. Pero antes hay que separar el caso en que no hay nada
+        #    conectado: una entrada al aire termina contra un riel del ADC, y eso
+        #    da una lectura fuera de escala que no es un offset sino una ausencia.
         rest_ma = df['i'].mean()
-        report('medicion de i', abs(rest_ma) < 50,
-               f'{rest_ma:+.1f} mA en reposo (ruido {df["i"].std():.1f} mA)')
+        rest_lsb = rest_ma / self.channel('i').scale
+        sensed   = abs(rest_lsb) <= _ADC_RAILED
+        if not sensed:
+            report('medicion de i', None,
+                   f'entrada contra el riel del ADC ({rest_ma:+.0f} mA, fuera de '
+                   f'escala): no parece haber nada conectado en A0')
+        else:
+            report('medicion de i', abs(rest_ma) < 50,
+                   f'{rest_ma:+.1f} mA en reposo (ruido {df["i"].std():.1f} mA)')
 
-        # 5. El actuador, y con él toda la cadena: un comando que sale, movimiento
-        #    y corriente que vuelven.
-        if motor:
+        # 6. El actuador, y con él toda la cadena: un comando que sale, movimiento
+        #    y corriente que vuelven. Hay dos evidencias posibles y cada una
+        #    depende de su propio sensor, así que sólo se usa la que esté
+        #    disponible: dar por bueno un motor porque la corriente se movió,
+        #    cuando la entrada de corriente está al aire, es peor que no medir.
+        if not motor:
+            report('motor', None, 'omitido (motor=False)')
+        else:
             print(f'  accionando el motor con u = {u} durante 0,4 s ...')
             self.zero()
             self.uff = u
@@ -206,11 +252,19 @@ class Bench(CtrlLink):
             self.rest()
 
             turned = abs(spun['y_uw'].iloc[-1] - spun['y_uw'].iloc[0]) / 360.0
-            drawn = spun['i'].abs().max()
-            report('motor', turned > 0.05 or drawn > rest_ma + 50,
-                   f'{turned:.2f} vueltas, {drawn:.0f} mA de pico')
-        else:
-            report('motor', None, 'omitido (motor=False)')
+            drawn  = spun['i'].abs().max()
+
+            evidence = ([f'{turned:.2f} vueltas'] if present else []) + \
+                       ([f'{drawn:.0f} mA de pico'] if sensed else [])
+
+            if not evidence:
+                report('motor', None, 'no se puede evaluar: no hay sensor de '
+                                      'angulo ni medicion de corriente')
+            else:
+                report('motor',
+                       (present and turned > 0.05) or
+                       (sensed and drawn > rest_ma + 50),
+                       ', '.join(evidence))
 
         bad = results.count(False)
         print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')

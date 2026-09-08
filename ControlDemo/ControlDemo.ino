@@ -167,6 +167,7 @@ static uint16_t g_missed  = 0;  // períodos de control que loop() nunca atendi�
 static uint16_t g_sovr    = 0;  // muestras del sensor que el bus I2C no llegó a seguir
 static uint16_t g_serr    = 0;  // transferencias del sensor que fallaron
 static uint8_t  g_mstat   = 0;  // registro STATUS del AS5600: imán presente, muy débil, muy fuerte
+static uint8_t  g_spres   = 1;  // el sensor contesta en el bus
 
 // Estado del integrador, en unidades de error sumadas a lo largo de los ticks.
 // Guardar la suma cruda y aplicar ki*dt una sola vez al final es lo que permite
@@ -216,6 +217,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "y",       CTRL_I16, &g_y,        0           },
     { "y_uw",    CTRL_I32, &g_y_uw,     0           },
     { "mstat",   CTRL_U8,  &g_mstat,    0           },
+    { "spres",   CTRL_U8,  &g_spres,    0           },
     { "maxlate", CTRL_U16, &g_maxlate,  0           },
     { "missed",  CTRL_U16, &g_missed,   0           },
     { "sovr",    CTRL_U16, &g_sovr,     0           },
@@ -493,6 +495,12 @@ static void collect_sensor_health(void)
 
     last_overruns = overruns;
     last_errors   = errors;
+
+    // A diferencia de los contadores, esto es un estado y no una cuenta: dice
+    // si el sensor está contestando ahora, no cuántas veces falló. Es lo que
+    // distingue un imán mal montado -- el sensor contesta y se queja del imán --
+    // de un sensor que directamente no está en el bus.
+    g_spres = Sensor::present() ? 1 : 0;
 }
 
 // --------------------------------------------------------------------- ajuste
@@ -560,11 +568,47 @@ static void refresh_magnet_status(void)
     }
     last_ms = millis();
 
+    if (!Sensor::present())
+    {
+        // Sin sensor en el bus no hay nada que informar del imán, y dejar el
+        // último valor sería peor que no decir nada.
+        g_mstat = 0;
+        return;
+    }
+
     uint8_t status;
     if (Sensor::read_status(status))
     {
         g_mstat = status;
     }
+}
+
+// Los contadores de salud describen la ventana de emisión, así que se ponen en
+// cero cuando se abre una. Arrancarla cuesta unos milisegundos de puerto serie
+// —el encabezado son siete líneas, y escribir bloquea en cuanto se llena el
+// buffer de transmisión—, y los períodos que se pierden ahí son el precio de
+// arrancar la captura, no una falla del lazo: se repetían idénticos, media
+// docena, lo mismo en una captura de medio segundo que en una de cuatro.
+//
+// Hay que limpiar también el contador de la ISR, que todavía guarda los ticks
+// perdidos durante ese bloqueo y los sumaría en la pasada siguiente.
+static void reset_health_on_capture(void)
+{
+    static bool was_streaming = false;
+
+    bool now = CtrlLink::streaming();
+
+    if (now && !was_streaming)
+    {
+        noInterrupts();
+        g_missed_isr = 0;
+        interrupts();
+
+        g_missed  = 0;
+        g_maxlate = 0;
+    }
+
+    was_streaming = now;
 }
 
 // ------------------------------------------------------------------- Arduino
@@ -641,4 +685,8 @@ void loop()
     refresh_magnet_status();
 
     CtrlLink::poll();
+
+    // Después de poll(), que es donde se atiende `start` y se imprime el
+    // encabezado: así la ventana empieza a contar recién cuando ya salió.
+    reset_health_on_capture();
 }

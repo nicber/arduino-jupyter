@@ -18,7 +18,10 @@ PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           # Contadores de salud, tal como los declara ControlDemo. La computadora
           # los descubre por nombre y los pone en cero antes de cada captura.
           'missed': ('u16', 0, 0), 'maxlate': ('u16', 0, 0),
-          'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0)}
+          'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0),
+          # Estado, no cuentas: la computadora los lee despues de una captura
+          # pero no los pone en cero antes.
+          'spres': ('u8', 0, 1), 'mstat': ('u8', 0, 0x20)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
          ('e', 'i16', 0.0878906, 'deg'), ('u', 'i16', 1.0, 'pwm')]
 WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
@@ -129,6 +132,21 @@ class FakeUno:
                 self.rows += 1
             self.tick = (self.tick + 1) & 0xFFFF
             self.produced += 1
+
+
+class OldFakeUno(FakeUno):
+    """Un dispositivo con el sketch anterior a que los parametros cruzaran el
+    cable en punto fijo: las lineas `# p` no traen la columna de bits
+    fraccionarios."""
+
+    def command(self, cmd):
+        head, _, _rest = cmd.partition(' ')
+        if head != 'params':
+            return super().command(cmd)
+        for name, (type_, _frac, value) in self.params.items():
+            shown = f'{value:.6f}' if type_ == 'f32' else str(value)
+            self.println(f'# p {name} {type_} {shown}')
+        self.println('# ok')
 
 
 class FakeSerial:
@@ -361,6 +379,69 @@ check('se explican los errores del sensor', 'transferencia(s) del sensor' in not
 check('los contadores sanos se quedan callados', 'desborde' not in notes, notes)
 check('health() los lee directamente', dev5.health()['missed'] == 12, str(dev5.health()))
 
+import ctrllink as _cl
+
+# ------------------------------------------------- sensor ausente en el bus
+# `spres` es estado, no una cuenta: dice si el AS5600 contesta *ahora*. Es lo
+# que separa un iman mal montado -- el sensor contesta y se queja del iman -- de
+# un sensor que no esta en el bus.
+check('se descubren los parametros de estado', dev._state == ('spres', 'mstat'),
+      str(dev._state))
+
+uno = FakeUno(unhealthy={'spres': 0, 'serr': 2})
+dev6 = connect(uno)
+df = dev6.capture(0.15, warn=False)
+notes = ' | '.join(df.attrs['health'])
+check('el sensor ausente se informa', df.attrs['spres'] == 0, str(df.attrs['spres']))
+check('el sensor ausente se explica primero',
+      df.attrs['health'] and 'no contesta' in df.attrs['health'][0], notes)
+check('el sondeo al sensor ausente no se cuenta como intermitencia',
+      'transferencia(s) del sensor' not in notes, notes)
+
+# Con el sensor presente, en cambio, las fallas sueltas si son intermitencias.
+uno = FakeUno(unhealthy={'serr': 2})
+dev7 = connect(uno)
+df = dev7.capture(0.15, warn=False)
+notes = ' | '.join(df.attrs['health'])
+check('con el sensor presente las fallas sueltas se informan',
+      'transferencia(s) del sensor' in notes, notes)
+
+# El estado no se pone en cero antes de una captura: hacerlo seria inventar una
+# lectura, y ademas dejaria `spres` diciendo "ausente" en cada corrida.
+check('el estado no se pone en cero antes de la corrida',
+      dev7._uno_raw('spres') == 1, str(dev7._uno_raw('spres')))
+
+# ---------------------------------------------- fin de captura sin carrera
+# El dispositivo contesta "# end ..." y despues "# ok". Darse por satisfecho con
+# el "# end" deja el "# ok" en el puerto, y el comando siguiente lo lee como su
+# propio terminador y vuelve vacio.
+check('_ended espera la linea que cierra',
+      not _cl._ended(b'# end rows=149 drops=0\r\n'))
+check('_ended con la respuesta completa',
+      _cl._ended(b'# end rows=149 drops=0\r\n# ok\r\n'))
+check('_ended con una fila delante',
+      _cl._ended(b'0412CDB9\n# end rows=1 drops=0\r\n# ok\r\n'))
+
+# ----------------------------------------------- duracion real de la ventana
+# La unica referencia de tiempo independiente que hay: los ticks los cuenta el
+# dispositivo y avanzan una vez por periodo *atendido*, asi que filas sobre
+# ticks da el periodo nominal pase lo que pase.
+df = dev7.capture(0.20, warn=False)
+check('la captura informa su duracion real',
+      0.20 <= df.attrs['wall'] < 0.20 * 4, str(df.attrs.get('wall')))
+
+# ------------------------------------------------------ firmware desactualizado
+uno_old = OldFakeUno()
+dev8 = _cl.CtrlLink.__new__(_cl.CtrlLink)
+dev8.ser = FakeSerial(uno_old)
+dev8.info = dev8.sync()
+try:
+    dev8._read_params()
+    check('el firmware viejo se explica', False)
+except Exception as exc:
+    check('el firmware viejo se explica',
+          isinstance(exc, _cl.CtrlLinkError) and 'sketch viejo' in str(exc), str(exc))
+
 # ------------------------------------------------------------- portabilidad
 # Dos cosas que funcionan en esta maquina y no funcionarian en otra, asi que se
 # verifican aca en lugar de que las descubra un alumno en una distinta.
@@ -370,7 +451,6 @@ class _FakePort:
         self.device, self.vid = device, vid
 
 
-import ctrllink as _cl
 import serial.tools.list_ports as _lp
 
 _real_comports = _lp.comports
