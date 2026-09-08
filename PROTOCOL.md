@@ -102,7 +102,7 @@ rather than guessing with a sleep.
 | Command | Reply |
 |---|---|
 | `id` | `# id CtrlLink 1 <sketch> chans=<n> row=<bytes> dt_us=<n>` |
-| `params` | one `# p <name> <type> <value>` per parameter |
+| `params` | one `# p <name> <type> <frac> <value>` per parameter |
 | `chans` | one `# c <i> <name> <type> <scale> <unit>` per channel |
 | `get <name>` | `# v <name> <value>` |
 | `set <name> <value>` | `# v <name> <value>` |
@@ -111,6 +111,19 @@ rather than guessing with a sleep.
 
 Types are `i8 u8 i16 u16 i32 u32 f32`. A bare newline is ignored, so sending one
 is a safe way to resynchronize.
+
+`<value>` on the wire is always the device's raw storage. `<frac>` says how many
+fractional bits that storage carries, so the host reads `raw / 2**frac` and
+writes `round(value * 2**frac)`. A device can therefore keep a gain in Q22 and a
+filter pole in Q16 — whatever its arithmetic wants — while the host goes on
+setting them as `0.5` and `0.02`, and the conversion happens on the side with a
+floating-point unit and no deadline. `frac = 0` is a plain integer.
+
+Powers of two rather than a channel's arbitrary float `scale`, because that is
+what a fixed-point format is, and because it crosses the wire exactly: no fixed
+number of decimal places prints both a Q22 scale (2.4e-7) and a Q30 one
+(9.3e-10) usefully. Anything needing a scale that is not a power of two —
+degrees per count, milliamps per LSB — is a channel, which has one.
 
 ### Stream
 
@@ -155,7 +168,8 @@ reports, so host scheduling jitter never enters the data.
 `CtrlLink(port, baud=1_000_000)` opens the port, waits out the DTR auto-reset,
 and discovers the device.
 
-- Parameters are attributes: `dev.kp = 2.5`, `print(dev.kp)`. `dev.params` reads
+- Parameters are attributes, always in real units: `dev.kp = 2.5`,
+  `print(dev.kp)`. `dev.params` reads
   them all back.
 - `dev.capture(duration, events=[(delay, name, value), ...])` → DataFrame.
 - `dev.step(name, value, pre=0.1, post=0.9, back=None)` → DataFrame with `t = 0`
@@ -172,8 +186,8 @@ Declare the tunables and the telemetry as PROGMEM tables and the rest follows:
 
 ```cpp
 static const CtrlParam PROGMEM g_params[] = {
-    { "kp",  CTRL_F32, &g_kp  },
-    { "ref", CTRL_I16, &g_ref },
+    { "kp",  CTRL_I32, &g_kp,  22 },   // Q22: the host sets 0.5, the device stores 2097152
+    { "ref", CTRL_I16, &g_ref,  0 },   // a plain integer
 };
 
 static const CtrlChannel PROGMEM g_channels[] = {

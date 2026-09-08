@@ -68,11 +68,25 @@ static const uint8_t CTRL_MAX_ROW = SERIAL_TX_BUFFER_SIZE - 1;
 
 // A host-writable variable. `addr` points at RAM the sketch owns; the link
 // converts between the wire text and `type` on the way in and out.
+//
+// `frac` is how many fractional bits the stored integer carries: the host reads
+// `raw / 2^frac` and writes `round(value * 2^frac)`. It is what lets a device
+// hold a parameter in whatever fixed-point form its arithmetic wants -- a gain
+// in Q22, a filter pole in Q16 -- while the host still sets it as 0.5 or 0.02.
+// The conversion happens on the host, which has a floating-point unit and no
+// deadline; the device only ever sees the integer it wanted.
+//
+// A power of two rather than a channel's arbitrary float scale, because that is
+// what a fixed-point format actually is, and because it survives the wire
+// exactly: a Q22 scale is 2.38e-7, which no fixed number of decimal places
+// prints usefully for both it and a Q30's 9.3e-10. Use 0 for a parameter that
+// is already in natural units, including any f32. Negative values scale up.
 struct CtrlParam
 {
     char    name[CTRL_NAME_LEN];
     uint8_t type;
     void*   addr;
+    int8_t  frac;
 };
 
 // A telemetry column. `scale` and `unit` are passed through to the host, which

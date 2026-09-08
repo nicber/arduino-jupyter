@@ -28,7 +28,7 @@ uint16_t CtrlLink::m_writes    = 0;
 
 const CtrlParam CtrlLink::k_builtin[] PROGMEM =
 {
-    { "dec", CTRL_U16, (void*)&CtrlLink::m_decimate },
+    { "dec", CTRL_U16, (void*)&CtrlLink::m_decimate, 0 },
 };
 
 // ------------------------------------------------------------------- helpers
@@ -256,6 +256,8 @@ void CtrlLink::cmd_params(void)
         print_name(entry->name);
         Serial.write(' ');
         print_type(pgm_read_byte(&entry->type));
+        Serial.write(' ');
+        Serial.print((int8_t)pgm_read_byte(&entry->frac));
         Serial.write(' ');
         print_param_value(i);
         Serial.println();

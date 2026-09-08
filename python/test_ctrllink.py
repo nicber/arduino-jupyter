@@ -9,12 +9,16 @@ sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
 
 import numpy as np
 
-PARAMS = {'dec': ('u16', 1), 'kp': ('f32', 0.5), 'ki': ('f32', 0.0),
-          'ref': ('i16', 0), 'mode': ('u8', 0),
+# name -> (wire type, fractional bits, stored raw value). `kq` and `alpha` are
+# kept in fixed point the way ControlDemo keeps its gains, so the host's
+# conversion is exercised rather than assumed.
+PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
+          'ref': ('i16', 0, 0), 'mode': ('u8', 0, 0),
+          'kq': ('i32', 22, 0), 'alpha': ('i32', 16, 65536),
           # Health counters, as ControlDemo declares them. The host discovers
           # these by name and zeroes them before every capture.
-          'missed': ('u16', 0), 'maxlate': ('u16', 0),
-          'sovr': ('u16', 0), 'serr': ('u16', 0)}
+          'missed': ('u16', 0, 0), 'maxlate': ('u16', 0, 0),
+          'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
          ('e', 'i16', 0.0878906, 'deg'), ('u', 'i16', 1.0, 'pwm')]
 WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
@@ -56,9 +60,9 @@ class FakeUno:
             self.println('# id CtrlLink 1 ControlDemo chans=4 row=21 dt_us=1000')
             self.println('# ok')
         elif head == 'params':
-            for name, (type_, value) in self.params.items():
+            for name, (type_, frac, value) in self.params.items():
                 shown = f'{value:.6f}' if type_ == 'f32' else str(value)
-                self.println(f'# p {name} {type_} {shown}')
+                self.println(f'# p {name} {type_} {frac} {shown}')
             self.println('# ok')
         elif head == 'chans':
             for i, (name, type_, scale, unit) in enumerate(CHANS):
@@ -69,11 +73,12 @@ class FakeUno:
             self.println('# ok')
         elif head == 'set':
             name, _, value = rest.partition(' ')
-            type_ = self.params[name][0]
-            self.params[name] = (type_, float(value) if type_ == 'f32' else int(value))
+            type_, frac, _old = self.params[name]
+            self.params[name] = (type_, frac,
+                                 float(value) if type_ == 'f32' else int(value))
             if self.streaming:
                 self._pump()   # the mark lands on the tick reached so far
-                type_, value = self.params[name]
+                type_, frac, value = self.params[name]
                 shown = f'{value:.6f}' if type_ == 'f32' else str(value)
                 self.println(f'# mark {self.tick} {name} {shown}')
             self._show(name)
@@ -82,7 +87,7 @@ class FakeUno:
             self.rows = 0
             self.produced = 0
             self.println('# begin')
-            self.println(f'# rate dt_us=1000 dec={self.params["dec"][1]}')
+            self.println(f'# rate dt_us=1000 dec={self.params["dec"][2]}')
             self.println('# col tick u16 1 tick')
             for name, type_, scale, unit in CHANS:
                 self.println(f'# col {name} {type_} {scale:.7f} {unit}')
@@ -90,7 +95,8 @@ class FakeUno:
             self.streaming = True
             self.t0 = time.monotonic()
             for name, value in self.unhealthy.items():
-                self.params[name] = (self.params[name][0], value)
+                type_, frac, _ = self.params[name]
+                self.params[name] = (type_, frac, value)
         elif head == 'stop':
             self._pump()
             self.streaming = False
@@ -100,7 +106,7 @@ class FakeUno:
             self.println('# err unknown command')
 
     def _show(self, name):
-        type_, value = self.params[name]
+        type_, _frac, value = self.params[name]
         shown = f'{value:.6f}' if type_ == 'f32' else str(value)
         self.println(f'# v {name} {shown}')
 
@@ -109,9 +115,9 @@ class FakeUno:
         if not self.streaming:
             return
         due = int((time.monotonic() - self.t0) * self.rate)
-        dec = self.params['dec'][1]
+        dec = self.params['dec'][2]
         while self.produced < due:
-            ref = self.params['ref'][1]
+            ref = self.params['ref'][2]
             self.y += (ref - self.y) // 8          # visibly first-order
             err = ref - self.y
             u = max(-255, min(255, err // 4))
@@ -175,10 +181,23 @@ def connect(uno):
     dev.info = dev.sync()
     dev._params = dev._read_params()
     dev.channels = dev._read_channels()
+    # Lets a check look at what the device actually stored, rather than at what
+    # the host reports after scaling it back.
+    dev._uno_raw = lambda name: uno.params[name][2]
     return dev
 
 
 failures = []
+
+
+def _raises(call, kind):
+    try:
+        call()
+    except kind:
+        return True
+    except Exception:
+        return False
+    return False
 
 
 def check(label, condition, detail=''):
@@ -192,7 +211,9 @@ dev = connect(FakeUno())
 check('id parsed', dev.info.startswith('CtrlLink 1 ControlDemo'), dev.info)
 check('params discovered', set(dev._params) == set(PARAMS), str(dev._params))
 check('channels discovered', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
-check('float param typed', dev._params['kp'] == 'f32')
+check('float param typed', dev._params['kp'].type == 'f32')
+check('param format discovered', dev._params['kq'].frac == 22
+      and dev._params['kq'].scale == 2.0 ** -22, str(dev._params['kq']))
 
 # ------------------------------------------------------------- param access
 dev.kp = 2.5
@@ -284,12 +305,35 @@ uno.out += b'GARBAGE\nDEADBEE\n'          # wrong-width rows before the header
 df = dev3.capture(0.15)
 check('short rows discarded', len(df) > 50 and df.attrs['gaps'] == 0, f'{len(df)} rows')
 
+# ------------------------------------------------------- fixed-point params
+# The device keeps these as integers; the host is the only side that ever sees
+# them in real units.
+dev.kq = 0.5
+check('fixed-point param stored as an integer',
+      dev._uno_raw('kq') == 1 << 21, str(dev._uno_raw('kq')))
+check('fixed-point param reads back in real units', abs(dev.kq - 0.5) < 1e-6, str(dev.kq))
+
+dev.kq = -0.001
+check('negative fixed-point round trip', abs(dev.kq + 0.001) < 1e-6, str(dev.kq))
+
+# Below the device's resolution: rounding to the nearest representable value is
+# the right answer, not a failed write.
+dev.kq = 1e-9
+check('sub-resolution set does not raise', abs(dev.kq) < 1e-6, str(dev.kq))
+
+dev.alpha = 0.1667
+check('alpha quantised to Q16', dev._uno_raw('alpha') == round(0.1667 * 65536),
+      str(dev._uno_raw('alpha')))
+check('alpha reads back close', abs(dev.alpha - 0.1667) < 2 ** -17, str(dev.alpha))
+
+check('dt read from the device', abs(dev.dt - 0.001) < 1e-9, str(dev.dt))
+
 # ------------------------------------------------------------------- health
 # A capture zeroes the counters the device declares, so what comes back
 # describes that capture and not everything since the board booted.
 uno = FakeUno()
-uno.params['missed']  = ('u16', 77)      # left over from some earlier run
-uno.params['maxlate'] = ('u16', 900)
+uno.params['missed']  = ('u16', 0, 77)     # left over from some earlier run
+uno.params['maxlate'] = ('u16', 0, 900)
 dev4 = connect(uno)
 
 check('health counters discovered',
@@ -313,6 +357,24 @@ check('dropped rows explained', 'dropped' in notes, notes)
 check('sensor errors explained', 'transfer(s) failed' in notes, notes)
 check('healthy counters stay quiet', 'overrun' not in notes, notes)
 check('health() reads them directly', dev5.health()['missed'] == 12, str(dev5.health()))
+
+# -------------------------------------------------------------------- bench
+# The rig's own unit conventions, which sit on top of the protocol rather than
+# in it. Checked against stub channels: what matters is the arithmetic, and the
+# link underneath it is already covered above.
+import bench
+import ctrllink as _cl
+
+rig = bench.Bench.__new__(bench.Bench)
+rig.channels = [_cl.Column('y_uw', 'i32', 360.0 / 4096, 'deg'),
+                _cl.Column('i',    'i16', 26.4,         'mA')]
+
+check('degrees -> counts', abs(rig.deg(45) - 45 / (360.0 / 4096)) < 1e-9, str(rig.deg(45)))
+check('milliamps -> LSBs', abs(rig.ma(264) - 10.0) < 1e-9, str(rig.ma(264)))
+check('counts -> degrees', abs(rig.as_deg(512) - 45.0) < 1e-9, str(rig.as_deg(512)))
+check('LSBs -> milliamps', abs(rig.as_ma(10) - 264.0) < 1e-9, str(rig.as_ma(10)))
+check('unknown channel raises',
+      _raises(lambda: rig.channel('nope'), _cl.CtrlLinkError))
 
 # ----------------------------------------------------------- device-side error
 try:

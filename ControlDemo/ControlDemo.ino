@@ -12,10 +12,12 @@
 // jitters. `maxlate` reports how much jitter there was and `missed` counts the
 // control periods that were skipped outright.
 //
-// The control law is integer arithmetic end to end -- see ControlMath. Floats
-// survive only as the units the host tunes in: whenever a gain or a filter
-// time constant changes, loop() converts it to fixed point once, outside the
-// control step.
+// The control law is integer arithmetic end to end -- see ControlMath. So is
+// every parameter it reads: each one is stored in the fixed-point form the
+// arithmetic wants, and the parameter table declares the scale that converts
+// it. The host multiplies on the way in and divides on the way out, so a
+// student still writes `dev.kp = 0.5` and this sketch never executes a single
+// floating-point instruction.
 //
 // Serial is 1 Mbaud. On a 16 MHz AVR that is an exact divisor (UBRR=1), unlike
 // 115200, which lands 2.1% off. Telemetry sustains that rate comfortably, but
@@ -98,25 +100,43 @@ enum : uint8_t
 };
 
 // Fixed-point scales, chosen for the range each quantity actually needs.
-// See FixedPoint.h; the numbers are gain magnitude against gain resolution.
-typedef Fixed<int32_t, 22> Kp;      // +/-511,  resolution 2.4e-7
-typedef Fixed<int32_t, 30> KiDt;    // +/-1.99, resolution 9.3e-10 (ki folded with dt)
-typedef Fixed<int32_t, 16> KdDt;    // +/-32767, resolution 1.5e-5 (kd folded with 1/dt)
+// See FixedPoint.h; the trade is magnitude against resolution.
+//
+// The gains are per sample, not per second: u = kp*e + ki*sum(e) + kd*diff(e),
+// with no dt anywhere. That is what the arithmetic does, so it is what the
+// parameter means, and it keeps every scale a compile-time constant the host
+// can be told about. A host that prefers continuous-time gains multiplies by
+// dt on its own side -- and when `tickdiv` changes, the effect of the same
+// three numbers changing with it is the lesson, not a bug.
+//
+// The parameter table publishes FRAC straight off these types, so the host is
+// told each format by the declaration that defines it rather than by a constant
+// that has to be kept in step with it.
+typedef Fixed<int32_t, 22> Kp;      // +/-511,   resolution 2.4e-7
+typedef Fixed<int32_t, 30> Ki;      // +/-1.99,  resolution 9.3e-10
+typedef Fixed<int32_t, 16> Kd;      // +/-32767, resolution 1.5e-5
+typedef FirstOrderFilter<4>::Alpha Alpha;   // Q16, a fraction in [0, 1]
 
 // ------------------------------------------------------------------ variables
 // Everything the host can read or write lives here. Channels are read by
 // CtrlLink::emit() through their addresses, so they must be written by the same
 // context that calls emit() -- loop(), not the ISR.
 
-static float   g_kp   = 0.5f;
-static float   g_ki   = 0.0f;
-static float   g_kd   = 0.0f;
+// Gains, in the fixed-point form the controllers use. The host sets them in
+// natural units and the parameter table's declared format does the conversion.
+// The default is a mild proportional loop: the error is in counts, so a gain
+// that looks small is not, and 4096 of them make a revolution.
+static int32_t g_kp = Kp::from_float(0.002f).raw();
+static int32_t g_ki = 0;
+static int32_t g_kd = 0;
 
-// Filter time constants, seconds. Zero disables a filter, which is then a
-// pass-through -- so tau_y = 0 feeds the position loop the raw count.
-static float   g_tau_y = 0.0f;      // unwrapped position, two poles
-static float   g_tau_i = 0.005f;    // current sense, two poles
-static float   g_tau_e = 0.01f;     // error, one pole, feeds the derivative only
+// Filter poles: alpha = dt / (tau + dt), a fraction in [0, 1]. alpha = 1 is a
+// pass-through, which is how a filter is switched off -- so alpha_y = 1 feeds
+// the position loop the raw count. A host that thinks in time constants
+// converts, because it is the side that knows dt and has the arithmetic for it.
+static int32_t g_alpha_y = Alpha::from_int(1).raw();            // position, two poles
+static int32_t g_alpha_i = Alpha::from_float(0.1667f).raw();    // current, two poles
+static int32_t g_alpha_e = Alpha::from_float(0.0909f).raw();    // error, one pole
 
 static int32_t g_ref     = 0;   // setpoint, target units << REF_FRAC
 static int32_t g_refrate = 0;   // ramp rate, same units per control period
@@ -128,7 +148,7 @@ static uint8_t g_tickdiv = 5;   // 5 kHz samples per control period: 5 -> 1 kHz
 
 static int16_t g_y     = 0;     // measured angle, counts, offset applied
 static int32_t g_y_uw  = 0;     // unwrapped angle, counts, unfiltered
-static int32_t g_y_uwf = 0;     // unwrapped angle, counts, filtered by tau_y
+static int32_t g_y_uwf = 0;     // unwrapped angle, counts, filtered by alpha_y
 static int16_t g_i     = 0;     // current, ADC LSBs about SENSE_ZERO, filtered
 static int16_t g_e     = 0;     // error, target units, clamped for telemetry
 static int16_t g_u     = 0;     // actuator command, U_MIN..U_MAX
@@ -138,6 +158,7 @@ static uint16_t g_maxlate = 0;  // worst observed ISR-to-service delay, us
 static uint16_t g_missed  = 0;  // control periods loop() never serviced
 static uint16_t g_sovr    = 0;  // sensor samples the I2C bus could not keep up with
 static uint16_t g_serr    = 0;  // sensor transfers that failed
+static uint8_t  g_mstat   = 0;  // AS5600 STATUS register: magnet present, too weak, too strong
 
 // Integrator state, in error units summed over ticks. Keeping the sum raw and
 // applying ki*dt once at the end is what lets a gain of 5e-5 survive: the
@@ -147,11 +168,8 @@ static int32_t g_integral = 0;
 static int32_t g_e_filt   = 0;
 static int32_t g_e_prev   = 0;
 
-// Derived from the floats above by refresh_tuning(), read by the controllers.
-static Kp   g_kp_q;
-static KiDt g_ki_dt_q;
-static KdDt g_kd_dt_q;
-static int32_t g_integral_max = 0;
+// The one derived quantity left, recomputed by refresh_tuning().
+static int32_t g_integral_max = INT32_MAX / 2;
 
 static FirstOrderFilter<4> g_y_filt[2];   // position: free-running, needs the headroom
 static FirstOrderFilter<8> g_i_filt[2];   // current: small signal, wants the resolution
@@ -167,27 +185,30 @@ static volatile uint8_t  g_divider    = 5;
 
 // -------------------------------------------------------------------- tables
 
+// Every entry is stored exactly as the arithmetic wants it; the scale column is
+// what lets the host go on speaking in natural units.
 static const CtrlParam PROGMEM g_params[] =
 {
-    { "kp",      CTRL_F32, &g_kp      },
-    { "ki",      CTRL_F32, &g_ki      },
-    { "kd",      CTRL_F32, &g_kd      },
-    { "tau_y",   CTRL_F32, &g_tau_y   },
-    { "tau_i",   CTRL_F32, &g_tau_i   },
-    { "tau_e",   CTRL_F32, &g_tau_e   },
-    { "ref",     CTRL_I32, &g_ref     },
-    { "refrate", CTRL_I32, &g_refrate },
-    { "uff",     CTRL_I16, &g_uff     },
-    { "offset",  CTRL_I16, &g_offset  },
-    { "target",  CTRL_U8,  &g_target  },
-    { "mode",    CTRL_U8,  &g_mode    },
-    { "tickdiv", CTRL_U8,  &g_tickdiv },
-    { "y",       CTRL_I16, &g_y       },
-    { "y_uw",    CTRL_I32, &g_y_uw    },
-    { "maxlate", CTRL_U16, &g_maxlate },
-    { "missed",  CTRL_U16, &g_missed  },
-    { "sovr",    CTRL_U16, &g_sovr    },
-    { "serr",    CTRL_U16, &g_serr    },
+    { "kp",      CTRL_I32, &g_kp,      Kp::FRAC    },
+    { "ki",      CTRL_I32, &g_ki,       Ki::FRAC    },
+    { "kd",      CTRL_I32, &g_kd,       Kd::FRAC    },
+    { "alpha_y", CTRL_I32, &g_alpha_y,  Alpha::FRAC },
+    { "alpha_i", CTRL_I32, &g_alpha_i,  Alpha::FRAC },
+    { "alpha_e", CTRL_I32, &g_alpha_e,  Alpha::FRAC },
+    { "ref",     CTRL_I32, &g_ref,      REF_FRAC    },
+    { "refrate", CTRL_I32, &g_refrate,  REF_FRAC    },
+    { "uff",     CTRL_I16, &g_uff,      0           },
+    { "offset",  CTRL_I16, &g_offset,   0           },
+    { "target",  CTRL_U8,  &g_target,   0           },
+    { "mode",    CTRL_U8,  &g_mode,     0           },
+    { "tickdiv", CTRL_U8,  &g_tickdiv,  0           },
+    { "y",       CTRL_I16, &g_y,        0           },
+    { "y_uw",    CTRL_I32, &g_y_uw,     0           },
+    { "mstat",   CTRL_U8,  &g_mstat,    0           },
+    { "maxlate", CTRL_U16, &g_maxlate,  0           },
+    { "missed",  CTRL_U16, &g_missed,   0           },
+    { "sovr",    CTRL_U16, &g_sovr,     0           },
+    { "serr",    CTRL_U16, &g_serr,     0           },
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
@@ -333,8 +354,8 @@ static int32_t target_error(void)
     }
     else
     {
-        // Position. tau_y = 0 makes the filter a pass-through, so this is the
-        // raw unwrapped count unless the host asked for smoothing.
+        // Position. alpha_y = 1 makes the filter a pass-through, so this is
+        // the raw unwrapped count unless the host asked for smoothing.
         e = ref - g_y_uwf;
     }
 
@@ -362,9 +383,9 @@ static void controller_pid(void)
     g_e_prev = g_e_filt;
     g_e_filt = g_err_filt.update(e);
 
-    int32_t candidate = (int32_t)g_kp_q.scale(e)
-                      + (int32_t)g_ki_dt_q.scale(g_integral)
-                      + (int32_t)g_kd_dt_q.scale(g_e_filt - g_e_prev)
+    int32_t candidate = Kp::from_raw(g_kp).scale(e)
+                      + Ki::from_raw(g_ki).scale(g_integral)
+                      + Kd::from_raw(g_kd).scale(g_e_filt - g_e_prev)
                       + (int32_t)g_uff;
 
     g_u = clamp16(candidate, U_MIN, U_MAX);
@@ -457,17 +478,13 @@ static void collect_sensor_health(void)
 
 // ------------------------------------------------------------------- tuning
 
-static float g_dt = 1.0f / 1000.0f;
-
-// Converts the host-facing floats into the fixed-point form the controllers
-// use. This is the only float work left in the sketch, and loop() runs it
-// immediately after a control period rather than before one, so it has the
-// whole of the next period to finish in.
+// Applies whatever the host has just written. The parameters arrive already in
+// the form the arithmetic wants -- that conversion is the host's job -- so all
+// this does is propagate the two that other state depends on. No floats, which
+// is why it is safe to run it straight after a control step.
 //
-// It is driven by CtrlLink's write counter, which is one 16-bit comparison per
-// pass of loop() -- cheaper, and more honest, than watching each of the seven
-// floats for a change. It reconverts all of them even when only one moved; a
-// `set` is rare and the whole thing is a few dozen microseconds.
+// It is driven by CtrlLink's write counter: one 16-bit comparison per pass of
+// loop(), rather than watching each parameter for a change.
 static void refresh_tuning(void)
 {
     if (g_tickdiv == 0)
@@ -475,32 +492,56 @@ static void refresh_tuning(void)
         g_tickdiv = 1;
     }
 
-    // The divider the ISR uses, the period reported to the host and the dt the
-    // gains are folded with all change together, so none of them can be left
-    // describing a rate the loop is not running at.
+    // The divider the ISR uses and the period reported to the host change
+    // together, so neither can be left describing a rate the loop is not
+    // running at. The gains are per sample and do not depend on either.
     g_divider = g_tickdiv;
-    g_dt      = (float)g_tickdiv / (float)SAMPLE_HZ;
     CtrlLink::set_period_us((uint32_t)g_tickdiv * 1000000UL / SAMPLE_HZ);
 
-    g_kp_q    = Kp::from_float(g_kp);
-    g_ki_dt_q = KiDt::from_float(g_ki * g_dt);
-    g_kd_dt_q = KdDt::from_float(g_kd / g_dt);
+    // Bound the integrator at the sum whose term alone saturates the actuator,
+    // so it can always unwind within a period or two. A ki small enough to put
+    // that past what an int32_t holds leaves the type's own limit standing --
+    // the accumulation has to stay in range whether or not ki cares.
+    int32_t ki = (g_ki < 0) ? -g_ki : g_ki;
 
-    // Bound the integrator at the point where its term alone would saturate the
-    // actuator, so it can always unwind within a period or two. A tiny or zero
-    // ki puts that point past what an int32_t holds, and the accumulation still
-    // has to stay in range, so the type's own limit stands in -- a float cast
-    // that overflows the target integer is undefined, not merely wrong.
-    float bound = (float)U_MAX / fabs(g_ki * g_dt);
-    g_integral_max = (bound >= (float)(INT32_MAX / 2))
-                   ? INT32_MAX / 2
-                   : (int32_t)bound;
+    g_integral_max = INT32_MAX / 2;
 
-    g_y_filt[0].set_alpha(FirstOrderFilter<4>::alpha_for(g_tau_y, g_dt));
-    g_y_filt[1].set_alpha(FirstOrderFilter<4>::alpha_for(g_tau_y, g_dt));
-    g_i_filt[0].set_alpha(FirstOrderFilter<8>::alpha_for(g_tau_i, g_dt));
-    g_i_filt[1].set_alpha(FirstOrderFilter<8>::alpha_for(g_tau_i, g_dt));
-    g_err_filt.set_alpha(FirstOrderFilter<8>::alpha_for(g_tau_e, g_dt));
+    if (ki != 0)
+    {
+        int64_t bound = ((int64_t)U_MAX << Ki::FRAC) / ki;
+
+        if (bound < g_integral_max)
+        {
+            g_integral_max = (int32_t)bound;
+        }
+    }
+
+    g_y_filt[0].set_alpha(Alpha::from_raw(g_alpha_y));
+    g_y_filt[1].set_alpha(Alpha::from_raw(g_alpha_y));
+    g_i_filt[0].set_alpha(Alpha::from_raw(g_alpha_i));
+    g_i_filt[1].set_alpha(Alpha::from_raw(g_alpha_i));
+    g_err_filt.set_alpha(Alpha::from_raw(g_alpha_e));
+}
+
+// The AS5600's own view of the magnet: detected, too weak, too strong. Reading
+// it costs the sample loop one sample and blocks here until that sample lands,
+// so it is only done between captures -- during a bringup check, in other
+// words, which is the only time anyone wants it.
+static void refresh_magnet_status(void)
+{
+    static uint32_t last_ms = 0;
+
+    if (CtrlLink::streaming() || (millis() - last_ms) < 500)
+    {
+        return;
+    }
+    last_ms = millis();
+
+    uint8_t status;
+    if (Sensor::read_status(status))
+    {
+        g_mstat = status;
+    }
 }
 
 // ------------------------------------------------------------------- Arduino
@@ -565,13 +606,15 @@ void loop()
     }
 
     // After the control step, never before one: a `set` that lands just as a
-    // tick fires would otherwise put a float conversion in front of it.
+    // tick fires would otherwise put this in front of it.
     uint16_t writes = CtrlLink::writes();
     if (writes != last_writes)
     {
         last_writes = writes;
         refresh_tuning();
     }
+
+    refresh_magnet_status();
 
     CtrlLink::poll();
 }

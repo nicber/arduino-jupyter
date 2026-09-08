@@ -14,6 +14,12 @@ makes it appear here with no change on this side.
 
 Telemetry rows are fixed-width hex, so a capture is decoded in one numpy call
 rather than parsed line by line; a 1 kHz stream costs almost nothing to receive.
+
+Parameters are always in real units here. The device keeps each one in whatever
+fixed-point form its arithmetic wants and says how many fractional bits that is;
+this side multiplies on the way in and divides on the way out, so the loop
+running on an 8-bit MCU never executes a floating-point instruction and the
+person driving it never sees a raw count.
 """
 
 from __future__ import annotations
@@ -103,6 +109,31 @@ def _ended(buf):
     """True once a complete "# end ..." line is in the buffer."""
     at = buf.find(b'# end ')
     return at >= 0 and buf.find(b'\n', at) >= 0
+
+
+@dataclass
+class Param:
+    """A device parameter, and the fixed-point format it is stored in.
+
+    `frac` is how many fractional bits the device's integer carries, so real
+    units are `raw / 2**frac`. A power of two rather than an arbitrary scale,
+    so the conversion is exact in both directions and nothing is lost printing
+    it: no fixed number of decimal places serves both a Q22 scale (2.4e-7) and
+    a Q30 one (9.3e-10).
+    """
+    name: str
+    type: str
+    frac: int
+
+    @property
+    def integral(self) -> bool:
+        """True if the device stores this one as an integer."""
+        return self.type != 'f32'
+
+    @property
+    def scale(self) -> float:
+        """Real units per stored count. Exact: a power of two."""
+        return 2.0 ** -self.frac
 
 
 @dataclass
@@ -217,11 +248,18 @@ class CtrlLink:
     # ------------------------------------------------------------ discovery
 
     def _read_params(self) -> dict:
+        """name -> Param, as the device declares them.
+
+        The format is the device's own: it stores each parameter in whatever
+        fixed-point form its arithmetic wants and says how many fractional bits
+        that is. Everything above this line works in natural units and never
+        sees the integer.
+        """
         params = {}
         for text in self.cmd('params'):
             if text.startswith('# p '):
-                name, type_, value = text[4:].split(None, 2)
-                params[name] = type_
+                name, type_, frac, value = text[4:].split(None, 3)
+                params[name] = Param(name, type_, int(frac))
         return params
 
     def _read_channels(self) -> list[Column]:
@@ -232,6 +270,18 @@ class CtrlLink:
                 chans.append(Column(name, type_, float(scale),
                                     unit[0] if unit else ''))
         return chans
+
+    @property
+    def dt(self) -> float:
+        """Control period in seconds, asked of the device rather than assumed.
+
+        It moves when `tickdiv` does, and anything converting between
+        continuous-time and per-sample quantities needs the current value.
+        """
+        for field in self.cmd('id')[0].split():
+            if field.startswith('dt_us='):
+                return int(field[6:]) * 1e-6
+        raise CtrlLinkError('device did not report its control period')
 
     @property
     def _health(self) -> tuple:
@@ -248,6 +298,7 @@ class CtrlLink:
         return {name: self.get(name) for name in self._params}
 
     def get(self, name):
+        """The parameter's value in real units."""
         for text in self.cmd(f'get {name}'):
             if text.startswith('# v '):
                 _, value = text[4:].split(None, 1)
@@ -255,19 +306,24 @@ class CtrlLink:
         raise CtrlLinkError(f'no value in the reply for {name!r}')
 
     def set(self, name, value, tries=3):
-        """Sets a parameter and confirms the device stored what was asked.
+        """Sets a parameter, in real units, and confirms what the device stored.
 
         A corrupted command is usually rejected outright, but a mangled *value*
         would be accepted in silence -- so the echoed value is checked rather
-        than trusted.
+        than trusted. The check allows for the device's own quantisation: a
+        parameter kept in fixed point cannot hold every value that can be asked
+        for, and rounding to the nearest representable one is correct, not an
+        error.
         """
+        stored = None
+
         for attempt in range(tries):
-            for text in self.cmd(f'set {name} {value}'):
+            for text in self.cmd(f'set {name} {self._encode(name, value)}'):
                 if not text.startswith('# v '):
                     continue
                 _, echoed = text[4:].split(None, 1)
                 stored = self._coerce(name, echoed)
-                if self._agrees(stored, value):
+                if self._agrees(name, stored, value):
                     return stored
                 break
             if attempt + 1 == tries:
@@ -275,18 +331,35 @@ class CtrlLink:
                     f'set {name} to {value!r} but the device reports {stored!r}')
         return None
 
-    @staticmethod
-    def _agrees(stored, requested):
+    def _encode(self, name, value):
+        """Real units -> the integer (or float) the device wants on the wire."""
+        param = self._params[name]
+
+        if not param.integral:
+            return float(value)
+        return int(round(float(value) * 2.0 ** param.frac))
+
+    def _coerce(self, name, text):
+        """The wire's integer (or float) -> real units."""
+        param = self._params[name]
+
+        if not param.integral:
+            return float(text)
+        raw = int(text)
+        return raw * param.scale if param.frac else raw
+
+    def _agrees(self, name, stored, requested):
         try:
             wanted = float(requested)
         except (TypeError, ValueError):
             return False
-        # The device prints floats to six decimals, so an exact match is not
-        # available; integers must agree exactly.
-        return abs(float(stored) - wanted) <= max(1e-6, abs(wanted) * 1e-6)
 
-    def _coerce(self, name, text):
-        return float(text) if self._params[name] == 'f32' else int(text)
+        param = self._params[name]
+
+        # Half a step of whatever the device can actually represent, plus room
+        # for the six decimals it prints floats to.
+        slack = max(1e-6, abs(wanted) * 1e-6, abs(param.scale) / 2)
+        return abs(float(stored) - wanted) <= slack
 
     # Parameters as attributes, so a notebook reads `dev.kp = 2.5`. Anything not
     # in the device's table falls through to normal attribute handling.
@@ -531,7 +604,7 @@ class CtrlLink:
                 text = line.decode('ascii', 'replace')
                 if text.startswith('# mark '):
                     tick, name, value = text[7:].split(None, 2)
-                    marks.append((int(tick), name, value))
+                    marks.append((int(tick), name, self._coerce(name, value)))
                 elif text.startswith('# note '):
                     notes.append(text[7:])
                 elif text.startswith('# end '):
