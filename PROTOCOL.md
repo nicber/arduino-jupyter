@@ -65,6 +65,22 @@ del 4 % de los bytes de un comando enviado de corrido. Marcar el muestreador
 como `ISR_NOBLOCK` no lo arregla, porque el manejador de TWI también bloquea y
 hacer reentrante una máquina de estados de I2C no vale el riesgo.
 
+**El enlace se limpia solo.** Una celda de notebook se interrumpe en cualquier
+parte: el botón de parar en mitad de una captura, un traceback a mitad de un
+`set`. Ahí el dispositivo queda emitiendo filas que nadie va a leer y media línea
+de comando en su buffer de entrada, y la celda siguiente hereda el desastre: los
+datos de una captura aparecen como respuesta a un `get`. Así que toda operación
+toma el enlace y, si sale por una excepción, lo deja limpio antes de dejarla
+pasar: una línea vacía cierra el comando a medio escribir, un `stop` calla al
+dispositivo y lo que quede en el camino de vuelta se descarta. La prueba de que
+el flujo paró es la respuesta al `stop`, que el dispositivo da esté emitiendo o
+no, y no el silencio: con `dec` alto una fila tarda más que cualquier ventana de
+silencio razonable, y un `stop` se puede perder de ida como cualquier otro
+comando, así que se repite hasta que llega la confirmación. Si ni eso se logra,
+el enlace queda marcado y la operación siguiente lo intenta de nuevo antes de
+mandar nada. Nunca hace falta reiniciar el kernel para recuperar el control de
+la placa.
+
 Por eso la computadora separa los bytes de un comando medio milisegundo, lo que
 elimina la pérdida por completo. Los comandos son raros y cortos —un `set` tarda
 unos 6 ms en enviarse—, así que no cuesta nada, y el tick que informa `# mark`
@@ -187,7 +203,11 @@ automático por DTR y descubre el dispositivo.
   `print(dev.kp)`. `dev.params` los lee todos de vuelta.
 - `dev.capture(duration, events=[(retardo, nombre, valor), ...])` → DataFrame.
 - `dev.step(nombre, valor, pre=0.1, post=0.9, back=None)` → DataFrame con `t = 0`
-  en el escalón.
+  en el escalón. Si se interrumpe, `back` se restituye igual: del otro lado del
+  cable puede haber un motor empujando contra un tope.
+- `dev.resync()` deja el enlace en un estado conocido. Se llama sola cuando hace
+  falta; está expuesta para forzarla a mano después de algo que el módulo no vio
+  pasar.
 
 El DataFrame trae `t` en segundos más una columna por canal en unidades de
 ingeniería. `df.attrs` guarda `dt_us`, `dec`, `units`, `marks`, `notes`, los

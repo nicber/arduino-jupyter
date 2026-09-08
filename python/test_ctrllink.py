@@ -60,6 +60,8 @@ class FakeUno:
 
     def command(self, cmd):
         head, _, rest = cmd.partition(' ')
+        if head == '':
+            return                 # linea vacia: un empujon para resincronizar
         if head == 'id':
             self.println('# id CtrlLink 1 ControlDemo chans=4 row=21 dt_us=1000')
             self.println('# ok')
@@ -77,6 +79,12 @@ class FakeUno:
             self.println('# ok')
         elif head == 'set':
             name, _, value = rest.partition(' ')
+            if not name or not value:
+                self.println('# err set necesita un nombre y un valor')
+                return
+            if name not in self.params:
+                self.println('# err no existe ese parametro')
+                return
             type_, frac, _old = self.params[name]
             self.params[name] = (type_, frac,
                                  float(value) if type_ == 'f32' else int(value))
@@ -154,6 +162,30 @@ class FakeSerial:
         self.uno = uno
         self.is_open = True
         self.pos = 0
+        # Cuantas lecturas (o escrituras de un byte) faltan para que el puerto
+        # simule que la celda se corto por el medio. Es la unica forma fiel de
+        # probar la recuperacion: una interrupcion cae dentro de una llamada al
+        # puerto, no entre dos operaciones prolijas.
+        self.fail_read_after = None
+        self.fail_write_after = None
+        self.fail_with = KeyboardInterrupt
+        # Bytes salientes que el enlace se traga antes de empezar a entregar. El
+        # camino de ida pierde bytes de verdad; ver _BYTE_GAP. `deaf_after_fail`
+        # los arma recien al cortarse la operacion, que es donde interesan: el
+        # comando que se pierde es el que manda la limpieza.
+        self.deaf_writes = 0
+        self.deaf_after_fail = 0
+
+    def _maybe_fail(self, which):
+        left = getattr(self, which)
+        if left is None:
+            return
+        if left > 0:
+            setattr(self, which, left - 1)
+            return
+        setattr(self, which, None)   # una sola vez: la limpieza tiene que poder correr
+        self.deaf_writes += self.deaf_after_fail
+        raise self.fail_with
 
     @property
     def in_waiting(self):
@@ -161,11 +193,16 @@ class FakeSerial:
         return len(self.uno.out) - self.pos
 
     def write(self, data):
+        self._maybe_fail('fail_write_after')
         self.uno._pump()
+        if self.deaf_writes > 0:
+            self.deaf_writes -= len(data)
+            return len(data)
         self.uno.feed(data)
         return len(data)
 
     def read(self, n=1):
+        self._maybe_fail('fail_read_after')
         self.uno._pump()
         chunk = bytes(self.uno.out[self.pos:self.pos + n])
         self.pos += len(chunk)
@@ -506,6 +543,144 @@ check('cuentas -> grados', abs(rig.as_deg(512) - 45.0) < 1e-9, str(rig.as_deg(51
 check('LSBs -> miliamperes', abs(rig.as_ma(10) - 264.0) < 1e-9, str(rig.as_ma(10)))
 check('un canal desconocido levanta excepcion',
       _raises(lambda: rig.channel('nope'), _cl.CtrlLinkError))
+
+# --------------------------------------------- celda cortada por el medio
+# Lo que de verdad pasa en un notebook: el boton de parar en mitad de una
+# captura, un traceback a mitad de un `set`. El dispositivo queda emitiendo o el
+# comando queda a medio escribir, y la celda siguiente heredaria el desastre. La
+# operacion siguiente tiene que encontrar el enlace limpio sin reiniciar nada.
+
+uno = FakeUno()
+dev9 = connect(uno)
+dev9.ser.fail_read_after = 3          # se corta en plena captura
+check('la captura interrumpida propaga la interrupcion',
+      _raises(lambda: dev9.capture(0.40), KeyboardInterrupt))
+check('la captura interrumpida callo al dispositivo', not uno.streaming)
+check('la captura interrumpida dejo el enlace limpio', dev9._broken is False)
+
+dev9.ref = 512
+check('despues de la interrupcion se puede fijar un parametro', dev9.ref == 512, str(dev9.ref))
+df = dev9.capture(0.20)
+check('despues de la interrupcion se puede volver a capturar',
+      len(df) > 50 and df.attrs['gaps'] == 0, f"{len(df)} filas, {df.attrs['gaps']} huecos")
+
+# Una excepcion cualquiera, no una interrupcion: el enlace no distingue, porque
+# lo que lo ensucia es haberse cortado y no el motivo.
+uno = FakeUno()
+dev10 = connect(uno)
+dev10.ser.fail_with = ValueError
+dev10.ser.fail_read_after = 3
+check('una excepcion en plena captura sale a la celda',
+      _raises(lambda: dev10.capture(0.40), ValueError))
+check('una excepcion en plena captura tambien calla al dispositivo', not uno.streaming)
+check('el enlace sobrevive a una excepcion cualquiera', dev10.get('kp') == 0.5, str(dev10.get('kp')))
+
+# Cortado a mitad de una linea de comando: los bytes que llegaron estan en el
+# buffer del dispositivo y se pegarian adelante del comando siguiente.
+uno = FakeUno()
+dev11 = connect(uno)
+dev11.ser.fail_write_after = 3        # "set" enviado, el resto no
+check('el comando interrumpido propaga la interrupcion',
+      _raises(lambda: dev11.set('ref', 1024), KeyboardInterrupt))
+check('la media linea no envenena el comando siguiente', dev11.kp == 0.5, str(dev11.kp))
+check('el comando interrumpido no dejo la referencia a medias', dev11.ref == 0, str(dev11.ref))
+
+# Un escalon interrumpido no deja la referencia en pie: `back` es donde el
+# usuario dijo que queria terminar, y del otro lado del cable puede haber un
+# motor empujando contra un tope.
+uno = FakeUno()
+dev12 = connect(uno)
+dev12.ref = 0
+dev12.ser.fail_read_after = 3
+check('el escalon interrumpido propaga la interrupcion',
+      _raises(lambda: dev12.step('ref', 2048, pre=0.05, post=0.35, back=0),
+              KeyboardInterrupt))
+check('el escalon interrumpido restituye la referencia', dev12.ref == 0, str(dev12.ref))
+
+# La limpieza se puede pedir a mano, para lo que este modulo no vio pasar.
+uno = FakeUno()
+dev13 = connect(uno)
+dev13.cmd('start')
+check('el dispositivo quedo emitiendo', uno.streaming)
+dev13.resync()
+check('resync callo al dispositivo', not uno.streaming)
+check('resync deja el enlace usable', dev13.get('kp') == 0.5, str(dev13.get('kp')))
+
+# Un enlace marcado como sucio se limpia solo antes de mandar nada, aunque nadie
+# haya llegado a limpiarlo en su momento (una segunda interrupcion encima de la
+# primera).
+uno = FakeUno()
+dev14 = connect(uno)
+dev14.cmd('start')
+dev14._broken = True
+check('un enlace sucio se limpia antes del comando siguiente',
+      dev14.get('kp') == 0.5 and not uno.streaming, str(uno.streaming))
+
+# Un `stop` se puede perder en el camino de ida, y entonces el puerto callado no
+# prueba nada: con `dec` alto una fila tarda mas que cualquier ventana de
+# silencio razonable. La limpieza espera la confirmacion del `stop`, no el
+# silencio, y lo reintenta hasta tenerla.
+uno = FakeUno()
+dev15 = connect(uno)
+dev15.set('dec', 400)                 # una fila cada 400 ms
+dev15.ser.deaf_after_fail = 6         # el primer "stop" de la limpieza se pierde
+dev15.ser.fail_read_after = 2
+check('la captura lenta interrumpida propaga la interrupcion',
+      _raises(lambda: dev15.capture(0.40), KeyboardInterrupt))
+check('un stop perdido se reintenta hasta que el dispositivo confirma',
+      not uno.streaming)
+check('el enlace queda usable despues del stop perdido',
+      dev15.get('kp') == 0.5, str(dev15.get('kp')))
+dev15.set('dec', 1)
+
+# ---------------------------------------- el puerto no queda tomado si falla
+# Un puerto serie es exclusivo. Si el descubrimiento falla despues de abrirlo, el
+# traceback de la celda sobrevive en sys.last_traceback y se queda con el puerto:
+# el intento siguiente falla con "no se pudo abrir el puerto" y parece otra cosa.
+
+class _MutePort:
+    """Un puerto que abre pero del que no contesta nadie."""
+    def __init__(self):
+        self.is_open = True
+    def readline(self):
+        return b''
+    def read(self, n=1):
+        return b''
+    @property
+    def in_waiting(self):
+        return 0
+    def write(self, data):
+        return len(data)
+    def flush(self):
+        pass
+    def reset_input_buffer(self):
+        pass
+    def close(self):
+        self.is_open = False
+
+
+_opened = []
+_real_serial, _real_sync = _cl.serial.Serial, _cl.CtrlLink.sync
+
+
+def _mute_serial(*args, **kwargs):
+    _opened.append(_MutePort())
+    return _opened[-1]
+
+
+def _mute_sync(self, timeout=4.0):
+    raise _cl.CtrlLinkError('no hubo respuesta a "id"')
+
+
+_cl.serial.Serial, _cl.CtrlLink.sync = _mute_serial, _mute_sync
+try:
+    check('un descubrimiento fallido se explica',
+          _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0), _cl.CtrlLinkError))
+finally:
+    _cl.serial.Serial, _cl.CtrlLink.sync = _real_serial, _real_sync
+
+check('un descubrimiento fallido no se queda con el puerto',
+      bool(_opened) and not _opened[0].is_open)
 
 # ------------------------------------------------- error del lado dispositivo
 try:

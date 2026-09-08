@@ -22,12 +22,19 @@ uno en la forma de punto fijo que su aritmética prefiera y dice cuántos bits
 fraccionarios son; este lado multiplica a la ida y divide a la vuelta, así que el
 lazo que corre en un microcontrolador de 8 bits nunca ejecuta una instrucción de
 punto flotante y quien lo maneja nunca ve una cuenta cruda.
+
+El enlace se limpia solo. Si una celda se corta por el medio —el botón de parar
+en mitad de una captura, una excepción a mitad de un `set`—, la operación
+siguiente encuentra el dispositivo callado y el puerto vacío en lugar de heredar
+un flujo a medio terminar, así que nunca hace falta reiniciar el kernel para
+recuperar el control de la placa.
 """
 
 from __future__ import annotations
 
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -227,6 +234,11 @@ class Column:
 
 
 class CtrlLink:
+    # Estado del enlace. Son atributos de clase para que también valgan en un
+    # objeto armado sin pasar por __init__.
+    _depth = 0       # operaciones anidadas: sólo la de más afuera limpia
+    _broken = False  # una operación se cortó por el medio y dejó el enlace sucio
+
     def __init__(self, port=None, baud=1_000_000, reset_wait=1.8, timeout=1.0):
         if port is None:
             port = find_port()
@@ -234,24 +246,174 @@ class CtrlLink:
         # Abrir el puerto activa DTR, lo que resetea un UNO. Nada de lo que diga
         # el dispositivo antes de rearrancar y correr setup() vale la pena leerse.
         self.ser = serial.Serial(port, baud, timeout=timeout)
-        time.sleep(reset_wait)
-        self.ser.reset_input_buffer()
 
-        self.info = self.sync()
-        self._params = self._read_params()
-        self.channels = self._read_channels()
+        try:
+            time.sleep(reset_wait)
+            self.ser.reset_input_buffer()
+
+            self.info = self.sync()
+            self._params = self._read_params()
+            self.channels = self._read_channels()
+        except BaseException:
+            # El puerto ya está abierto, y un puerto serie es exclusivo. En un
+            # notebook el traceback de la celda sobrevive en sys.last_traceback,
+            # así que este objeto a medio construir no se recolecta y se queda
+            # con el puerto: el intento siguiente falla con «no se pudo abrir el
+            # puerto» y parece un problema distinto del que realmente pasó.
+            self.ser.close()
+            raise
 
     # ------------------------------------------------------------- cañerías
 
     def close(self):
-        if self.ser.is_open:
-            self.ser.close()
+        if not self.ser.is_open:
+            return
+
+        # Cerrar en medio de una captura deja al dispositivo emitiendo contra un
+        # puerto que ya nadie lee. Reabrir lo resetea, así que no es fatal, pero
+        # callarlo cuesta un comando y no vale la pena dejarlo hablando solo.
+        if self._broken or self._depth:
+            try:
+                self._send('stop')
+                self._drain(timeout=0.3)
+            except Exception:
+                pass
+
+        self.ser.close()
+        self._broken = False
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         self.close()
+
+    # --------------------------------------------------------- toma del enlace
+    #
+    # Una celda de notebook se interrumpe en cualquier parte: el botón de parar
+    # en medio de una captura, una excepción a mitad de un `set`, un traceback
+    # que sale de algo que no tiene nada que ver. El enlace queda entonces en un
+    # estado que ninguna de las dos puntas conoce del todo —el dispositivo
+    # emitiendo filas que nadie lee, media línea de comando en su buffer de
+    # entrada, media respuesta en el nuestro— y la celda siguiente hereda el
+    # desastre: los datos de una captura aparecen como respuesta a un `get`, y
+    # el enlace parece pedir un reinicio del kernel.
+    #
+    # Así que toda operación toma el enlace, y si sale por una excepción lo deja
+    # limpio antes de dejarla pasar. Si ni siquiera eso se logra —una segunda
+    # interrupción encima de la primera, la placa desenchufada— el enlace queda
+    # marcado y la operación siguiente lo intenta de nuevo antes de mandar nada.
+
+    @contextmanager
+    def _hold(self, heal=True):
+        """Toma el enlace para una operación y lo deja limpio pase lo que pase.
+
+        `heal=False` es para la limpieza misma, que no puede llamarse a sí misma.
+        """
+        if self._depth:
+            yield                 # anidada dentro de otra operación: ya está tomado
+            return
+
+        self._depth = 1
+        try:
+            if heal and self._broken:
+                self._resync()    # levanta si el dispositivo no se deja limpiar
+
+            try:
+                yield
+            except BaseException:
+                self._broken = True
+                if heal:
+                    self._heal()
+                raise
+            else:
+                self._broken = False
+        finally:
+            self._depth = 0
+
+    def _heal(self):
+        """Limpia el enlace sin levantar nada.
+
+        Corre mientras una excepción está saliendo, así que taparla con otra
+        sería cambiar un problema por uno peor: si no puede, deja el enlace
+        marcado y la operación siguiente vuelve a intentarlo.
+        """
+        try:
+            self._resync()
+        except Exception:
+            return
+        self._broken = False
+
+    def resync(self, timeout=6.0):
+        """Deja el enlace en un estado conocido: nada a medio enviar, el
+        dispositivo callado y contestando.
+
+        Se llama sola cuando hace falta; está expuesta para poder forzarla a
+        mano después de algo que este módulo no vio pasar.
+        """
+        with self._hold(heal=False):
+            self._resync(timeout)
+
+    def _resync(self, timeout=6.0):
+        deadline = time.monotonic() + timeout
+
+        # Una línea vacía termina el comando que haya quedado a medio escribir,
+        # que si no se pegaría adelante del siguiente. El dispositivo descarta
+        # las líneas vacías, así que también es inofensiva si no había nada a
+        # medias.
+        self._send('')
+
+        # `stop` es idempotente, y el dispositivo lo contesta esté emitiendo o
+        # no, así que su respuesta es la prueba de que paró. El silencio no
+        # alcanza: con `dec` alto una fila puede tardar más que cualquier ventana
+        # de silencio razonable, y entonces un puerto callado no significa nada.
+        # El `stop` mismo se puede perder en el camino de ida como cualquier otro
+        # comando, así que se repite hasta que llegue la confirmación.
+        seen = bytearray()
+
+        for _ in range(4):
+            self._send('stop')
+            self._drain(into=seen)
+            if _ended(seen):
+                break
+        else:
+            raise CtrlLinkError('el dispositivo no contesta a "stop" -- sigue '
+                                'emitiendo, o dejo de escuchar; desenchufar y '
+                                'volver a enchufar la placa')
+
+        return self.sync(timeout=max(1.0, deadline - time.monotonic()))
+
+    def _drain(self, into=None, settle=0.15, timeout=1.0):
+        """Lee del puerto hasta que no quede nada que leer.
+
+        Que no quede nada es que el puerto pase `settle` segundos callado, o que
+        `into` —donde se va acumulando lo leído, si se lo pasa— ya contenga la
+        respuesta completa a un `stop`, que es lo último que el dispositivo tiene
+        para decir. Devuelve False si se agotó `timeout` con el dispositivo
+        todavía hablando, que es lo que pasa cuando el flujo no paró.
+        """
+        deadline = time.monotonic() + timeout
+        quiet_since = time.monotonic()
+
+        while True:
+            now = time.monotonic()
+            waiting = self.ser.in_waiting
+
+            if waiting:
+                chunk = self.ser.read(waiting)
+                if into is not None:
+                    into += chunk
+                    if _ended(into):
+                        return True
+                quiet_since = now
+            elif now - quiet_since >= settle:
+                return True
+            elif now >= deadline:
+                return False
+            else:
+                time.sleep(0.005)
+
+    # ------------------------------------------------------------- comandos
 
     def _readline(self, deadline) -> str | None:
         """Una línea, o None una vez pasado `deadline`."""
@@ -282,6 +444,10 @@ class CtrlLink:
         durante una captura conviene el argumento `events` de capture(), que
         conserva las filas.
         """
+        with self._hold():
+            return self._cmd(line, timeout, tries)
+
+    def _cmd(self, line, timeout, tries):
         for attempt in range(tries):
             self._send(line)
 
@@ -493,7 +659,15 @@ class CtrlLink:
         además se imprime, porque una captura que perdió períodos en silencio se ve
         exactamente igual que una que no hasta que uno va a fijarse. Pasar
         `warn=False` para tener los números sin el comentario.
+
+        Si la captura se interrumpe —el botón de parar del notebook, un
+        Ctrl-C—, el dispositivo queda callado igual antes de que la excepción
+        llegue a la celda: ver _hold().
         """
+        with self._hold():
+            return self._capture(duration, events, poll, warn)
+
+    def _capture(self, duration, events, poll, warn):
         pending = sorted(events, key=lambda e: e[0])
 
         for name in self._health:
@@ -658,7 +832,20 @@ class CtrlLink:
         Mantiene `pre` segundos, pone `name` en `value`, y mantiene `post`
         segundos más. Si se da `back`, el parámetro se restituye al final.
         """
-        df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
+        try:
+            df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
+        except BaseException:
+            # El escalón ya salió: interrumpir la captura no lo deshace, y dejar
+            # una referencia en pie contra un motor no es un estado en el que
+            # convenga abandonar el equipo. El enlace ya quedó limpio para este
+            # punto, así que restituir es un comando común; si aun así no se
+            # puede, la excepción que viene saliendo es la noticia importante.
+            if back is not None:
+                try:
+                    self.set(name, back)
+                except Exception:
+                    pass
+            raise
 
         marks = [m for m in df.attrs['marks'] if m[1] == name]
         if marks:

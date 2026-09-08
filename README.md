@@ -188,6 +188,7 @@ no hay nada que cambiar.
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
+| se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
 | se pierden períodos de control | subir `tickdiv`, o sacarle trabajo al paso de control |
 | se descartan filas de telemetría | subir `dec`, o emitir menos canales |
 
