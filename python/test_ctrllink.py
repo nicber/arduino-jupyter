@@ -358,12 +358,58 @@ check('sensor errors explained', 'transfer(s) failed' in notes, notes)
 check('healthy counters stay quiet', 'overrun' not in notes, notes)
 check('health() reads them directly', dev5.health()['missed'] == 12, str(dev5.health()))
 
+# ---------------------------------------------------------------- portability
+# Two things that work on this machine and would not on another, so they are
+# checked here rather than discovered by a student on a different one.
+
+class _FakePort:
+    def __init__(self, device, vid=None):
+        self.device, self.vid = device, vid
+
+
+import ctrllink as _cl
+import serial.tools.list_ports as _lp
+
+_real_comports = _lp.comports
+
+# Ports are picked by USB vendor id, not by what they are called: COM3 on
+# Windows, /dev/cu.usbmodem on macOS, /dev/ttyACM0 on Linux.
+_lp.comports = lambda: [_FakePort('COM1'), _FakePort('COM3', vid=0x2341)]
+check('windows COM port found', _cl.find_port() == 'COM3', _cl.find_port())
+
+_lp.comports = lambda: [_FakePort('/dev/cu.Bluetooth-Incoming-Port'),
+                        _FakePort('/dev/cu.usbmodem1101', vid=0x2341)]
+check('bluetooth port ignored', _cl.find_port() == '/dev/cu.usbmodem1101',
+      _cl.find_port())
+
+# Some platforms leave vid unset; the name fallback has to cover COM as well.
+_lp.comports = lambda: [_FakePort('COM3')]
+check('name fallback covers COM', _cl.find_port() == 'COM3', _cl.find_port())
+
+_lp.comports = lambda: [_FakePort('COM1', vid=1), _FakePort('COM3', vid=2)]
+check('ambiguous ports rejected',
+      _raises(lambda: _cl.find_port(), _cl.CtrlLinkError))
+check('hint disambiguates', _cl.find_port('COM3') == 'COM3')
+
+_lp.comports = _real_comports
+
+# The gap between command bytes is half a millisecond. time.sleep() on Windows
+# rounds up to the 15.6 ms system tick before Python 3.11, which would make
+# every command thirty times slower than intended, so short waits are spun out
+# instead. The bound is loose enough not to be flaky on a busy machine and
+# still an order of magnitude under the failure it guards against.
+_t0 = time.perf_counter()
+for _ in range(200):
+    _cl._pause(_cl._BYTE_GAP)
+_each = (time.perf_counter() - _t0) / 200
+check('short waits are actually short', _each < 2e-3, f'{_each * 1e6:.0f} us each')
+check('long waits still sleep', _cl._SPIN_UNDER <= 2e-3, str(_cl._SPIN_UNDER))
+
 # -------------------------------------------------------------------- bench
 # The rig's own unit conventions, which sit on top of the protocol rather than
 # in it. Checked against stub channels: what matters is the arithmetic, and the
 # link underneath it is already covered above.
 import bench
-import ctrllink as _cl
 
 rig = bench.Bench.__new__(bench.Bench)
 rig.channels = [_cl.Column('y_uw', 'i32', 360.0 / 4096, 'deg'),

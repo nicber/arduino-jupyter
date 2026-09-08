@@ -7,7 +7,7 @@ makes it appear here with no change on this side.
 
     from ctrllink import CtrlLink
 
-    dev = CtrlLink('/dev/tty.usbmodem1101')
+    dev = CtrlLink()                    # or CtrlLink('COM3'), or '/dev/ttyACM0'
     dev.kp, dev.ki = 2.5, 0.1
     df = dev.step('ref', 1024, pre=0.1, post=0.9)
     df.plot(x='t', y=['ref', 'y'])
@@ -76,6 +76,32 @@ _LATE_WARN = 0.5
 # for the delay to matter -- a `set` takes about 6 ms to send.
 _BYTE_GAP = 0.0005
 
+# Delays shorter than this are spun out rather than slept away. See _pause().
+_SPIN_UNDER = 0.002
+
+
+def _pause(seconds):
+    """A short delay that is actually short.
+
+    time.sleep() on Windows rounds up to the system timer tick before Python
+    3.11 -- 15.6 ms by default, thirty times the gap between command bytes.
+    Sleeping for _BYTE_GAP there would turn a six-millisecond `set` into a
+    six-hundred-millisecond one, and capture(), which sends eight commands
+    around every run, into something that felt broken.
+
+    So anything under a couple of milliseconds is spun out on perf_counter(),
+    which is high resolution everywhere. It costs a busy CPU for the twenty
+    milliseconds a command takes to send, which is a fair trade for behaving
+    the same on every machine.
+    """
+    if seconds >= _SPIN_UNDER:
+        time.sleep(seconds)
+        return
+
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
+        pass
+
 
 class CtrlLinkError(RuntimeError):
     pass
@@ -85,14 +111,29 @@ def find_port(hint=None):
     """Guesses which serial port the board is on.
 
     Bluetooth adapters and debug consoles also present as serial ports, so the
-    search is limited to USB ones. `hint` narrows it further by substring, which
-    is what to reach for when more than one board is plugged in.
+    search is limited to USB ones -- by USB vendor id, which every platform
+    reports and which says nothing about what the port is *called*. Windows
+    calls them COM3, macOS /dev/cu.usbmodem1101 and Linux /dev/ttyACM0, and
+    matching on those names finds a board on one machine and nothing on the
+    next.
+
+    `hint` narrows it further by substring, which is what to reach for when
+    more than one board is plugged in.
     """
     from serial.tools import list_ports
 
-    ports = [p.device for p in list_ports.comports()
-             if any(tag in p.device for tag in
-                    ('usbserial', 'usbmodem', 'ttyUSB', 'ttyACM', 'wchusbserial'))]
+    found = list(list_ports.comports())
+    usb = [p for p in found if p.vid is not None]
+
+    if not usb:
+        # Some platforms and older pyserial builds leave vid unset. Fall back to
+        # the names a USB serial port goes by, COM ports included.
+        usb = [p for p in found
+               if any(tag in p.device for tag in
+                      ('usbserial', 'usbmodem', 'ttyUSB', 'ttyACM',
+                       'wchusbserial', 'COM'))]
+
+    ports = [p.device for p in usb]
 
     if hint:
         ports = [p for p in ports if hint in p]
@@ -193,7 +234,7 @@ class CtrlLink:
         for byte in (line + '\n').encode('ascii'):
             self.ser.write(bytes([byte]))
             if _BYTE_GAP:
-                time.sleep(_BYTE_GAP)
+                _pause(_BYTE_GAP)
         self.ser.flush()
 
     def cmd(self, line, timeout=2.0, tries=3) -> list[str]:

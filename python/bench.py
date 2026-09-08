@@ -24,6 +24,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import serial
+
 from ctrllink import CtrlLink, CtrlLinkError, find_port
 
 __all__ = ['sync_board', 'Bench', 'CtrlLinkError',
@@ -228,7 +230,25 @@ def _sources_hash():
 
 
 def _run(argv, what):
-    done = subprocess.run(argv, capture_output=True, text=True)
+    """Runs a build tool and returns its output, or explains why it could not.
+
+    The encoding is pinned rather than left to the locale: arduino-cli emits
+    UTF-8, and a Windows console defaulting to cp1252 turns a stray character
+    in a compiler diagnostic into a UnicodeDecodeError that hides the actual
+    error. `errors` is set for the same reason -- a mangled byte should not be
+    the thing that stops a build being reported.
+    """
+    try:
+        done = subprocess.run(argv, capture_output=True,
+                              encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        raise RuntimeError(
+            f'{argv[0]} was not found on PATH, so the sketch cannot be {what}d.\n'
+            f'Install the Arduino CLI and make sure the shell that started this '
+            f'kernel can see it: on Windows that usually means reopening the '
+            f'terminal after installing, since PATH is read once at startup.'
+        ) from None
+
     if done.returncode:
         raise RuntimeError(f'{what} failed:\n{(done.stdout + done.stderr).strip()}')
     return done.stdout + done.stderr
@@ -322,7 +342,18 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
 
     if _link is not None:
         _link.close()
+        _link = None
 
-    _link = Bench(port)
+    try:
+        _link = Bench(port)
+    except serial.SerialException as exc:
+        raise CtrlLinkError(
+            f'{port} could not be opened: {exc}\n'
+            f'Something else is holding it -- the Arduino IDE\'s serial monitor, '
+            f'or a kernel from an earlier session. Close it, or restart this '
+            f'kernel, and run this cell again. A serial port is exclusive on '
+            f'every platform and unforgiving about it on Windows.'
+        ) from None
+
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
     return _link

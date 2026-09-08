@@ -6,7 +6,7 @@ set gains, step the reference, and pull back the resulting timeseries.
 ```python
 from ctrllink import CtrlLink
 
-dev = CtrlLink('/dev/tty.usbmodem1101')
+dev = CtrlLink()                 # or CtrlLink('COM3'), or '/dev/ttyACM0'
 dev.kp, dev.ki, dev.mode = 2.5, 0.1, 1
 df = dev.step('ref', 1024, pre=0.1, post=0.9)   # a DataFrame, t = 0 at the step
 df.plot(x='t', y=['ref', 'y'])
