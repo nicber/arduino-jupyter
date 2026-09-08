@@ -24,6 +24,7 @@ uint16_t CtrlLink::m_dec_count = 0;
 uint32_t CtrlLink::m_dt_us     = 0;
 uint32_t CtrlLink::m_rows      = 0;
 uint32_t CtrlLink::m_drops     = 0;
+uint16_t CtrlLink::m_writes    = 0;
 
 const CtrlParam CtrlLink::k_builtin[] PROGMEM =
 {
@@ -316,6 +317,8 @@ void CtrlLink::cmd_set(const char* name, const char* value)
     write_value((void*)pgm_read_word(&entry->addr),
                 pgm_read_byte(&entry->type),
                 value);
+
+    m_writes++;
 
     // A set that lands mid-capture is a step input, so the tick it took effect
     // on is part of the measurement. Report it in the stream rather than

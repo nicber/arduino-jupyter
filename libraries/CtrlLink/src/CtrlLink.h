@@ -119,6 +119,14 @@ class CtrlLink
     static uint32_t rows(void)      { return m_rows; }
     static uint32_t drops(void)     { return m_drops; }
 
+    // Counts parameter writes accepted from the host. A sketch with constants
+    // derived from its parameters -- a gain converted to fixed point, a filter
+    // coefficient computed from a time constant -- can watch this one value
+    // instead of comparing every parameter it depends on, and do the derivation
+    // only when something actually moved. Wraps; compare for difference, not
+    // for order.
+    static uint16_t writes(void)    { return m_writes; }
+
     // Nominal control period. The sketch may change it at runtime as long as it
     // tells the link, so the header the host reads stays truthful.
     static void     set_period_us(uint32_t dt_us) { m_dt_us = dt_us; }
@@ -179,6 +187,7 @@ class CtrlLink
     static uint32_t m_dt_us;
     static uint32_t m_rows;
     static uint32_t m_drops;
+    static uint16_t m_writes;
 };
 
 #endif  // CTRLLINK_H

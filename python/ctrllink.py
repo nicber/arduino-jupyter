@@ -18,6 +18,7 @@ rather than parsed line by line; a 1 kHz stream costs almost nothing to receive.
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 
@@ -42,6 +43,22 @@ _TERMINATORS = ('# ok', '# err', '# data')
 # Errors that mean the device did not receive what was sent, rather than that it
 # received it and objected. Only these are worth retrying.
 _GARBLED = ('unknown command', 'command too long', 'needs')
+
+# Health parameters, if the sketch declares them. None of these is part of the
+# protocol -- the names are a convention, and a device that exposes none of them
+# simply reports nothing. They are running totals rather than instantaneous
+# readings, so a capture zeroes them first and what comes back describes that
+# capture and nothing else.
+#
+#   missed   control periods the loop never serviced
+#   maxlate  worst delay between a tick firing and the loop picking it up, us
+#   sovr     sensor samples the bus could not keep up with
+#   serr     sensor transfers that failed
+_HEALTH = ('missed', 'maxlate', 'sovr', 'serr')
+
+# Fraction of the control period at which a service delay is worth mentioning,
+# even though nothing has actually been missed yet.
+_LATE_WARN = 0.5
 
 # Seconds between the bytes of an outgoing command.
 #
@@ -217,6 +234,15 @@ class CtrlLink:
         return chans
 
     @property
+    def _health(self) -> tuple:
+        """Whichever health counters this particular sketch happens to expose.
+
+        Derived from the parameter table rather than cached, so it follows a
+        device that was connected by hand rather than through __init__.
+        """
+        return tuple(name for name in _HEALTH if name in self._params)
+
+    @property
     def params(self) -> dict:
         """Every parameter and its current value, read back from the device."""
         return {name: self.get(name) for name in self._params}
@@ -282,15 +308,25 @@ class CtrlLink:
 
     # -------------------------------------------------------------- capture
 
-    def capture(self, duration, events=(), poll=0.005):
+    def capture(self, duration, events=(), poll=0.005, warn=True):
         """Streams for `duration` seconds and returns a DataFrame.
 
         `events` is a sequence of (delay_s, name, value): each parameter is set
         that many seconds after the stream starts. The device reports the exact
         tick each set landed on, so the host's scheduling jitter does not enter
         the measurement -- see `df.attrs['marks']`.
+
+        The device's health counters are zeroed before the run and read after
+        it, so `df.attrs` says whether the loop actually kept up while these
+        particular rows were being produced. Anything wrong is also printed,
+        because a capture that silently lost periods looks exactly like one that
+        did not until you go looking. Pass `warn=False` for the numbers without
+        the commentary.
         """
         pending = sorted(events, key=lambda e: e[0])
+
+        for name in self._health:
+            self.set(name, 0)
 
         self.ser.reset_input_buffer()
         header = self.cmd('start')
@@ -340,15 +376,87 @@ class CtrlLink:
         else:
             raise CtrlLinkError('device did not stop streaming')
 
-        return self._decode(buf, columns, dt_us, dec)
+        df = self._decode(buf, columns, dt_us, dec)
 
-    def step(self, name, value, pre=0.1, post=0.9, back=None):
+        # Read after the stream has stopped rather than during it: a `get`
+        # mid-capture costs milliseconds of command traffic, which is exactly
+        # the thing being measured.
+        df.attrs.update({name: self.get(name) for name in self._health})
+        df.attrs['health'] = self._health_notes(df)
+
+        if warn:
+            for note in df.attrs['health']:
+                print(f'ctrllink: {note}', file=sys.stderr)
+
+        return df
+
+    def health(self):
+        """The device's health counters, as a dict. Empty if it exposes none."""
+        return {name: self.get(name) for name in self._health}
+
+    def _health_notes(self, df):
+        """Plain-language complaints about a capture, worst first.
+
+        Everything here is a way for the timeseries to be wrong without looking
+        wrong: a missed period is a sample the controller never computed, and a
+        dropped row is one it computed and never sent. Neither leaves a mark in
+        the data itself.
+        """
+        notes = []
+        dt_us = df.attrs['dt_us']
+        rate = 1e6 / dt_us if dt_us else 0
+
+        missed = df.attrs.get('missed') or 0
+        if missed:
+            notes.append(
+                f'{missed} control period(s) missed ({missed / max(rate, 1):.3f} s '
+                f'of loop time): the sampler came round again before the previous '
+                f'tick had been serviced, so those periods never ran at all. '
+                f'Raise tickdiv, or take work out of the control step.')
+
+        late = df.attrs.get('maxlate')
+        if late is not None and dt_us and late > dt_us * _LATE_WARN:
+            notes.append(
+                f'worst service delay {late} us against a {dt_us} us period '
+                f'({late / dt_us:.0%}): the loop kept up, but not by much.')
+
+        drops = df.attrs.get('drops') or 0
+        if drops:
+            notes.append(
+                f'{drops} telemetry row(s) dropped: the device had no room in its '
+                f'transmit buffer. Raise dec, or stream fewer channels.')
+
+        sent = df.attrs.get('rows')
+        if sent and len(df) < sent:
+            notes.append(
+                f'{sent - len(df)} of {sent} row(s) sent never arrived: bytes were '
+                f'lost between the device and here.')
+
+        gaps = df.attrs.get('gaps') or 0
+        if gaps and not (drops or (sent and len(df) < sent)):
+            notes.append(f'{gaps} gap(s) in the tick sequence: rows are missing '
+                         f'from the timeseries.')
+
+        sovr = df.attrs.get('sovr') or 0
+        if sovr:
+            notes.append(
+                f'{sovr} sensor overrun(s): an I2C transfer had not finished when '
+                f'the next sample was due, so that sample repeats the one before.')
+
+        serr = df.attrs.get('serr') or 0
+        if serr:
+            notes.append(f'{serr} sensor transfer(s) failed -- check the wiring '
+                         f'and the bus pull-ups.')
+
+        return notes
+
+    def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True):
         """Captures a step response, with `t = 0` at the step itself.
 
         Holds for `pre` seconds, sets `name` to `value`, holds for `post` more.
         If `back` is given the parameter is restored afterwards.
         """
-        df = self.capture(pre + post, events=[(pre, name, value)])
+        df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
 
         marks = [m for m in df.attrs['marks'] if m[1] == name]
         if marks:

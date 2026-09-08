@@ -10,7 +10,11 @@ sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
 import numpy as np
 
 PARAMS = {'dec': ('u16', 1), 'kp': ('f32', 0.5), 'ki': ('f32', 0.0),
-          'ref': ('i16', 0), 'mode': ('u8', 0)}
+          'ref': ('i16', 0), 'mode': ('u8', 0),
+          # Health counters, as ControlDemo declares them. The host discovers
+          # these by name and zeroes them before every capture.
+          'missed': ('u16', 0), 'maxlate': ('u16', 0),
+          'sovr': ('u16', 0), 'serr': ('u16', 0)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
          ('e', 'i16', 0.0878906, 'deg'), ('u', 'i16', 1.0, 'pwm')]
 WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
@@ -19,16 +23,21 @@ WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
 class FakeUno:
     """Device-side state machine; `out` is what the host would read."""
 
-    def __init__(self, rate_hz=1000, start_tick=0):
+    def __init__(self, rate_hz=1000, start_tick=0, unhealthy=None, drops=0):
         self.out = bytearray()
         self.line = bytearray()
         self.params = dict(PARAMS)
         self.streaming = False
         self.tick = start_tick
-        self.rows = 0
+        self.rows = 0          # rows actually written, as CtrlLink counts them
+        self.produced = 0      # control periods elapsed, decimated away or not
         self.rate = rate_hz
         self.t0 = None
         self.y = 0
+        # Counter values the device "discovers" once a run is under way, so a
+        # capture that zeroes them first still finds them non-zero at the end.
+        self.unhealthy = unhealthy or {}
+        self.drops = drops
 
     def println(self, s=''):
         self.out += (s + '\r\n').encode()   # Arduino println appends CRLF
@@ -71,6 +80,7 @@ class FakeUno:
             self.println('# ok')
         elif head == 'start':
             self.rows = 0
+            self.produced = 0
             self.println('# begin')
             self.println(f'# rate dt_us=1000 dec={self.params["dec"][1]}')
             self.println('# col tick u16 1 tick')
@@ -79,10 +89,12 @@ class FakeUno:
             self.println('# data')
             self.streaming = True
             self.t0 = time.monotonic()
+            for name, value in self.unhealthy.items():
+                self.params[name] = (self.params[name][0], value)
         elif head == 'stop':
             self._pump()
             self.streaming = False
-            self.println(f'# end rows={self.rows} drops=0')
+            self.println(f'# end rows={self.rows} drops={self.drops}')
             self.println('# ok')
         else:
             self.println('# err unknown command')
@@ -98,7 +110,7 @@ class FakeUno:
             return
         due = int((time.monotonic() - self.t0) * self.rate)
         dec = self.params['dec'][1]
-        while self.rows < due:
+        while self.produced < due:
             ref = self.params['ref'][1]
             self.y += (ref - self.y) // 8          # visibly first-order
             err = ref - self.y
@@ -107,8 +119,9 @@ class FakeUno:
                 row = ''.join(f'{v & 0xFFFF:04X}'
                               for v in (self.tick, ref, self.y, err, u))
                 self.out += (row + '\n').encode()  # rows use a bare LF
+                self.rows += 1
             self.tick = (self.tick + 1) & 0xFFFF
-            self.rows += 1
+            self.produced += 1
 
 
 class FakeSerial:
@@ -270,6 +283,36 @@ dev3 = connect(uno)
 uno.out += b'GARBAGE\nDEADBEE\n'          # wrong-width rows before the header
 df = dev3.capture(0.15)
 check('short rows discarded', len(df) > 50 and df.attrs['gaps'] == 0, f'{len(df)} rows')
+
+# ------------------------------------------------------------------- health
+# A capture zeroes the counters the device declares, so what comes back
+# describes that capture and not everything since the board booted.
+uno = FakeUno()
+uno.params['missed']  = ('u16', 77)      # left over from some earlier run
+uno.params['maxlate'] = ('u16', 900)
+dev4 = connect(uno)
+
+check('health counters discovered',
+      dev4._health == ('missed', 'maxlate', 'sovr', 'serr'), str(dev4._health))
+
+df = dev4.capture(0.15)
+check('stale counters zeroed before the run', df.attrs['missed'] == 0
+      and df.attrs['maxlate'] == 0, str(df.attrs['maxlate']))
+check('clean capture reports nothing', df.attrs['health'] == [], str(df.attrs['health']))
+
+# Now a device that misses periods, runs late and drops rows while streaming.
+uno = FakeUno(unhealthy={'missed': 12, 'maxlate': 950, 'serr': 3}, drops=4)
+dev5 = connect(uno)
+df = dev5.capture(0.15, warn=False)
+
+check('missed periods reported', df.attrs['missed'] == 12, str(df.attrs['missed']))
+notes = ' | '.join(df.attrs['health'])
+check('missed periods explained', 'missed' in notes and '12' in notes, notes)
+check('late service explained', '950 us' in notes, notes)
+check('dropped rows explained', 'dropped' in notes, notes)
+check('sensor errors explained', 'transfer(s) failed' in notes, notes)
+check('healthy counters stay quiet', 'overrun' not in notes, notes)
+check('health() reads them directly', dev5.health()['missed'] == 12, str(dev5.health()))
 
 # ----------------------------------------------------------- device-side error
 try:
