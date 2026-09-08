@@ -1,39 +1,42 @@
-// Position control loop over CtrlLink, driven from a Jupyter notebook.
+// Lazo de control de posición sobre CtrlLink, gobernado desde un notebook de
+// Jupyter.
 //
 // Hardware:
 // Arduino UNO
-// Hall Position Sensor: AS5600 (I2C)   SDA -> A4, SCL -> A5
-// Current sense (optional): ACS712 on A0
-// Actuator (optional):  PWM on pin 5, direction on pin 8
+// Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
+// Medición de corriente (opcional): ACS712 en A0
+// Actuador (opcional): PWM en el pin 5, sentido de giro en el pin 8
 //
-// Timer2 samples the AS5600 at 5 kHz; every `tickdiv`-th sample runs the
-// control law, so the loop rate is 5000/tickdiv Hz and defaults to 1 kHz.
-// Sampling therefore keeps a rigid period even when the control computation
-// jitters. `maxlate` reports how much jitter there was and `missed` counts the
-// control periods that were skipped outright.
+// El Timer2 muestrea el AS5600 a 5 kHz; cada `tickdiv` muestras se ejecuta la
+// ley de control, así que la frecuencia del lazo es 5000/tickdiv Hz y por
+// omisión vale 1 kHz. De esa manera el muestreo mantiene un período rígido aun
+// cuando el cálculo de control fluctúe. `maxlate` informa cuánta fluctuación
+// hubo y `missed` cuenta los períodos de control que se saltearon del todo.
 //
-// The control law is integer arithmetic end to end -- see ControlMath. So is
-// every parameter it reads: each one is stored in the fixed-point form the
-// arithmetic wants, and the parameter table declares the scale that converts
-// it. The host multiplies on the way in and divides on the way out, so a
-// student still writes `dev.kp = 0.5` and this sketch never executes a single
-// floating-point instruction.
+// La ley de control es aritmética entera de punta a punta; ver ControlMath. Y
+// también lo es cada parámetro que lee: cada uno se guarda en la forma de punto
+// fijo que la aritmética necesita, y la tabla de parámetros declara la escala
+// que lo convierte. La computadora multiplica a la ida y divide a la vuelta, así
+// que el alumno sigue escribiendo `dev.kp = 0.5` y este sketch no ejecuta una
+// sola instrucción de punto flotante.
 //
-// Serial is 1 Mbaud. On a 16 MHz AVR that is an exact divisor (UBRR=1), unlike
-// 115200, which lands 2.1% off. Telemetry sustains that rate comfortably, but
-// incoming bytes arrive every 10 us and the USART holds only two, so the 5 kHz
-// sampler and nI2C's TWI interrupt together drop a few percent of the bytes of a
-// command sent back to back. The host paces command bytes to compensate; see
-// PROTOCOL.md. Commands are rare and tiny, so this costs nothing.
+// El puerto serie va a 1 Mbaud. En un AVR de 16 MHz ése es un divisor exacto
+// (UBRR=1), a diferencia de 115200, que queda 2,1 % desviado. La telemetría
+// sostiene esa velocidad con comodidad, pero los bytes entrantes llegan cada
+// 10 us y el USART guarda sólo dos, así que entre el muestreador de 5 kHz y la
+// interrupción de TWI de nI2C se pierde un pequeño porcentaje de los bytes de un
+// comando enviado de corrido. La computadora espacia los bytes de comando para
+// compensarlo; ver PROTOCOL.md. Los comandos son raros y diminutos, así que eso
+// no cuesta nada.
 //
-// The default channel table is 41 bytes per row, or 41% of the link at 1 kHz.
-// That is more than the "well under half" this protocol likes; raise `dec` for
-// long runs, or drop a channel.
+// La tabla de canales por omisión son 41 bytes por fila, o el 41 % del enlace a
+// 1 kHz. Es más que el "bastante por debajo de la mitad" que le gusta a este
+// protocolo; conviene subir `dec` para corridas largas, o sacar un canal.
 //
-// Peripherals this sketch takes over: Timer2, so analogWrite() on pins 3 and 11
-// and tone() no longer work; and the ADC, which is driven directly here, so
-// analogRead() must not be called. Pins 9 and 10 (Timer1) and 5 and 6 (Timer0)
-// are unaffected.
+// Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
+// en los pines 3 y 11 y tone() dejan de funcionar; y el ADC, que se maneja
+// directamente acá, así que no hay que llamar a analogRead(). Los pines 9 y 10
+// (Timer1) y 5 y 6 (Timer0) no se ven afectados.
 
 #include <nI2C.h>
 
@@ -49,12 +52,12 @@ static const uint32_t BAUD           = 1000000;
 static const uint16_t SAMPLE_HZ      = 5000;
 static const int16_t  COUNTS_PER_REV = 4096;
 
-// Leave MOTOR_PWM_PIN undefined to run the loop with no actuator attached:
-// everything else, including the telemetry, behaves identically.
+// Dejar MOTOR_PWM_PIN sin definir para correr el lazo sin actuador conectado:
+// todo lo demás, telemetría incluida, se comporta igual.
 //
-// Defining MOTOR_DIR_PIN as well gives bidirectional drive, -255..255. With it
-// undefined the bridge is single-quadrant and the command is clamped at zero,
-// which is what the anti-windup logic is told through U_MIN.
+// Definir además MOTOR_DIR_PIN da un accionamiento bidireccional, -255..255. Con
+// ese pin sin definir el puente es de un solo cuadrante y el comando se recorta
+// en cero, que es lo que se le informa a la lógica anti-windup a través de U_MIN.
 #define MOTOR_PWM_PIN 5
 //#define MOTOR_DIR_PIN 8
 
@@ -65,128 +68,136 @@ static const int16_t U_MIN = 0;
 #endif
 static const int16_t U_MAX = 255;
 
-// Current sense on A0. ACS712-05B: 185 mV/A about a 2.5 V zero, so half scale
-// on a 5 V reference. Change SENSE_MV_PER_A for a different part -- it only
-// affects the units the host is told about, never the loop.
+// Medición de corriente en A0. ACS712-05B: 185 mV/A alrededor de un cero de
+// 2,5 V, o sea media escala con referencia de 5 V. Cambiar SENSE_MV_PER_A para
+// otro componente; sólo afecta las unidades que se le informan a la computadora,
+// nunca al lazo.
 static const uint8_t  SENSE_CHANNEL   = 0;
 static const int16_t  SENSE_ZERO      = 512;
 static const float    SENSE_MV_PER_A  = 185.0f;
 static const float    ADC_MV_PER_LSB  = 5000.0f / 1024.0f;
 static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER_A;
 
-// `ref` and `refrate` carry 8 fractional bits, so a ramp can advance by less
-// than one count per period without quantising to nothing.
+// `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
+// menos de una cuenta por período sin que la cuantización la anule.
 static const uint8_t  REF_FRAC = 8;
 
-// Two independent choices, and it is worth keeping them apart.
+// Son dos elecciones independientes, y vale la pena mantenerlas separadas.
 //
-// `mode` picks the controller: the law that turns an error into a command.
-// `target` picks the feedback: which measured quantity that law closes on.
-// A controller is a function and a case in control_step(); a feedback is a
-// branch in target_error(). Neither knows about the other.
+// `mode` elige el controlador: la ley que convierte un error en un comando.
+// `target` elige la realimentación: sobre qué magnitud medida cierra esa ley.
+// Un controlador es una función y un caso en control_step(); una realimentación
+// es una rama en target_error(). Ninguno de los dos sabe del otro.
 enum : uint8_t
 {
-    MODE_OPEN = 0,      // u = uff, controller bypassed
-    MODE_PID  = 1,      // PID on the selected target
-    MODE_RAMP = 2,      // PID, with ref advancing by refrate every period
+    MODE_OPEN = 0,      // u = uff, controlador puenteado
+    MODE_PID  = 1,      // PID sobre la magnitud seleccionada
+    MODE_RAMP = 2,      // PID, con ref avanzando refrate por período
 };
 
-// `ref >> REF_FRAC` is always in the raw units of the selected target: counts
-// for TARGET_POSITION, ADC LSBs for TARGET_CURRENT.
+// `ref >> REF_FRAC` está siempre en las unidades crudas de la magnitud
+// seleccionada: cuentas para TARGET_POSITION, LSBs del ADC para TARGET_CURRENT.
 enum : uint8_t
 {
     TARGET_POSITION = 0,
     TARGET_CURRENT  = 1,
 };
 
-// Fixed-point scales, chosen for the range each quantity actually needs.
-// See FixedPoint.h; the trade is magnitude against resolution.
+// Escalas de punto fijo, elegidas según el rango que realmente necesita cada
+// magnitud. Ver FixedPoint.h; el compromiso es magnitud contra resolución.
 //
-// The gains are per sample, not per second: u = kp*e + ki*sum(e) + kd*diff(e),
-// with no dt anywhere. That is what the arithmetic does, so it is what the
-// parameter means, and it keeps every scale a compile-time constant the host
-// can be told about. A host that prefers continuous-time gains multiplies by
-// dt on its own side -- and when `tickdiv` changes, the effect of the same
-// three numbers changing with it is the lesson, not a bug.
+// Las ganancias son por muestra, no por segundo: u = kp*e + ki*sum(e) + kd*diff(e),
+// sin ningún dt en el medio. Eso es lo que hace la aritmética, así que eso es lo
+// que significa el parámetro, y así toda escala queda como constante de tiempo de
+// compilación que se le puede informar a la computadora. Una computadora que
+// prefiera ganancias en tiempo continuo multiplica por dt de su lado; y cuando
+// `tickdiv` cambia, que el efecto de los mismos tres números cambie con él es la
+// lección, no un error.
 //
-// The parameter table publishes FRAC straight off these types, so the host is
-// told each format by the declaration that defines it rather than by a constant
-// that has to be kept in step with it.
-typedef Fixed<int32_t, 22> Kp;      // +/-511,   resolution 2.4e-7
-typedef Fixed<int32_t, 30> Ki;      // +/-1.99,  resolution 9.3e-10
-typedef Fixed<int32_t, 16> Kd;      // +/-32767, resolution 1.5e-5
-typedef FirstOrderFilter<4>::Alpha Alpha;   // Q16, a fraction in [0, 1]
+// La tabla de parámetros publica FRAC directamente desde estos tipos, así que a
+// la computadora se le informa cada formato desde la declaración que lo define y
+// no desde una constante que hay que mantener sincronizada con ella.
+typedef Fixed<int32_t, 22> Kp;      // +/-511,   resolución 2.4e-7
+typedef Fixed<int32_t, 30> Ki;      // +/-1.99,  resolución 9.3e-10
+typedef Fixed<int32_t, 16> Kd;      // +/-32767, resolución 1.5e-5
+typedef FirstOrderFilter<4>::Alpha Alpha;   // Q16, una fracción en [0, 1]
 
 // ------------------------------------------------------------------ variables
-// Everything the host can read or write lives here. Channels are read by
-// CtrlLink::emit() through their addresses, so they must be written by the same
-// context that calls emit() -- loop(), not the ISR.
+// Acá vive todo lo que la computadora puede leer o escribir. Los canales los lee
+// CtrlLink::emit() a través de sus direcciones, así que tienen que escribirse
+// desde el mismo contexto que llama a emit(): loop(), no la ISR.
 
-// Gains, in the fixed-point form the controllers use. The host sets them in
-// natural units and the parameter table's declared format does the conversion.
-// The default is a mild proportional loop: the error is in counts, so a gain
-// that looks small is not, and 4096 of them make a revolution.
+// Ganancias, en la forma de punto fijo que usan los controladores. La
+// computadora las fija en unidades naturales y el formato declarado en la tabla
+// de parámetros hace la conversión. Por omisión es un lazo proporcional suave: el
+// error está en cuentas, así que una ganancia que parece chica no lo es, y hacen
+// falta 4096 cuentas para una vuelta.
 static int32_t g_kp = Kp::from_float(0.002f).raw();
 static int32_t g_ki = 0;
 static int32_t g_kd = 0;
 
-// Filter poles: alpha = dt / (tau + dt), a fraction in [0, 1]. alpha = 1 is a
-// pass-through, which is how a filter is switched off -- so alpha_y = 1 feeds
-// the position loop the raw count. A host that thinks in time constants
-// converts, because it is the side that knows dt and has the arithmetic for it.
-static int32_t g_alpha_y = Alpha::from_int(1).raw();            // position, two poles
-static int32_t g_alpha_i = Alpha::from_float(0.1667f).raw();    // current, two poles
-static int32_t g_alpha_e = Alpha::from_float(0.0909f).raw();    // error, one pole
+// Polos de los filtros: alpha = dt / (tau + dt), una fracción en [0, 1].
+// alpha = 1 deja pasar la señal tal cual, que es la manera de apagar un filtro;
+// así, alpha_y = 1 alimenta al lazo de posición con la cuenta cruda. Una
+// computadora que piense en constantes de tiempo hace la conversión, porque es
+// el lado que conoce dt y tiene la aritmética para hacerla.
+static int32_t g_alpha_y = Alpha::from_int(1).raw();            // posición, dos polos
+static int32_t g_alpha_i = Alpha::from_float(0.1667f).raw();    // corriente, dos polos
+static int32_t g_alpha_e = Alpha::from_float(0.0909f).raw();    // error, un polo
 
-static int32_t g_ref     = 0;   // setpoint, target units << REF_FRAC
-static int32_t g_refrate = 0;   // ramp rate, same units per control period
-static int16_t g_uff     = 0;   // feedforward / open-loop command
-static int16_t g_offset  = 0;   // sensor zero, counts
+static int32_t g_ref     = 0;   // referencia, unidades del target << REF_FRAC
+static int32_t g_refrate = 0;   // pendiente de rampa, mismas unidades por período
+static int16_t g_uff     = 0;   // comando prealimentado / de lazo abierto
+static int16_t g_offset  = 0;   // cero del sensor, en cuentas
 static uint8_t g_target  = TARGET_POSITION;
 static uint8_t g_mode    = MODE_OPEN;
-static uint8_t g_tickdiv = 5;   // 5 kHz samples per control period: 5 -> 1 kHz
+static uint8_t g_tickdiv = 5;   // muestras de 5 kHz por período de control: 5 -> 1 kHz
 
-static int16_t g_y     = 0;     // measured angle, counts, offset applied
-static int32_t g_y_uw  = 0;     // unwrapped angle, counts, unfiltered
-static int32_t g_y_uwf = 0;     // unwrapped angle, counts, filtered by alpha_y
-static int16_t g_i     = 0;     // current, ADC LSBs about SENSE_ZERO, filtered
-static int16_t g_e     = 0;     // error, target units, clamped for telemetry
-static int16_t g_u     = 0;     // actuator command, U_MIN..U_MAX
+static int16_t g_y     = 0;     // ángulo medido, cuentas, con el offset aplicado
+static int32_t g_y_uw  = 0;     // ángulo desenrollado, cuentas, sin filtrar
+static int32_t g_y_uwf = 0;     // ángulo desenrollado, cuentas, filtrado por alpha_y
+static int16_t g_i     = 0;     // corriente, LSBs del ADC alrededor de SENSE_ZERO, filtrada
+static int16_t g_e     = 0;     // error, unidades del target, recortado para la telemetría
+static int16_t g_u     = 0;     // comando al actuador, U_MIN..U_MAX
 
-// Health counters. All are host-writable, so zeroing one restarts the count.
-static uint16_t g_maxlate = 0;  // worst observed ISR-to-service delay, us
-static uint16_t g_missed  = 0;  // control periods loop() never serviced
-static uint16_t g_sovr    = 0;  // sensor samples the I2C bus could not keep up with
-static uint16_t g_serr    = 0;  // sensor transfers that failed
-static uint8_t  g_mstat   = 0;  // AS5600 STATUS register: magnet present, too weak, too strong
+// Contadores de salud. Todos los puede escribir la computadora, así que poner uno
+// en cero reinicia esa cuenta.
+static uint16_t g_maxlate = 0;  // peor retardo observado entre la ISR y su atención, us
+static uint16_t g_missed  = 0;  // períodos de control que loop() nunca atendió
+static uint16_t g_sovr    = 0;  // muestras del sensor que el bus I2C no llegó a seguir
+static uint16_t g_serr    = 0;  // transferencias del sensor que fallaron
+static uint8_t  g_mstat   = 0;  // registro STATUS del AS5600: imán presente, muy débil, muy fuerte
 
-// Integrator state, in error units summed over ticks. Keeping the sum raw and
-// applying ki*dt once at the end is what lets a gain of 5e-5 survive: the
-// quantisation lands on the gain, where it is a fraction of a percent, instead
-// of on the accumulation, where it would truncate to nothing every period.
+// Estado del integrador, en unidades de error sumadas a lo largo de los ticks.
+// Guardar la suma cruda y aplicar ki*dt una sola vez al final es lo que permite
+// que sobreviva una ganancia de 5e-5: la cuantización cae sobre la ganancia,
+// donde es una fracción de un por ciento, en lugar de caer sobre la acumulación,
+// donde se truncaría a cero en cada período.
 static int32_t g_integral = 0;
 static int32_t g_e_filt   = 0;
 static int32_t g_e_prev   = 0;
 
-// The one derived quantity left, recomputed by refresh_tuning().
+// La única magnitud derivada que queda, recalculada por refresh_tuning().
 static int32_t g_integral_max = INT32_MAX / 2;
 
-static FirstOrderFilter<4> g_y_filt[2];   // position: free-running, needs the headroom
-static FirstOrderFilter<8> g_i_filt[2];   // current: small signal, wants the resolution
+static FirstOrderFilter<4> g_y_filt[2];   // posición: cuenta libre, necesita el margen
+static FirstOrderFilter<8> g_i_filt[2];   // corriente: señal chica, quiere la resolución
 static FirstOrderFilter<8> g_err_filt;
 
-// Set by the ISR, cleared by loop(). `g_tick_us` is when the tick fired, so the
-// service delay is visible to the loop that picks it up.
+// La ISR los escribe, loop() los limpia. `g_tick_us` es el instante en que se
+// disparó el tick, de modo que el retardo de atención quede visible para el lazo
+// que lo levanta.
 static volatile bool     g_tick       = false;
 static volatile uint32_t g_tick_us    = 0;
 static volatile uint16_t g_missed_isr = 0;
-static volatile int16_t  g_adc        = 0;   // last completed A0 conversion
+static volatile int16_t  g_adc        = 0;   // última conversión completada de A0
 static volatile uint8_t  g_divider    = 5;
 
-// -------------------------------------------------------------------- tables
+// --------------------------------------------------------------------- tablas
 
-// Every entry is stored exactly as the arithmetic wants it; the scale column is
-// what lets the host go on speaking in natural units.
+// Cada entrada se guarda exactamente como la quiere la aritmética; la columna de
+// escala es lo que le permite a la computadora seguir hablando en unidades
+// naturales.
 static const CtrlParam PROGMEM g_params[] =
 {
     { "kp",      CTRL_I32, &g_kp,      Kp::FRAC    },
@@ -213,11 +224,11 @@ static const CtrlParam PROGMEM g_params[] =
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
 
-// `ref` and `e` are in the raw units of whatever `target` selects, so they get
-// no engineering scale here -- claiming degrees would be a lie the moment the
-// loop is switched to current. They come out in target units and the host
-// multiplies by the scale of `y_uw` or of `i` to suit. Everything else has a
-// fixed meaning and carries its own.
+// `ref` y `e` están en las unidades crudas de lo que seleccione `target`, así
+// que acá no llevan escala de ingeniería: declarar grados sería mentir apenas el
+// lazo pase a corriente. Salen en unidades del target y la computadora multiplica
+// por la escala de `y_uw` o la de `i` según corresponda. Todo lo demás tiene un
+// significado fijo y lleva la suya.
 static const CtrlChannel PROGMEM g_channels[] =
 {
     { "ref",   CTRL_I32, &g_ref,   1.0f / (1 << REF_FRAC), "tgt" },
@@ -228,15 +239,15 @@ static const CtrlChannel PROGMEM g_channels[] =
     { "i",     CTRL_I16, &g_i,     SENSE_MA_PER_LSB,   "mA"  },
 };
 
-// ---------------------------------------------------------------------- timer
+// ----------------------------------------------------------------- temporizador
 
-// Timer2, CTC, prescaler 32: 16 MHz / 32 / 100 = exactly 5.000 kHz.
-// Timer2 leaves millis() (Timer0) and Servo (Timer1) alone, but collides with
-// tone() and with analogWrite() on pins 3 and 11.
+// Timer2, CTC, preescalador 32: 16 MHz / 32 / 100 = exactamente 5,000 kHz.
+// El Timer2 deja en paz a millis() (Timer0) y a Servo (Timer1), pero choca con
+// tone() y con analogWrite() en los pines 3 y 11.
 static void startSampleTimer(void)
 {
     TCCR2A = _BV(WGM21);                // CTC, TOP = OCR2A
-    TCCR2B = _BV(CS21) | _BV(CS20);     // prescaler /32
+    TCCR2B = _BV(CS21) | _BV(CS20);     // preescalador /32
     OCR2A = 99;
     TCNT2 = 0;
     TIMSK2 = _BV(OCIE2A);
@@ -244,15 +255,16 @@ static void startSampleTimer(void)
 
 // ------------------------------------------------------------------------ adc
 
-// The ADC is driven straight from the sampler instead of through analogRead(),
-// which busy-waits for the conversion. A conversion at /128 takes 104 us, so
-// one fits inside a 200 us sample period: the ISR collects the result the
-// previous tick started and immediately starts the next. The cost is one
-// sample period of delay on `i`; the saving is 112 us of blocking out of a
-// 1000 us control period.
+// El ADC se maneja directamente desde el muestreador en lugar de a través de
+// analogRead(), que espera activamente a que termine la conversión. Una
+// conversión con preescalador /128 tarda 104 us, así que entra en un período de
+// muestreo de 200 us: la ISR recoge el resultado que arrancó el tick anterior e
+// inmediatamente lanza el siguiente. El costo es un período de muestreo de
+// retardo en `i`; el ahorro son 112 us de bloqueo dentro de un período de control
+// de 1000 us.
 static void startAdc(void)
 {
-    ADMUX  = _BV(REFS0) | (SENSE_CHANNEL & 0x07);   // AVcc reference
+    ADMUX  = _BV(REFS0) | (SENSE_CHANNEL & 0x07);   // referencia AVcc
     ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0) | _BV(ADSC);
 }
 
@@ -265,8 +277,9 @@ ISR(TIMER2_COMPA_vect)
     if (ADCSRA & _BV(ADIF))
     {
         g_adc = (int16_t)ADC;
-        // Writing 1 to ADIF clears it; the same store starts the next
-        // conversion, so the ADC free-runs one result behind the sampler.
+        // Escribir un 1 en ADIF lo borra; ese mismo almacenamiento lanza la
+        // conversión siguiente, así que el ADC corre libre un resultado por
+        // detrás del muestreador.
         ADCSRA |= _BV(ADIF) | _BV(ADSC);
     }
 
@@ -278,8 +291,8 @@ ISR(TIMER2_COMPA_vect)
 
     if (g_tick)
     {
-        // loop() has not serviced the previous tick: the control period is
-        // being missed outright, which is worse than mere jitter.
+        // loop() no atendió el tick anterior: el período de control se está
+        // perdiendo del todo, que es peor que una simple fluctuación.
         g_missed_isr++;
     }
 
@@ -289,8 +302,9 @@ ISR(TIMER2_COMPA_vect)
 
 // -------------------------------------------------------------------- control
 
-// Shortest way from a to b on a circle of 4096 counts, so a setpoint just past
-// the wrap point does not command a full turn the wrong way.
+// El camino más corto de a hasta b en una circunferencia de 4096 cuentas, para
+// que una referencia apenas pasado el punto de vuelta no ordene una vuelta
+// entera en el sentido equivocado.
 static int16_t wrapped_error(int16_t a, int16_t b)
 {
     return (int16_t)(((a - b + 2048) & 0x0FFF) - 2048);
@@ -315,15 +329,16 @@ static void drive(int16_t u)
 #endif
 }
 
-// The magnet turns the opposite way to the shaft, hence the negation; `offset`
-// is then the count that reads as zero.
+// El imán gira en sentido contrario al eje, de ahí la negación; `offset` es
+// entonces la cuenta que se lee como cero.
 static int16_t sensor_measurement(void)
 {
     return wrapped_error(g_offset, (int16_t)Sensor::counts());
 }
 
-// Reads the sensors and updates every measured variable. Runs once per control
-// period whatever the mode, so the telemetry stays live in open loop.
+// Lee los sensores y actualiza todas las variables medidas. Corre una vez por
+// período de control cualquiera sea el modo, así que la telemetría sigue viva en
+// lazo abierto.
 static void measure(void)
 {
     int16_t adc;
@@ -340,9 +355,9 @@ static void measure(void)
     g_y      = y;
 }
 
-// The feedback dispatch: which measured quantity the loop closes on. Publishes
-// the clamped error for telemetry on the way past, so a controller that ignores
-// the value still leaves `e` live for the host to watch.
+// El despacho de la realimentación: sobre qué magnitud medida cierra el lazo.
+// De paso publica el error recortado para la telemetría, así que un controlador
+// que ignore el valor igual deja `e` vivo para que la computadora lo mire.
 static int32_t target_error(void)
 {
     int32_t ref = g_ref >> REF_FRAC;
@@ -354,8 +369,9 @@ static int32_t target_error(void)
     }
     else
     {
-        // Position. alpha_y = 1 makes the filter a pass-through, so this is
-        // the raw unwrapped count unless the host asked for smoothing.
+        // Posición. alpha_y = 1 hace que el filtro deje pasar la señal tal cual,
+        // así que ésta es la cuenta desenrollada cruda salvo que la computadora
+        // haya pedido suavizado.
         e = ref - g_y_uwf;
     }
 
@@ -363,13 +379,14 @@ static int32_t target_error(void)
     return e;
 }
 
-// ---------------------------------------------------------------- controllers
-// One function per mode, all with the same signature: read the measurements and
-// the parameters, leave a command in `g_u`. Adding a controller means adding a
-// function here and a case to the switch in control_step().
+// --------------------------------------------------------------- controladores
+// Una función por modo, todas con la misma firma: leer las mediciones y los
+// parámetros, dejar un comando en `g_u`. Agregar un controlador es agregar una
+// función acá y un caso al switch de control_step().
 
-// Open loop: the host drives `uff` straight onto the actuator. This is the mode
-// to use for plant identification -- step uff and watch what comes back.
+// Lazo abierto: la computadora pone `uff` directamente sobre el actuador. Éste
+// es el modo para identificar la planta: aplicar un escalón en uff y mirar qué
+// vuelve.
 static void controller_open(void)
 {
     (void)target_error();
@@ -390,19 +407,19 @@ static void controller_pid(void)
 
     g_u = clamp16(candidate, U_MIN, U_MAX);
 
-    // Conditional integration: stop winding up the integrator once the
-    // actuator is saturated in the direction the integrator is pushing.
+    // Integración condicional: dejar de cargar el integrador en cuanto el
+    // actuador satura en el sentido hacia el que el integrador está empujando.
     bool saturated = (candidate > U_MAX && e > 0)
                   || (candidate < U_MIN && e < 0);
 
     if (!saturated)
     {
-        // Second line of defence, and the one that matters when ki is changed
-        // mid-run: cap the sum at the point where its term alone would saturate
-        // the actuator, so the integrator can always unwind within a period or
-        // two. The sum is formed wide because the cap is only applied
-        // afterwards, and a single large error would otherwise be able to
-        // overflow the accumulator on the way there.
+        // Segunda línea de defensa, y la que importa cuando se cambia ki en
+        // plena corrida: acotar la suma en el punto donde su término por sí solo
+        // saturaría el actuador, para que el integrador siempre pueda
+        // descargarse en un período o dos. La suma se forma en un tipo ancho
+        // porque la cota se aplica recién después, y un único error grande
+        // podría de otro modo desbordar el acumulador en el camino.
         int64_t sum = (int64_t)g_integral + e;
 
         if (sum >  g_integral_max) sum =  g_integral_max;
@@ -412,17 +429,17 @@ static void controller_pid(void)
     }
 }
 
-// The ramp is the PID with a moving setpoint, so it is the PID plus one line
-// rather than a controller of its own.
+// La rampa es el PID con una referencia móvil, así que es el PID más una línea y
+// no un controlador aparte.
 static void controller_ramp(void)
 {
     g_ref += g_refrate;
     controller_pid();
 }
 
-// Called when the host switches controllers. Without it a controller inherits
-// the integrator and the derivative history of the one before it and kicks on
-// its first period.
+// Se llama cuando la computadora cambia de controlador. Sin esto, un controlador
+// hereda el integrador y la historia derivativa del anterior y da un salto en su
+// primer período.
 static void reset_controller(int32_t e)
 {
     g_integral = 0;
@@ -448,8 +465,9 @@ static void control_step(void)
         case MODE_PID:  controller_pid();  break;
         case MODE_RAMP: controller_ramp(); break;
 
-        // An unknown mode is the safe one: a typo on the host must not leave
-        // the actuator being driven by a controller nobody chose.
+        // Un modo desconocido es el modo seguro: un error de tipeo en la
+        // computadora no puede dejar el actuador gobernado por un controlador
+        // que nadie eligió.
         case MODE_OPEN:
         default:        controller_open(); break;
     }
@@ -457,10 +475,11 @@ static void control_step(void)
     drive(g_u);
 }
 
-// The sensor's own counters are free-running and cannot be cleared, so what is
-// published is the running total of their increments. That is what makes `sovr`
-// and `serr` host-writable like the rest: zeroing one restarts the count from
-// here rather than being overwritten on the next period.
+// Los contadores propios del sensor corren libres y no se pueden borrar, así que
+// lo que se publica es el total acumulado de sus incrementos. Eso es lo que hace
+// que `sovr` y `serr` los pueda escribir la computadora igual que el resto: poner
+// uno en cero reinicia la cuenta desde acá en lugar de que lo pisen en el período
+// siguiente.
 static void collect_sensor_health(void)
 {
     static uint16_t last_overruns = 0;
@@ -476,15 +495,16 @@ static void collect_sensor_health(void)
     last_errors   = errors;
 }
 
-// ------------------------------------------------------------------- tuning
+// --------------------------------------------------------------------- ajuste
 
-// Applies whatever the host has just written. The parameters arrive already in
-// the form the arithmetic wants -- that conversion is the host's job -- so all
-// this does is propagate the two that other state depends on. No floats, which
-// is why it is safe to run it straight after a control step.
+// Aplica lo que la computadora acaba de escribir. Los parámetros llegan ya en la
+// forma que quiere la aritmética —esa conversión es trabajo de la computadora—,
+// así que todo lo que hace esto es propagar los dos de los que depende otro
+// estado. Sin punto flotante, que es la razón por la que es seguro correrlo
+// inmediatamente después de un paso de control.
 //
-// It is driven by CtrlLink's write counter: one 16-bit comparison per pass of
-// loop(), rather than watching each parameter for a change.
+// Lo dispara el contador de escrituras de CtrlLink: una comparación de 16 bits
+// por pasada de loop(), en lugar de vigilar parámetro por parámetro.
 static void refresh_tuning(void)
 {
     if (g_tickdiv == 0)
@@ -492,16 +512,18 @@ static void refresh_tuning(void)
         g_tickdiv = 1;
     }
 
-    // The divider the ISR uses and the period reported to the host change
-    // together, so neither can be left describing a rate the loop is not
-    // running at. The gains are per sample and do not depend on either.
+    // El divisor que usa la ISR y el período que se le informa a la computadora
+    // cambian juntos, así que ninguno de los dos puede quedar describiendo una
+    // frecuencia a la que el lazo no está corriendo. Las ganancias son por
+    // muestra y no dependen de ninguno de los dos.
     g_divider = g_tickdiv;
     CtrlLink::set_period_us((uint32_t)g_tickdiv * 1000000UL / SAMPLE_HZ);
 
-    // Bound the integrator at the sum whose term alone saturates the actuator,
-    // so it can always unwind within a period or two. A ki small enough to put
-    // that past what an int32_t holds leaves the type's own limit standing --
-    // the accumulation has to stay in range whether or not ki cares.
+    // Acotar el integrador en la suma cuyo término por sí solo satura el
+    // actuador, para que siempre pueda descargarse en un período o dos. Un ki lo
+    // bastante chico como para poner esa cota más allá de lo que entra en un
+    // int32_t deja en pie el límite del propio tipo: la acumulación tiene que
+    // quedar en rango le importe o no a ki.
     int32_t ki = (g_ki < 0) ? -g_ki : g_ki;
 
     g_integral_max = INT32_MAX / 2;
@@ -523,10 +545,11 @@ static void refresh_tuning(void)
     g_err_filt.set_alpha(Alpha::from_raw(g_alpha_e));
 }
 
-// The AS5600's own view of the magnet: detected, too weak, too strong. Reading
-// it costs the sample loop one sample and blocks here until that sample lands,
-// so it is only done between captures -- during a bringup check, in other
-// words, which is the only time anyone wants it.
+// La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy
+// fuerte. Leerla le cuesta al lazo de muestreo una muestra y bloquea acá hasta
+// que esa muestra llegue, así que sólo se hace entre capturas; es decir, durante
+// una verificación de puesta en marcha, que es la única vez que a alguien le
+// interesa.
 static void refresh_magnet_status(void)
 {
     static uint32_t last_ms = 0;
@@ -569,7 +592,7 @@ void setup()
     Sensor::begin();
     startSampleTimer();
 
-    CtrlLink::note(F("ControlDemo ready"));
+    CtrlLink::note(F("ControlDemo listo"));
 }
 
 void loop()
@@ -581,7 +604,7 @@ void loop()
         uint32_t fired;
         uint16_t missed;
 
-        // The ISR can land between the two halves of a 32-bit load.
+        // La ISR puede caer entre las dos mitades de una lectura de 32 bits.
         noInterrupts();
         fired        = g_tick_us;
         missed       = g_missed_isr;
@@ -589,8 +612,9 @@ void loop()
         g_tick       = false;
         interrupts();
 
-        // Accumulated into a plain copy rather than read straight out of the
-        // ISR's counter, so that the host can zero it without racing the ISR.
+        // Se acumula en una copia común en lugar de leerse directamente del
+        // contador de la ISR, para que la computadora pueda ponerlo en cero sin
+        // competir con la ISR.
         g_missed += missed;
 
         uint16_t late = (uint16_t)(micros() - fired);
@@ -605,8 +629,8 @@ void loop()
         CtrlLink::emit();
     }
 
-    // After the control step, never before one: a `set` that lands just as a
-    // tick fires would otherwise put this in front of it.
+    // Después del paso de control, nunca antes: un `set` que caiga justo cuando
+    // se dispara un tick quedaría de otro modo por delante de él.
     uint16_t writes = CtrlLink::writes();
     if (writes != last_writes)
     {

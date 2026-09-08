@@ -1,22 +1,22 @@
-"""Exercises the host module against a byte-faithful simulation of the sketch.
+"""Ejercita el módulo del lado computadora contra una simulación del sketch fiel byte a byte.
 
-The fake reproduces what CtrlLink.cpp actually puts on the wire, CRLF on
-println() lines and bare LF on telemetry rows included, so the decoder is tested
-against the real framing rather than an idealised version of it.
+El simulacro reproduce lo que CtrlLink.cpp realmente pone en el cable —CRLF en las
+líneas de println() y LF pelado en las filas de telemetría incluidos—, así que el
+decodificador se prueba contra el encuadre real y no contra una versión idealizada.
 """
 import sys, time, struct
 sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
 
 import numpy as np
 
-# name -> (wire type, fractional bits, stored raw value). `kq` and `alpha` are
-# kept in fixed point the way ControlDemo keeps its gains, so the host's
-# conversion is exercised rather than assumed.
+# nombre -> (tipo de cable, bits fraccionarios, valor crudo almacenado). `kq` y
+# `alpha` se guardan en punto fijo tal como ControlDemo guarda sus ganancias, así
+# que la conversión de la computadora se ejercita en lugar de darse por buena.
 PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           'ref': ('i16', 0, 0), 'mode': ('u8', 0, 0),
           'kq': ('i32', 22, 0), 'alpha': ('i32', 16, 65536),
-          # Health counters, as ControlDemo declares them. The host discovers
-          # these by name and zeroes them before every capture.
+          # Contadores de salud, tal como los declara ControlDemo. La computadora
+          # los descubre por nombre y los pone en cero antes de cada captura.
           'missed': ('u16', 0, 0), 'maxlate': ('u16', 0, 0),
           'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
@@ -25,7 +25,7 @@ WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
 
 
 class FakeUno:
-    """Device-side state machine; `out` is what the host would read."""
+    """Máquina de estados del lado dispositivo; `out` es lo que leería la computadora."""
 
     def __init__(self, rate_hz=1000, start_tick=0, unhealthy=None, drops=0):
         self.out = bytearray()
@@ -33,18 +33,19 @@ class FakeUno:
         self.params = dict(PARAMS)
         self.streaming = False
         self.tick = start_tick
-        self.rows = 0          # rows actually written, as CtrlLink counts them
-        self.produced = 0      # control periods elapsed, decimated away or not
+        self.rows = 0          # filas realmente escritas, como las cuenta CtrlLink
+        self.produced = 0      # periodos de control transcurridos, diezmados o no
         self.rate = rate_hz
         self.t0 = None
         self.y = 0
-        # Counter values the device "discovers" once a run is under way, so a
-        # capture that zeroes them first still finds them non-zero at the end.
+        # Valores de contador que el dispositivo "descubre" una vez que la corrida
+        # esta en marcha, de modo que una captura que primero los pone en cero
+        # igual los encuentre distintos de cero al final.
         self.unhealthy = unhealthy or {}
         self.drops = drops
 
     def println(self, s=''):
-        self.out += (s + '\r\n').encode()   # Arduino println appends CRLF
+        self.out += (s + '\r\n').encode()   # println de Arduino agrega CRLF
 
     def feed(self, data):
         for byte in data:
@@ -77,7 +78,7 @@ class FakeUno:
             self.params[name] = (type_, frac,
                                  float(value) if type_ == 'f32' else int(value))
             if self.streaming:
-                self._pump()   # the mark lands on the tick reached so far
+                self._pump()   # la marca cae en el tick alcanzado hasta ahora
                 type_, frac, value = self.params[name]
                 shown = f'{value:.6f}' if type_ == 'f32' else str(value)
                 self.println(f'# mark {self.tick} {name} {shown}')
@@ -103,7 +104,7 @@ class FakeUno:
             self.println(f'# end rows={self.rows} drops={self.drops}')
             self.println('# ok')
         else:
-            self.println('# err unknown command')
+            self.println('# err comando desconocido')
 
     def _show(self, name):
         type_, _frac, value = self.params[name]
@@ -111,20 +112,20 @@ class FakeUno:
         self.println(f'# v {name} {shown}')
 
     def _pump(self):
-        """Emits the rows that should have been produced by now."""
+        """Emite las filas que a esta altura tendrian que haberse producido."""
         if not self.streaming:
             return
         due = int((time.monotonic() - self.t0) * self.rate)
         dec = self.params['dec'][2]
         while self.produced < due:
             ref = self.params['ref'][2]
-            self.y += (ref - self.y) // 8          # visibly first-order
+            self.y += (ref - self.y) // 8          # visiblemente de primer orden
             err = ref - self.y
             u = max(-255, min(255, err // 4))
             if self.tick % dec == 0:
                 row = ''.join(f'{v & 0xFFFF:04X}'
                               for v in (self.tick, ref, self.y, err, u))
-                self.out += (row + '\n').encode()  # rows use a bare LF
+                self.out += (row + '\n').encode()  # las filas usan LF pelado
                 self.rows += 1
             self.tick = (self.tick + 1) & 0xFFFF
             self.produced += 1
@@ -181,8 +182,8 @@ def connect(uno):
     dev.info = dev.sync()
     dev._params = dev._read_params()
     dev.channels = dev._read_channels()
-    # Lets a check look at what the device actually stored, rather than at what
-    # the host reports after scaling it back.
+    # Permite que una verificacion mire lo que el dispositivo realmente guardo, en
+    # lugar de lo que informa la computadora despues de reescalarlo.
     dev._uno_raw = lambda name: uno.params[name][2]
     return dev
 
@@ -201,166 +202,168 @@ def _raises(call, kind):
 
 
 def check(label, condition, detail=''):
-    print(f'{"PASS" if condition else "FAIL"}  {label}' + (f'  -- {detail}' if detail and not condition else ''))
+    print(f'{"PASA " if condition else "FALLA"}  {label}' + (f'  -- {detail}' if detail and not condition else ''))
     if not condition:
         failures.append(label)
 
 
-# ---------------------------------------------------------------- discovery
+# ------------------------------------------------------------ descubrimiento
 dev = connect(FakeUno())
-check('id parsed', dev.info.startswith('CtrlLink 1 ControlDemo'), dev.info)
-check('params discovered', set(dev._params) == set(PARAMS), str(dev._params))
-check('channels discovered', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
-check('float param typed', dev._params['kp'].type == 'f32')
-check('param format discovered', dev._params['kq'].frac == 22
+check('se interpreta id', dev.info.startswith('CtrlLink 1 ControlDemo'), dev.info)
+check('se descubren los parametros', set(dev._params) == set(PARAMS), str(dev._params))
+check('se descubren los canales', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
+check('parametro float tipado', dev._params['kp'].type == 'f32')
+check('se descubre el formato del parametro', dev._params['kq'].frac == 22
       and dev._params['kq'].scale == 2.0 ** -22, str(dev._params['kq']))
 
-# ------------------------------------------------------------- param access
+# ------------------------------------------------------- acceso a parametros
 dev.kp = 2.5
-check('float set/get round trip', abs(dev.kp - 2.5) < 1e-6, str(dev.kp))
+check('ida y vuelta de un float', abs(dev.kp - 2.5) < 1e-6, str(dev.kp))
 dev.ref = 1024
-check('int set/get round trip', dev.ref == 1024, str(dev.ref))
-check('int stays int', isinstance(dev.ref, int))
-check('params snapshot', dev.params['kp'] == 2.5, str(dev.params))
+check('ida y vuelta de un entero', dev.ref == 1024, str(dev.ref))
+check('el entero sigue siendo entero', isinstance(dev.ref, int))
+check('instantanea de parametros', dev.params['kp'] == 2.5, str(dev.params))
 try:
     dev.nonexistent
-    check('unknown attribute raises', False)
+    check('un atributo desconocido levanta excepcion', False)
 except AttributeError:
-    check('unknown attribute raises', True)
+    check('un atributo desconocido levanta excepcion', True)
 
-# ------------------------------------------------------------------ capture
+# ------------------------------------------------------------------ captura
 dev.ref = 0
 df = dev.capture(0.30)
-check('capture returned rows', len(df) > 100, f'{len(df)} rows')
-check('columns as declared', list(df.columns) == ['t', 'ref', 'y', 'e', 'u'], str(list(df.columns)))
-check('no tick gaps', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
-check('time increases uniformly',
+check('la captura devolvio filas', len(df) > 100, f'{len(df)} filas')
+check('columnas como se declararon', list(df.columns) == ['t', 'ref', 'y', 'e', 'u'], str(list(df.columns)))
+check('sin huecos de tick', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
+check('el tiempo crece uniformemente',
       np.allclose(np.diff(df['t']), 1e-3, atol=1e-9), str(np.unique(np.diff(df['t']))[:3]))
-check('device row count agrees', abs(df.attrs['rows'] - len(df)) <= 2,
-      f"device {df.attrs['rows']} vs host {len(df)}")
-check('drops reported', df.attrs['drops'] == 0)
-check('scaled channel is float', df['y'].dtype == float)
-check('unscaled channel stays integer', np.issubdtype(df['u'].dtype, np.integer), str(df['u'].dtype))
-check('units carried', df.attrs['units']['y'] == 'deg')
-check('columns are native byte order',
+check('coincide el conteo de filas del dispositivo', abs(df.attrs['rows'] - len(df)) <= 2,
+      f"dispositivo {df.attrs['rows']} contra computadora {len(df)}")
+check('se informan los descartes', df.attrs['drops'] == 0)
+check('un canal escalado es float', df['y'].dtype == float)
+check('un canal sin escalar sigue entero', np.issubdtype(df['u'].dtype, np.integer), str(df['u'].dtype))
+check('se transportan las unidades', df.attrs['units']['y'] == 'deg')
+check('las columnas estan en el orden de bytes nativo',
       all(df[c].values.dtype.byteorder in '=|' for c in df.columns if c != 't'),
       str({c: df[c].values.dtype.str for c in df.columns}))
-check('boolean indexing works on every column',
+check('el indexado booleano funciona en todas las columnas',
       all(len(df[c][df['t'] > df['t'].median()]) > 0 for c in df.columns))
 
-# --------------------------------------------------------------------- step
+# ------------------------------------------------------------------- escalon
 dev.ref = 0
 df = dev.step('ref', 2048, pre=0.10, post=0.25)
 marks = df.attrs['marks']
-check('step produced a mark', len(marks) == 1 and marks[0][1] == 'ref', str(marks))
-check('t is exactly zero at the step', (df['t'] == 0.0).sum() == 1,
+check('el escalon produjo una marca', len(marks) == 1 and marks[0][1] == 'ref', str(marks))
+check('t es exactamente cero en el escalon', (df['t'] == 0.0).sum() == 1,
       str(df['t'].abs().min()))
-check('step sample is not counted as pre-step',
+check('la muestra del escalon no cuenta como previa',
       df['u'][df['t'] < 0].nunique() <= 1, str(df['u'][df['t'] < 0].unique()))
-check('step has pre-trigger data', (df['t'] < 0).sum() > 50, str((df['t'] < 0).sum()))
-check('step has post-trigger data', (df['t'] > 0).sum() > 100, str((df['t'] > 0).sum()))
-check('ref actually stepped', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100,
+check('el escalon tiene datos previos al disparo', (df['t'] < 0).sum() > 50, str((df['t'] < 0).sum()))
+check('el escalon tiene datos posteriores al disparo', (df['t'] > 0).sum() > 100, str((df['t'] > 0).sum()))
+check('ref efectivamente dio el escalon', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100,
       f"{df['ref'].iloc[0]} -> {df['ref'].iloc[-1]}")
-check('response settles toward ref',
+check('la respuesta se establece hacia ref',
       abs(df['y'].iloc[-1] - df['ref'].iloc[-1]) < abs(df['y'].iloc[0] - df['ref'].iloc[-1]))
-check('scaling applied', abs(df['ref'].max() - 2048 * 0.0878906) < 0.01, str(df['ref'].max()))
+check('se aplico el escalado', abs(df['ref'].max() - 2048 * 0.0878906) < 0.01, str(df['ref'].max()))
 
-# ---------------------------------------------------------------- decimation
+# ---------------------------------------------------------------- diezmacion
 dev.set('dec', 4)
 dev.ref = 0
 df = dev.capture(0.30)
-check('decimation reported', df.attrs['dec'] == 4)
-check('decimated sample spacing',
+check('se informa la diezmacion', df.attrs['dec'] == 4)
+check('separacion de muestras diezmadas',
       np.allclose(np.diff(df['t']), 4e-3, atol=1e-9), str(np.unique(np.diff(df['t']))[:3]))
-check('decimated run has no gaps', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
+check('la corrida diezmada no tiene huecos', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
 dev.set('dec', 1)
 
-# ------------------------------------------------------- 16-bit tick rollover
+# ------------------------------------------- vuelta al cero del tick de 16 bits
 uno = FakeUno(start_tick=65500)
 dev2 = connect(uno)
 df = dev2.capture(0.20)
 tick = df.attrs['tick']
-check('tick wrapped during the run', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
-check('unwrapped tick is monotonic', bool(np.all(np.diff(tick) == 1)))
-check('time is monotonic across the wrap', bool(np.all(np.diff(df['t']) > 0)))
+check('el tick dio la vuelta durante la corrida', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
+check('el tick desenrollado es monotono', bool(np.all(np.diff(tick) == 1)))
+check('el tiempo es monotono a traves de la vuelta', bool(np.all(np.diff(df['t']) > 0)))
 
-# --------------------------------------- step whose mark lands across the wrap
+# ------------------------- escalon cuya marca cae del otro lado de la vuelta
 uno = FakeUno(start_tick=65450)
 dev4 = connect(uno)
 dev4.ref = 0
 df = dev4.step('ref', 2048, pre=0.10, post=0.20)
 tick = df.attrs['tick']
-check('rollover step wrapped', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
-check('rollover step zeroed at the mark',
+check('el escalon con vuelta dio la vuelta', tick[0] < 65536 <= tick[-1], f'{tick[0]} .. {tick[-1]}')
+check('el escalon con vuelta quedo en cero en la marca',
       abs(df['t'].abs().min()) < 1.5e-3, str(df['t'].abs().min()))
-check('rollover step has both sides',
+check('el escalon con vuelta tiene los dos lados',
       (df['t'] < 0).sum() > 50 and (df['t'] > 0).sum() > 50,
-      f"{(df['t'] < 0).sum()} before, {(df['t'] > 0).sum()} after")
-check('rollover step ref actually moved', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100)
+      f"{(df['t'] < 0).sum()} antes, {(df['t'] > 0).sum()} despues")
+check('en el escalon con vuelta ref efectivamente se movio',
+      df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100)
 
-# ------------------------------------------------------------ malformed input
+# --------------------------------------------------------- entrada mal formada
 uno = FakeUno()
 dev3 = connect(uno)
-uno.out += b'GARBAGE\nDEADBEE\n'          # wrong-width rows before the header
+uno.out += b'GARBAGE\nDEADBEE\n'          # filas de ancho equivocado antes del encabezado
 df = dev3.capture(0.15)
-check('short rows discarded', len(df) > 50 and df.attrs['gaps'] == 0, f'{len(df)} rows')
+check('se descartan las filas cortas', len(df) > 50 and df.attrs['gaps'] == 0, f'{len(df)} filas')
 
-# ------------------------------------------------------- fixed-point params
-# The device keeps these as integers; the host is the only side that ever sees
-# them in real units.
+# ------------------------------------------------- parametros en punto fijo
+# El dispositivo los guarda como enteros; la computadora es el unico lado que los
+# ve alguna vez en unidades reales.
 dev.kq = 0.5
-check('fixed-point param stored as an integer',
+check('un parametro en punto fijo se guarda como entero',
       dev._uno_raw('kq') == 1 << 21, str(dev._uno_raw('kq')))
-check('fixed-point param reads back in real units', abs(dev.kq - 0.5) < 1e-6, str(dev.kq))
+check('un parametro en punto fijo se relee en unidades reales', abs(dev.kq - 0.5) < 1e-6, str(dev.kq))
 
 dev.kq = -0.001
-check('negative fixed-point round trip', abs(dev.kq + 0.001) < 1e-6, str(dev.kq))
+check('ida y vuelta de un punto fijo negativo', abs(dev.kq + 0.001) < 1e-6, str(dev.kq))
 
-# Below the device's resolution: rounding to the nearest representable value is
-# the right answer, not a failed write.
+# Por debajo de la resolucion del dispositivo: redondear al valor representable
+# mas cercano es la respuesta correcta, no una escritura fallida.
 dev.kq = 1e-9
-check('sub-resolution set does not raise', abs(dev.kq) < 1e-6, str(dev.kq))
+check('fijar por debajo de la resolucion no levanta excepcion', abs(dev.kq) < 1e-6, str(dev.kq))
 
 dev.alpha = 0.1667
-check('alpha quantised to Q16', dev._uno_raw('alpha') == round(0.1667 * 65536),
+check('alpha cuantizado a Q16', dev._uno_raw('alpha') == round(0.1667 * 65536),
       str(dev._uno_raw('alpha')))
-check('alpha reads back close', abs(dev.alpha - 0.1667) < 2 ** -17, str(dev.alpha))
+check('alpha se relee cerca', abs(dev.alpha - 0.1667) < 2 ** -17, str(dev.alpha))
 
-check('dt read from the device', abs(dev.dt - 0.001) < 1e-9, str(dev.dt))
+check('dt leido del dispositivo', abs(dev.dt - 0.001) < 1e-9, str(dev.dt))
 
-# ------------------------------------------------------------------- health
-# A capture zeroes the counters the device declares, so what comes back
-# describes that capture and not everything since the board booted.
+# --------------------------------------------------------------------- salud
+# Una captura pone en cero los contadores que el dispositivo declara, asi que lo
+# que vuelve describe esa captura y no todo lo ocurrido desde que arranco la placa.
 uno = FakeUno()
-uno.params['missed']  = ('u16', 0, 77)     # left over from some earlier run
+uno.params['missed']  = ('u16', 0, 77)     # resabio de alguna corrida anterior
 uno.params['maxlate'] = ('u16', 0, 900)
 dev4 = connect(uno)
 
-check('health counters discovered',
+check('se descubren los contadores de salud',
       dev4._health == ('missed', 'maxlate', 'sovr', 'serr'), str(dev4._health))
 
 df = dev4.capture(0.15)
-check('stale counters zeroed before the run', df.attrs['missed'] == 0
+check('los contadores viejos se ponen en cero antes de la corrida', df.attrs['missed'] == 0
       and df.attrs['maxlate'] == 0, str(df.attrs['maxlate']))
-check('clean capture reports nothing', df.attrs['health'] == [], str(df.attrs['health']))
+check('una captura limpia no informa nada', df.attrs['health'] == [], str(df.attrs['health']))
 
-# Now a device that misses periods, runs late and drops rows while streaming.
+# Ahora un dispositivo que pierde periodos, llega tarde y descarta filas mientras
+# emite.
 uno = FakeUno(unhealthy={'missed': 12, 'maxlate': 950, 'serr': 3}, drops=4)
 dev5 = connect(uno)
 df = dev5.capture(0.15, warn=False)
 
-check('missed periods reported', df.attrs['missed'] == 12, str(df.attrs['missed']))
+check('se informan los periodos perdidos', df.attrs['missed'] == 12, str(df.attrs['missed']))
 notes = ' | '.join(df.attrs['health'])
-check('missed periods explained', 'missed' in notes and '12' in notes, notes)
-check('late service explained', '950 us' in notes, notes)
-check('dropped rows explained', 'dropped' in notes, notes)
-check('sensor errors explained', 'transfer(s) failed' in notes, notes)
-check('healthy counters stay quiet', 'overrun' not in notes, notes)
-check('health() reads them directly', dev5.health()['missed'] == 12, str(dev5.health()))
+check('se explican los periodos perdidos', 'perdieron' in notes and '12' in notes, notes)
+check('se explica la atencion tardia', '950 us' in notes, notes)
+check('se explican las filas descartadas', 'descartaron' in notes, notes)
+check('se explican los errores del sensor', 'transferencia(s) del sensor' in notes, notes)
+check('los contadores sanos se quedan callados', 'desborde' not in notes, notes)
+check('health() los lee directamente', dev5.health()['missed'] == 12, str(dev5.health()))
 
-# ---------------------------------------------------------------- portability
-# Two things that work on this machine and would not on another, so they are
-# checked here rather than discovered by a student on a different one.
+# ------------------------------------------------------------- portabilidad
+# Dos cosas que funcionan en esta maquina y no funcionarian en otra, asi que se
+# verifican aca en lugar de que las descubra un alumno en una distinta.
 
 class _FakePort:
     def __init__(self, device, vid=None):
@@ -372,63 +375,66 @@ import serial.tools.list_ports as _lp
 
 _real_comports = _lp.comports
 
-# Ports are picked by USB vendor id, not by what they are called: COM3 on
-# Windows, /dev/cu.usbmodem on macOS, /dev/ttyACM0 on Linux.
+# Los puertos se eligen por identificador de fabricante USB, no por como se
+# llaman: COM3 en Windows, /dev/cu.usbmodem en macOS, /dev/ttyACM0 en Linux.
 _lp.comports = lambda: [_FakePort('COM1'), _FakePort('COM3', vid=0x2341)]
-check('windows COM port found', _cl.find_port() == 'COM3', _cl.find_port())
+check('se encuentra el puerto COM de Windows', _cl.find_port() == 'COM3', _cl.find_port())
 
 _lp.comports = lambda: [_FakePort('/dev/cu.Bluetooth-Incoming-Port'),
                         _FakePort('/dev/cu.usbmodem1101', vid=0x2341)]
-check('bluetooth port ignored', _cl.find_port() == '/dev/cu.usbmodem1101',
+check('se ignora el puerto Bluetooth', _cl.find_port() == '/dev/cu.usbmodem1101',
       _cl.find_port())
 
-# Some platforms leave vid unset; the name fallback has to cover COM as well.
+# Algunas plataformas dejan vid sin cargar; el respaldo por nombre tiene que
+# cubrir COM tambien.
 _lp.comports = lambda: [_FakePort('COM3')]
-check('name fallback covers COM', _cl.find_port() == 'COM3', _cl.find_port())
+check('el respaldo por nombre cubre COM', _cl.find_port() == 'COM3', _cl.find_port())
 
 _lp.comports = lambda: [_FakePort('COM1', vid=1), _FakePort('COM3', vid=2)]
-check('ambiguous ports rejected',
+check('se rechazan los puertos ambiguos',
       _raises(lambda: _cl.find_port(), _cl.CtrlLinkError))
-check('hint disambiguates', _cl.find_port('COM3') == 'COM3')
+check('el hint desambigua', _cl.find_port('COM3') == 'COM3')
 
 _lp.comports = _real_comports
 
-# The gap between command bytes is half a millisecond. time.sleep() on Windows
-# rounds up to the 15.6 ms system tick before Python 3.11, which would make
-# every command thirty times slower than intended, so short waits are spun out
-# instead. The bound is loose enough not to be flaky on a busy machine and
-# still an order of magnitude under the failure it guards against.
+# La separacion entre bytes de comando es medio milisegundo. Antes de Python 3.11,
+# time.sleep() en Windows redondea hacia arriba hasta el tic de 15,6 ms del
+# sistema, lo que haria cada comando treinta veces mas lento de lo previsto, asi
+# que las esperas cortas se hacen en vacio. La cota es lo bastante holgada como
+# para no ser inestable en una maquina ocupada y sigue estando un orden de
+# magnitud por debajo de la falla que previene.
 _t0 = time.perf_counter()
 for _ in range(200):
     _cl._pause(_cl._BYTE_GAP)
 _each = (time.perf_counter() - _t0) / 200
-check('short waits are actually short', _each < 2e-3, f'{_each * 1e6:.0f} us each')
-check('long waits still sleep', _cl._SPIN_UNDER <= 2e-3, str(_cl._SPIN_UNDER))
+check('las esperas cortas son realmente cortas', _each < 2e-3, f'{_each * 1e6:.0f} us cada una')
+check('las esperas largas siguen durmiendo', _cl._SPIN_UNDER <= 2e-3, str(_cl._SPIN_UNDER))
 
-# -------------------------------------------------------------------- bench
-# The rig's own unit conventions, which sit on top of the protocol rather than
-# in it. Checked against stub channels: what matters is the arithmetic, and the
-# link underneath it is already covered above.
+# --------------------------------------------------------------------- banco
+# Las convenciones de unidades del equipo, que se apoyan sobre el protocolo en
+# lugar de estar dentro de el. Se verifican contra canales de prueba: lo que
+# importa es la aritmetica, y el enlace de abajo ya quedo cubierto mas arriba.
 import bench
 
 rig = bench.Bench.__new__(bench.Bench)
 rig.channels = [_cl.Column('y_uw', 'i32', 360.0 / 4096, 'deg'),
                 _cl.Column('i',    'i16', 26.4,         'mA')]
 
-check('degrees -> counts', abs(rig.deg(45) - 45 / (360.0 / 4096)) < 1e-9, str(rig.deg(45)))
-check('milliamps -> LSBs', abs(rig.ma(264) - 10.0) < 1e-9, str(rig.ma(264)))
-check('counts -> degrees', abs(rig.as_deg(512) - 45.0) < 1e-9, str(rig.as_deg(512)))
-check('LSBs -> milliamps', abs(rig.as_ma(10) - 264.0) < 1e-9, str(rig.as_ma(10)))
-check('unknown channel raises',
+check('grados -> cuentas', abs(rig.deg(45) - 45 / (360.0 / 4096)) < 1e-9, str(rig.deg(45)))
+check('miliamperes -> LSBs', abs(rig.ma(264) - 10.0) < 1e-9, str(rig.ma(264)))
+check('cuentas -> grados', abs(rig.as_deg(512) - 45.0) < 1e-9, str(rig.as_deg(512)))
+check('LSBs -> miliamperes', abs(rig.as_ma(10) - 264.0) < 1e-9, str(rig.as_ma(10)))
+check('un canal desconocido levanta excepcion',
       _raises(lambda: rig.channel('nope'), _cl.CtrlLinkError))
 
-# ----------------------------------------------------------- device-side error
+# ------------------------------------------------- error del lado dispositivo
 try:
     dev3.cmd('bogus')
-    check('device error raises', False)
+    check('un error del dispositivo levanta excepcion', False)
 except Exception as exc:
-    check('device error raises', 'unknown command' in str(exc), str(exc))
+    check('un error del dispositivo levanta excepcion',
+          'comando desconocido' in str(exc), str(exc))
 
 print()
-print(f'{len(failures)} failure(s)' + (': ' + ', '.join(failures) if failures else ''))
+print(f'{len(failures)} falla(s)' + (': ' + ', '.join(failures) if failures else ''))
 sys.exit(1 if failures else 0)

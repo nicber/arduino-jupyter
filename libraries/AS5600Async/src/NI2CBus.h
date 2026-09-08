@@ -1,9 +1,11 @@
-// Binds AS5600<> to nI2C. The only file in this library that knows about nI2C.
+// Vincula AS5600<> con nI2C. El único archivo de esta biblioteca que sabe de
+// nI2C.
 //
-// nI2C is interrupt-driven (ISR(TWI_vect) in nTWI.cpp) and fires its completion
-// callback from that ISR, which is what makes it usable under a timer-driven
-// sample loop. Its read path points the packet straight at the caller's buffer;
-// only writes allocate, so the steady-state read loop touches no heap.
+// nI2C está gobernada por interrupciones (ISR(TWI_vect) en nTWI.cpp) y dispara su
+// callback de finalización desde esa ISR, que es lo que la hace utilizable bajo
+// un lazo de muestreo disparado por temporizador. Su camino de lectura apunta el
+// paquete directamente al buffer de quien llama; sólo las escrituras reservan
+// memoria, así que el lazo de lectura en régimen no toca el heap.
 
 #ifndef NI2CBUS_H
 #define NI2CBUS_H
@@ -13,22 +15,25 @@
 
 struct NI2CBus
 {
-    // address_size must be non-zero or nI2C rejects the handle outright
-    // (PrepareForTransfer in nI2C.cpp). AS5600 register addresses are one byte.
+    // address_size tiene que ser distinto de cero o nI2C rechaza el handle de
+    // plano (PrepareForTransfer en nI2C.cpp). Las direcciones de registro del
+    // AS5600 son de un byte.
     static void begin(uint8_t address)
     {
         m_handle = nI2C->RegisterDevice(address, 1, CI2C::Speed::FAST);  // 400 kHz
     }
 
-    // nI2C's no-register-address overload: START + SLA+R directly, no pointer
-    // reload. This is the overload the AS5600 fast path depends on.
+    // La sobrecarga de nI2C sin dirección de registro: START + SLA+R
+    // directamente, sin recargar el puntero. Ésta es la sobrecarga de la que
+    // depende el camino rápido del AS5600.
     static bool read(uint8_t* buffer, uint8_t length, void (*callback)(uint8_t status))
     {
         return nI2C->Read(m_handle, buffer, length, callback) == CI2C::STATUS_OK;
     }
 
-    // Register-addressed read: nI2C queues a pointer write and the read together,
-    // so the pointer is left on `reg` (or wherever the device increments it to).
+    // Lectura con dirección de registro: nI2C encola juntas la escritura del
+    // puntero y la lectura, así que el puntero queda en `reg` (o donde el
+    // dispositivo lo haya incrementado).
     static bool read_register(uint8_t reg, uint8_t* buffer, uint8_t length,
                               void (*callback)(uint8_t status))
     {

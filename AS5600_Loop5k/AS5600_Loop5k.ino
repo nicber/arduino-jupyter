@@ -1,13 +1,15 @@
-// AS5600 sampled at 5 kHz from a timer ISR over an interrupt-driven I2C bus.
+// AS5600 muestreado a 5 kHz desde una ISR de temporizador, sobre un bus I2C
+// gobernado por interrupciones.
 //
 // Hardware:
 // Arduino UNO
-// Hall Position Sensor: AS5600 (I2C)
+// Sensor de posición de efecto Hall: AS5600 (I2C)
 //
-// Wiring: SDA -> A4, SCL -> A5, VDD -> 5V, GND -> GND
+// Conexionado: SDA -> A4, SCL -> A5, VDD -> 5V, GND -> GND
 //
-// Output: 115200 baud, two summary lines per second. Printing every sample is
-// not possible at this rate -- 5 kHz of text needs roughly 2 Mbaud.
+// Salida: 115200 baudios, dos líneas de resumen por segundo. Imprimir cada
+// muestra no es posible a esta frecuencia: 5 kHz de texto necesitan del orden de
+// 2 Mbaud.
 
 #include <nI2C.h>
 
@@ -16,12 +18,12 @@
 
 typedef AS5600<NI2CBus> Sensor;
 
-// Timer2, CTC, prescaler 32: 16 MHz / 32 / 100 = exactly 5.000 kHz.
-// Timer2 leaves millis() (Timer0) and Servo (Timer1) alone, but collides with tone().
+// Timer2, CTC, preescalador 32: 16 MHz / 32 / 100 = exactamente 5,000 kHz.
+// El Timer2 deja en paz a millis() (Timer0) y a Servo (Timer1), pero choca con tone().
 static void startSampleTimer(void)
 {
     TCCR2A = _BV(WGM21);                // CTC, TOP = OCR2A
-    TCCR2B = _BV(CS21) | _BV(CS20);     // prescaler /32
+    TCCR2B = _BV(CS21) | _BV(CS20);     // preescalador /32
     OCR2A = 99;
     TCNT2 = 0;
     TIMSK2 = _BV(OCIE2A);
@@ -32,7 +34,7 @@ ISR(TIMER2_COMPA_vect)
     Sensor::do_transfer();
 }
 
-// ------------------------------------------------------------------ telemetry
+// ------------------------------------------------------------------ telemetría
 
 static void printAngle(void)
 {
@@ -42,8 +44,9 @@ static void printAngle(void)
     uint32_t now_ms = millis();
     uint16_t samples = Sensor::samples();
 
-    // Unsigned wraparound makes the delta correct even though the counter is
-    // 16 bits and rolls over every ~13 s at 5 kHz.
+    // La vuelta al cero de los enteros sin signo hace que la diferencia sea
+    // correcta aunque el contador sea de 16 bits y dé la vuelta cada ~13 s a
+    // 5 kHz.
     uint16_t delta = samples - last_samples;
     uint32_t elapsed_ms = now_ms - last_ms;
 
@@ -57,17 +60,18 @@ static void printAngle(void)
 
     uint16_t counts = Sensor::counts();
 
-    Serial.print(F("rate="));
+    Serial.print(F("frecuencia="));
     Serial.print((uint32_t)delta * 1000UL / elapsed_ms);
-    Serial.print(F(" Hz  counts="));
+    Serial.print(F(" Hz  cuentas="));
     Serial.print(counts);
-    Serial.print(F("  deg="));
+    Serial.print(F("  grados="));
     Serial.println(counts * (360.0f / 4096.0f), 2);
 }
 
-// Sensor health plus our own transfer counters. The STATUS read is performed by
-// the sample loop in place of one sample, so calling this does not disturb the
-// loop's timing -- it costs 2 samples out of 5000.
+// La salud del sensor más nuestros propios contadores de transferencias. La
+// lectura de STATUS la hace el lazo de muestreo en lugar de una muestra, así que
+// llamar a esto no perturba la temporización del lazo: cuesta 2 muestras de
+// 5000.
 static void printStatus(void)
 {
     uint8_t status;
@@ -76,7 +80,7 @@ static void printStatus(void)
 
     if (!Sensor::read_status(status))
     {
-        Serial.print(F("<timed out; is the sample timer running?>"));
+        Serial.print(F("<se agoto la espera; esta corriendo el temporizador de muestreo?>"));
     }
     else
     {
@@ -95,21 +99,21 @@ static void printStatus(void)
 
         if (!(status & Sensor::STATUS_MD))
         {
-            Serial.print(F("  ERROR: no magnet detected"));
+            Serial.print(F("  ERROR: no se detecta el iman"));
         }
         if (status & Sensor::STATUS_ML)
         {
-            Serial.print(F("  WARN: magnet too weak / airgap too large"));
+            Serial.print(F("  AVISO: iman muy debil / entrehierro muy grande"));
         }
         if (status & Sensor::STATUS_MH)
         {
-            Serial.print(F("  WARN: magnet too strong / airgap too small"));
+            Serial.print(F("  AVISO: iman muy fuerte / entrehierro muy chico"));
         }
     }
 
-    Serial.print(F("  overruns="));
+    Serial.print(F("  desbordes="));
     Serial.print(Sensor::overruns());
-    Serial.print(F("  errors="));
+    Serial.print(F("  errores="));
     Serial.println(Sensor::errors());
 }
 
@@ -120,11 +124,11 @@ void setup()
     Serial.begin(115200);
     while (!Serial)
     {
-        ;  // harmless on the UNO, needed on native-USB boards
+        ;  // inofensivo en el UNO, necesario en placas con USB nativo
     }
 
     Serial.println();
-    Serial.println(F("AS5600 5 kHz sample loop"));
+    Serial.println(F("Lazo de muestreo del AS5600 a 5 kHz"));
 
     Sensor::begin();
     startSampleTimer();

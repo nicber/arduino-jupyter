@@ -1,25 +1,27 @@
-"""Host side of the CtrlLink protocol.
+"""Lado computadora del protocolo CtrlLink.
 
-Talks to an Arduino running the CtrlLink library over one serial port. The
-device describes its own tunable parameters and telemetry channels, so this
-module has no knowledge of any particular sketch: adding a gain to the firmware
-makes it appear here with no change on this side.
+Se comunica por un puerto serie con un Arduino que corre la biblioteca CtrlLink.
+El dispositivo describe por sí mismo sus parámetros ajustables y sus canales de
+telemetría, así que este módulo no sabe nada de ningún sketch en particular:
+agregar una ganancia al firmware la hace aparecer acá sin tocar una línea de este
+lado.
 
     from ctrllink import CtrlLink
 
-    dev = CtrlLink()                    # or CtrlLink('COM3'), or '/dev/ttyACM0'
+    dev = CtrlLink()                    # o CtrlLink('COM3'), o '/dev/ttyACM0'
     dev.kp, dev.ki = 2.5, 0.1
     df = dev.step('ref', 1024, pre=0.1, post=0.9)
     df.plot(x='t', y=['ref', 'y'])
 
-Telemetry rows are fixed-width hex, so a capture is decoded in one numpy call
-rather than parsed line by line; a 1 kHz stream costs almost nothing to receive.
+Las filas de telemetría son hexadecimal de ancho fijo, así que una captura se
+decodifica en una sola llamada a numpy en lugar de interpretarse línea por línea;
+recibir un flujo de 1 kHz no cuesta casi nada.
 
-Parameters are always in real units here. The device keeps each one in whatever
-fixed-point form its arithmetic wants and says how many fractional bits that is;
-this side multiplies on the way in and divides on the way out, so the loop
-running on an 8-bit MCU never executes a floating-point instruction and the
-person driving it never sees a raw count.
+Acá los parámetros están siempre en unidades reales. El dispositivo guarda cada
+uno en la forma de punto fijo que su aritmética prefiera y dice cuántos bits
+fraccionarios son; este lado multiplica a la ida y divide a la vuelta, así que el
+lazo que corre en un microcontrolador de 8 bits nunca ejecuta una instrucción de
+punto flotante y quien lo maneja nunca ve una cuenta cruda.
 """
 
 from __future__ import annotations
@@ -31,8 +33,9 @@ from dataclasses import dataclass
 import numpy as np
 import serial
 
-# Wire type -> big-endian numpy dtype. The hex width of a field is twice the
-# itemsize, and every width is even, so a run of rows unhexlifies as one block.
+# Tipo del cable -> dtype big-endian de numpy. El ancho hexadecimal de un campo es
+# el doble de su itemsize, y todos los anchos son pares, así que una tanda de
+# filas se convierte de hexadecimal en un solo bloque.
 _TYPES = {
     'i8': np.dtype('>i1'),
     'u8': np.dtype('>u1'),
@@ -43,56 +46,59 @@ _TYPES = {
     'f32': np.dtype('>f4'),
 }
 
-# Replies that end a command's response.
+# Respuestas que dan por terminada la contestación a un comando.
 _TERMINATORS = ('# ok', '# err', '# data')
 
-# Errors that mean the device did not receive what was sent, rather than that it
-# received it and objected. Only these are worth retrying.
-_GARBLED = ('unknown command', 'command too long', 'needs')
+# Errores que significan que el dispositivo no recibió lo que se le mandó, y no
+# que lo recibió y objetó. Sólo vale la pena reintentar éstos.
+_GARBLED = ('comando desconocido', 'comando demasiado largo', 'necesita')
 
-# Health parameters, if the sketch declares them. None of these is part of the
-# protocol -- the names are a convention, and a device that exposes none of them
-# simply reports nothing. They are running totals rather than instantaneous
-# readings, so a capture zeroes them first and what comes back describes that
-# capture and nothing else.
+# Parámetros de salud, si el sketch los declara. Ninguno es parte del protocolo:
+# los nombres son una convención, y un dispositivo que no expone ninguno
+# simplemente no informa nada. Son totales acumulados y no lecturas instantáneas,
+# así que una captura los pone en cero primero y lo que vuelve describe esa
+# captura y nada más.
 #
-#   missed   control periods the loop never serviced
-#   maxlate  worst delay between a tick firing and the loop picking it up, us
-#   sovr     sensor samples the bus could not keep up with
-#   serr     sensor transfers that failed
+#   missed   períodos de control que el lazo nunca atendió
+#   maxlate  peor retardo entre el disparo de un tick y el momento en que el lazo
+#            lo levanta, en us
+#   sovr     muestras del sensor que el bus no llegó a seguir
+#   serr     transferencias del sensor que fallaron
 _HEALTH = ('missed', 'maxlate', 'sovr', 'serr')
 
-# Fraction of the control period at which a service delay is worth mentioning,
-# even though nothing has actually been missed yet.
+# Fracción del período de control a partir de la cual vale la pena mencionar un
+# retardo de atención, aunque todavía no se haya perdido nada.
 _LATE_WARN = 0.5
 
-# Seconds between the bytes of an outgoing command.
+# Segundos entre los bytes de un comando saliente.
 #
-# Telemetry runs at 1 Mbaud without trouble, but the return path is fragile: a
-# byte lands every 10 us, the AVR's USART holds two, and the 5 kHz sampler and
-# nI2C's TWI interrupt between them keep interrupts disabled for longer than
-# that. Sent back to back, a few percent of command bytes are simply lost.
-# Spacing them out fixes it completely, and commands are far too rare and short
-# for the delay to matter -- a `set` takes about 6 ms to send.
+# La telemetría corre a 1 Mbaud sin problemas, pero el camino de vuelta es frágil:
+# llega un byte cada 10 us, el USART del AVR guarda dos, y entre el muestreador de
+# 5 kHz y la interrupción de TWI de nI2C mantienen las interrupciones
+# deshabilitadas durante más que eso. Enviados de corrido, unos pocos por ciento
+# de los bytes de comando se pierden sin más. Espaciarlos lo soluciona por
+# completo, y los comandos son demasiado raros y cortos como para que el retardo
+# importe: un `set` tarda unos 6 ms en enviarse.
 _BYTE_GAP = 0.0005
 
-# Delays shorter than this are spun out rather than slept away. See _pause().
+# Los retardos más cortos que esto se esperan en vacío en lugar de dormirse. Ver
+# _pause().
 _SPIN_UNDER = 0.002
 
 
 def _pause(seconds):
-    """A short delay that is actually short.
+    """Un retardo corto que de verdad es corto.
 
-    time.sleep() on Windows rounds up to the system timer tick before Python
-    3.11 -- 15.6 ms by default, thirty times the gap between command bytes.
-    Sleeping for _BYTE_GAP there would turn a six-millisecond `set` into a
-    six-hundred-millisecond one, and capture(), which sends eight commands
-    around every run, into something that felt broken.
+    Antes de Python 3.11, time.sleep() en Windows redondea hacia arriba hasta el
+    tic del temporizador del sistema —15,6 ms por omisión, treinta veces la
+    separación entre bytes de comando—. Dormir _BYTE_GAP ahí convertiría un `set`
+    de seis milisegundos en uno de seiscientos, y a capture(), que envía ocho
+    comandos alrededor de cada corrida, en algo que parecería roto.
 
-    So anything under a couple of milliseconds is spun out on perf_counter(),
-    which is high resolution everywhere. It costs a busy CPU for the twenty
-    milliseconds a command takes to send, which is a fair trade for behaving
-    the same on every machine.
+    Así que cualquier cosa por debajo de un par de milisegundos se espera en vacío
+    sobre perf_counter(), que tiene alta resolución en todas partes. Cuesta tener
+    la CPU ocupada durante los veinte milisegundos que tarda en enviarse un
+    comando, que es un precio justo por comportarse igual en cualquier máquina.
     """
     if seconds >= _SPIN_UNDER:
         time.sleep(seconds)
@@ -108,17 +114,17 @@ class CtrlLinkError(RuntimeError):
 
 
 def find_port(hint=None):
-    """Guesses which serial port the board is on.
+    """Adivina en qué puerto serie está la placa.
 
-    Bluetooth adapters and debug consoles also present as serial ports, so the
-    search is limited to USB ones -- by USB vendor id, which every platform
-    reports and which says nothing about what the port is *called*. Windows
-    calls them COM3, macOS /dev/cu.usbmodem1101 and Linux /dev/ttyACM0, and
-    matching on those names finds a board on one machine and nothing on the
-    next.
+    Los adaptadores Bluetooth y las consolas de depuración también se presentan
+    como puertos serie, así que la búsqueda se limita a los de USB, y por
+    identificador de fabricante USB, que todas las plataformas informan y que no
+    dice nada sobre cómo se *llama* el puerto. Windows los llama COM3, macOS
+    /dev/cu.usbmodem1101 y Linux /dev/ttyACM0, y buscar por esos nombres encuentra
+    una placa en una máquina y nada en la siguiente.
 
-    `hint` narrows it further by substring, which is what to reach for when
-    more than one board is plugged in.
+    `hint` acota todavía más por subcadena, que es lo que hay que usar cuando hay
+    más de una placa enchufada.
     """
     from serial.tools import list_ports
 
@@ -126,8 +132,9 @@ def find_port(hint=None):
     usb = [p for p in found if p.vid is not None]
 
     if not usb:
-        # Some platforms and older pyserial builds leave vid unset. Fall back to
-        # the names a USB serial port goes by, COM ports included.
+        # Algunas plataformas y algunas versiones viejas de pyserial dejan vid sin
+        # cargar. Se recurre entonces a los nombres que suele tener un puerto serie
+        # USB, puertos COM incluidos.
         usb = [p for p in found
                if any(tag in p.device for tag in
                       ('usbserial', 'usbmodem', 'ttyUSB', 'ttyACM',
@@ -139,28 +146,30 @@ def find_port(hint=None):
         ports = [p for p in ports if hint in p]
 
     if not ports:
-        raise CtrlLinkError('no USB serial port found -- is the board plugged in?')
+        raise CtrlLinkError('no se encontro ningun puerto serie USB '
+                            '-- esta enchufada la placa?')
     if len(ports) > 1:
-        raise CtrlLinkError(f'several USB serial ports found ({", ".join(ports)}); '
-                            f'pass one explicitly or narrow it with a hint')
+        raise CtrlLinkError(f'se encontraron varios puertos serie USB '
+                            f'({", ".join(ports)}); pasar uno explicitamente '
+                            f'o acotarlo con un hint')
     return ports[0]
 
 
 def _ended(buf):
-    """True once a complete "# end ..." line is in the buffer."""
+    """True cuando hay una linea "# end ..." completa en el buffer."""
     at = buf.find(b'# end ')
     return at >= 0 and buf.find(b'\n', at) >= 0
 
 
 @dataclass
 class Param:
-    """A device parameter, and the fixed-point format it is stored in.
+    """Un parámetro del dispositivo, y el formato de punto fijo en que se guarda.
 
-    `frac` is how many fractional bits the device's integer carries, so real
-    units are `raw / 2**frac`. A power of two rather than an arbitrary scale,
-    so the conversion is exact in both directions and nothing is lost printing
-    it: no fixed number of decimal places serves both a Q22 scale (2.4e-7) and
-    a Q30 one (9.3e-10).
+    `frac` es cuántos bits fraccionarios lleva el entero del dispositivo, así que
+    las unidades reales son `raw / 2**frac`. Una potencia de dos en lugar de una
+    escala arbitraria, para que la conversión sea exacta en los dos sentidos y no
+    se pierda nada al imprimirla: ningún número fijo de decimales sirve a la vez
+    para una escala Q22 (2,4e-7) y para una Q30 (9,3e-10).
     """
     name: str
     type: str
@@ -168,12 +177,12 @@ class Param:
 
     @property
     def integral(self) -> bool:
-        """True if the device stores this one as an integer."""
+        """True si el dispositivo lo guarda como entero."""
         return self.type != 'f32'
 
     @property
     def scale(self) -> float:
-        """Real units per stored count. Exact: a power of two."""
+        """Unidades reales por cuenta almacenada. Exacto: una potencia de dos."""
         return 2.0 ** -self.frac
 
 
@@ -190,7 +199,7 @@ class Column:
 
     @property
     def width(self) -> int:
-        """Width of this field in hex characters."""
+        """Ancho de este campo, en caracteres hexadecimales."""
         return self.dtype.itemsize * 2
 
 
@@ -199,8 +208,8 @@ class CtrlLink:
         if port is None:
             port = find_port()
 
-        # Opening the port asserts DTR, which resets an UNO. Nothing the device
-        # says before it has rebooted and run setup() is worth reading.
+        # Abrir el puerto activa DTR, lo que resetea un UNO. Nada de lo que diga
+        # el dispositivo antes de rearrancar y correr setup() vale la pena leerse.
         self.ser = serial.Serial(port, baud, timeout=timeout)
         time.sleep(reset_wait)
         self.ser.reset_input_buffer()
@@ -209,7 +218,7 @@ class CtrlLink:
         self._params = self._read_params()
         self.channels = self._read_channels()
 
-    # ------------------------------------------------------------- plumbing
+    # ------------------------------------------------------------- cañerías
 
     def close(self):
         if self.ser.is_open:
@@ -222,7 +231,7 @@ class CtrlLink:
         self.close()
 
     def _readline(self, deadline) -> str | None:
-        """One line, or None once `deadline` has passed."""
+        """Una línea, o None una vez pasado `deadline`."""
         while time.monotonic() < deadline:
             raw = self.ser.readline()
             if raw:
@@ -230,7 +239,7 @@ class CtrlLink:
         return None
 
     def _send(self, line):
-        """Writes a command with its bytes spaced out. See _BYTE_GAP."""
+        """Escribe un comando con sus bytes espaciados. Ver _BYTE_GAP."""
         for byte in (line + '\n').encode('ascii'):
             self.ser.write(bytes([byte]))
             if _BYTE_GAP:
@@ -238,15 +247,17 @@ class CtrlLink:
         self.ser.flush()
 
     def cmd(self, line, timeout=2.0, tries=3) -> list[str]:
-        """Sends a command and returns its reply lines, terminator included.
+        """Envía un comando y devuelve las líneas de su respuesta, terminador incluido.
 
-        A reply saying the device did not understand the command means bytes
-        were lost on the way in, so the command is resent. An error that means
-        the device understood and objected is raised straight away.
+        Una respuesta que diga que el dispositivo no entendió el comando significa
+        que se perdieron bytes en el camino de ida, así que el comando se
+        reenvía. Un error que signifique que el dispositivo entendió y objetó se
+        levanta de inmediato.
 
-        Telemetry rows arriving while the reply is in flight are discarded, so
-        this is safe to call mid-capture -- but during a capture prefer the
-        `events` argument to capture(), which keeps the rows.
+        Las filas de telemetría que lleguen mientras la respuesta está en vuelo se
+        descartan, así que es seguro llamar a esto en medio de una captura; pero
+        durante una captura conviene el argumento `events` de capture(), que
+        conserva las filas.
         """
         for attempt in range(tries):
             self._send(line)
@@ -257,9 +268,9 @@ class CtrlLink:
             while True:
                 text = self._readline(deadline)
                 if text is None:
-                    raise CtrlLinkError(f'timed out waiting for a reply to {line!r}')
+                    raise CtrlLinkError(f'se agoto la espera de una respuesta a {line!r}')
                 if not text.startswith('#'):
-                    continue  # a telemetry row overtaking the reply
+                    continue  # una fila de telemetria que se adelanto a la respuesta
                 reply.append(text)
                 if not text.startswith(_TERMINATORS):
                     continue
@@ -269,11 +280,11 @@ class CtrlLink:
 
                 reason = text[6:]
                 if attempt + 1 < tries and any(g in reason for g in _GARBLED):
-                    break  # the command was mangled in transit; send it again
+                    break  # el comando se deformo en transito; se manda de nuevo
                 raise CtrlLinkError(f'{line!r}: {reason}')
 
     def sync(self, timeout=4.0) -> str:
-        """Drains whatever the device was saying and confirms it is listening."""
+        """Vacía lo que el dispositivo estuviera diciendo y confirma que escucha."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.ser.reset_input_buffer()
@@ -283,18 +294,19 @@ class CtrlLink:
                         return text[5:]
             except CtrlLinkError:
                 continue
-        raise CtrlLinkError('no response to "id" -- wrong port, wrong baud, '
-                            'or the sketch is not running CtrlLink')
+        raise CtrlLinkError('no hubo respuesta a "id" -- puerto equivocado, '
+                            'velocidad equivocada, o el sketch no esta '
+                            'corriendo CtrlLink')
 
-    # ------------------------------------------------------------ discovery
+    # ----------------------------------------------------------- descubrimiento
 
     def _read_params(self) -> dict:
-        """name -> Param, as the device declares them.
+        """nombre -> Param, tal como los declara el dispositivo.
 
-        The format is the device's own: it stores each parameter in whatever
-        fixed-point form its arithmetic wants and says how many fractional bits
-        that is. Everything above this line works in natural units and never
-        sees the integer.
+        El formato es el del propio dispositivo: guarda cada parámetro en la forma
+        de punto fijo que su aritmética prefiera y dice cuántos bits fraccionarios
+        son. Todo lo que está por encima de esta línea trabaja en unidades
+        naturales y nunca ve el entero.
         """
         params = {}
         for text in self.cmd('params'):
@@ -314,47 +326,48 @@ class CtrlLink:
 
     @property
     def dt(self) -> float:
-        """Control period in seconds, asked of the device rather than assumed.
+        """Período de control en segundos, preguntado al dispositivo y no supuesto.
 
-        It moves when `tickdiv` does, and anything converting between
-        continuous-time and per-sample quantities needs the current value.
+        Se mueve cuando se mueve `tickdiv`, y cualquier conversión entre
+        magnitudes de tiempo continuo y por muestra necesita el valor vigente.
         """
         for field in self.cmd('id')[0].split():
             if field.startswith('dt_us='):
                 return int(field[6:]) * 1e-6
-        raise CtrlLinkError('device did not report its control period')
+        raise CtrlLinkError('el dispositivo no informo su periodo de control')
 
     @property
     def _health(self) -> tuple:
-        """Whichever health counters this particular sketch happens to expose.
+        """Los contadores de salud que este sketch en particular exponga.
 
-        Derived from the parameter table rather than cached, so it follows a
-        device that was connected by hand rather than through __init__.
+        Se deduce de la tabla de parámetros en lugar de guardarse en caché, así
+        que acompaña a un dispositivo que se haya conectado a mano y no a través
+        de __init__.
         """
         return tuple(name for name in _HEALTH if name in self._params)
 
     @property
     def params(self) -> dict:
-        """Every parameter and its current value, read back from the device."""
+        """Cada parámetro y su valor actual, releídos del dispositivo."""
         return {name: self.get(name) for name in self._params}
 
     def get(self, name):
-        """The parameter's value in real units."""
+        """El valor del parámetro, en unidades reales."""
         for text in self.cmd(f'get {name}'):
             if text.startswith('# v '):
                 _, value = text[4:].split(None, 1)
                 return self._coerce(name, value)
-        raise CtrlLinkError(f'no value in the reply for {name!r}')
+        raise CtrlLinkError(f'no hay valor en la respuesta para {name!r}')
 
     def set(self, name, value, tries=3):
-        """Sets a parameter, in real units, and confirms what the device stored.
+        """Fija un parámetro, en unidades reales, y confirma lo que guardó el dispositivo.
 
-        A corrupted command is usually rejected outright, but a mangled *value*
-        would be accepted in silence -- so the echoed value is checked rather
-        than trusted. The check allows for the device's own quantisation: a
-        parameter kept in fixed point cannot hold every value that can be asked
-        for, and rounding to the nearest representable one is correct, not an
-        error.
+        Un comando corrompido en general se rechaza de plano, pero un *valor*
+        deformado se aceptaría en silencio, así que el valor devuelto se verifica
+        en lugar de darse por bueno. La verificación contempla la cuantización del
+        propio dispositivo: un parámetro guardado en punto fijo no puede contener
+        todos los valores que se le pidan, y redondear al representable más cercano
+        es lo correcto, no un error.
         """
         stored = None
 
@@ -369,11 +382,12 @@ class CtrlLink:
                 break
             if attempt + 1 == tries:
                 raise CtrlLinkError(
-                    f'set {name} to {value!r} but the device reports {stored!r}')
+                    f'se fijo {name} en {value!r} pero el dispositivo '
+                    f'informa {stored!r}')
         return None
 
     def _encode(self, name, value):
-        """Real units -> the integer (or float) the device wants on the wire."""
+        """Unidades reales -> el entero (o float) que el dispositivo quiere en el cable."""
         param = self._params[name]
 
         if not param.integral:
@@ -381,7 +395,7 @@ class CtrlLink:
         return int(round(float(value) * 2.0 ** param.frac))
 
     def _coerce(self, name, text):
-        """The wire's integer (or float) -> real units."""
+        """El entero (o float) del cable -> unidades reales."""
         param = self._params[name]
 
         if not param.integral:
@@ -397,13 +411,14 @@ class CtrlLink:
 
         param = self._params[name]
 
-        # Half a step of whatever the device can actually represent, plus room
-        # for the six decimals it prints floats to.
+        # Medio paso de lo que el dispositivo realmente puede representar, más
+        # lugar para los seis decimales con los que imprime los float.
         slack = max(1e-6, abs(wanted) * 1e-6, abs(param.scale) / 2)
         return abs(float(stored) - wanted) <= slack
 
-    # Parameters as attributes, so a notebook reads `dev.kp = 2.5`. Anything not
-    # in the device's table falls through to normal attribute handling.
+    # Los parámetros como atributos, para que en un notebook se lea
+    # `dev.kp = 2.5`. Todo lo que no esté en la tabla del dispositivo cae en el
+    # manejo normal de atributos.
     def __getattr__(self, name):
         params = self.__dict__.get('_params', {})
         if name in params:
@@ -420,22 +435,23 @@ class CtrlLink:
     def __dir__(self):
         return list(super().__dir__()) + list(self.__dict__.get('_params', {}))
 
-    # -------------------------------------------------------------- capture
+    # -------------------------------------------------------------- captura
 
     def capture(self, duration, events=(), poll=0.005, warn=True):
-        """Streams for `duration` seconds and returns a DataFrame.
+        """Emite durante `duration` segundos y devuelve un DataFrame.
 
-        `events` is a sequence of (delay_s, name, value): each parameter is set
-        that many seconds after the stream starts. The device reports the exact
-        tick each set landed on, so the host's scheduling jitter does not enter
-        the measurement -- see `df.attrs['marks']`.
+        `events` es una secuencia de (retardo_s, nombre, valor): cada parámetro se
+        fija esa cantidad de segundos después de que arranca el flujo. El
+        dispositivo informa el tick exacto en el que cayó cada set, así que la
+        fluctuación de programación de la computadora no entra en la medición; ver
+        `df.attrs['marks']`.
 
-        The device's health counters are zeroed before the run and read after
-        it, so `df.attrs` says whether the loop actually kept up while these
-        particular rows were being produced. Anything wrong is also printed,
-        because a capture that silently lost periods looks exactly like one that
-        did not until you go looking. Pass `warn=False` for the numbers without
-        the commentary.
+        Los contadores de salud del dispositivo se ponen en cero antes de la
+        corrida y se leen después, así que `df.attrs` dice si el lazo realmente
+        llegó mientras se producían estas filas en particular. Todo lo que ande mal
+        además se imprime, porque una captura que perdió períodos en silencio se ve
+        exactamente igual que una que no hasta que uno va a fijarse. Pasar
+        `warn=False` para tener los números sin el comentario.
         """
         pending = sorted(events, key=lambda e: e[0])
 
@@ -466,14 +482,16 @@ class CtrlLink:
             elif not pending:
                 time.sleep(poll)
 
-        # Keep reading until the device confirms it stopped, so the tail of the
-        # stream and the final row counts are both in hand. The whole line has
-        # to be there, not just its first few bytes: waiting only for the "# end"
-        # prefix hands the decoder a line cut off mid-field.
+        # Seguir leyendo hasta que el dispositivo confirme que paró, para tener a
+        # mano tanto la cola del flujo como los recuentos finales de filas. Tiene
+        # que estar la línea entera, no sólo sus primeros bytes: esperar apenas el
+        # prefijo "# end" le entrega al decodificador una línea cortada a mitad de
+        # campo.
         #
-        # A "stop" can be lost on the way in like any other command, and there is
-        # no reply to retry against until the stream actually ends, so it is
-        # simply repeated until the device answers.
+        # Un "stop" se puede perder en el camino de ida como cualquier otro
+        # comando, y no hay respuesta contra la cual reintentar hasta que el flujo
+        # efectivamente termine, así que simplemente se repite hasta que el
+        # dispositivo conteste.
         for _ in range(4):
             self._send('stop')
 
@@ -488,13 +506,13 @@ class CtrlLink:
             if _ended(buf):
                 break
         else:
-            raise CtrlLinkError('device did not stop streaming')
+            raise CtrlLinkError('el dispositivo no dejo de emitir')
 
         df = self._decode(buf, columns, dt_us, dec)
 
-        # Read after the stream has stopped rather than during it: a `get`
-        # mid-capture costs milliseconds of command traffic, which is exactly
-        # the thing being measured.
+        # Se leen una vez que el flujo paró, no durante: un `get` en medio de una
+        # captura cuesta milisegundos de tráfico de comandos, que es justamente lo
+        # que se está midiendo.
         df.attrs.update({name: self.get(name) for name in self._health})
         df.attrs['health'] = self._health_notes(df)
 
@@ -505,16 +523,16 @@ class CtrlLink:
         return df
 
     def health(self):
-        """The device's health counters, as a dict. Empty if it exposes none."""
+        """Los contadores de salud del dispositivo, como dict. Vacío si no expone ninguno."""
         return {name: self.get(name) for name in self._health}
 
     def _health_notes(self, df):
-        """Plain-language complaints about a capture, worst first.
+        """Quejas en castellano llano sobre una captura, la peor primero.
 
-        Everything here is a way for the timeseries to be wrong without looking
-        wrong: a missed period is a sample the controller never computed, and a
-        dropped row is one it computed and never sent. Neither leaves a mark in
-        the data itself.
+        Todo lo que hay acá es una forma de que la serie temporal esté mal sin
+        parecerlo: un período perdido es una muestra que el controlador nunca
+        calculó, y una fila descartada es una que calculó y nunca envió. Ninguna de
+        las dos deja marca en los datos mismos.
         """
         notes = []
         dt_us = df.attrs['dt_us']
@@ -523,60 +541,64 @@ class CtrlLink:
         missed = df.attrs.get('missed') or 0
         if missed:
             notes.append(
-                f'{missed} control period(s) missed ({missed / max(rate, 1):.3f} s '
-                f'of loop time): the sampler came round again before the previous '
-                f'tick had been serviced, so those periods never ran at all. '
-                f'Raise tickdiv, or take work out of the control step.')
+                f'se perdieron {missed} periodo(s) de control '
+                f'({missed / max(rate, 1):.3f} s de tiempo de lazo): el '
+                f'muestreador volvio a pasar antes de que se atendiera el tick '
+                f'anterior, asi que esos periodos directamente no corrieron. '
+                f'Subir tickdiv, o sacarle trabajo al paso de control.')
 
         late = df.attrs.get('maxlate')
         if late is not None and dt_us and late > dt_us * _LATE_WARN:
             notes.append(
-                f'worst service delay {late} us against a {dt_us} us period '
-                f'({late / dt_us:.0%}): the loop kept up, but not by much.')
+                f'peor retardo de atencion {late} us contra un periodo de '
+                f'{dt_us} us ({late / dt_us:.0%}): el lazo llego, pero por poco.')
 
         drops = df.attrs.get('drops') or 0
         if drops:
             notes.append(
-                f'{drops} telemetry row(s) dropped: the device had no room in its '
-                f'transmit buffer. Raise dec, or stream fewer channels.')
+                f'se descartaron {drops} fila(s) de telemetria: el dispositivo no '
+                f'tenia lugar en su buffer de transmision. Subir dec, o emitir '
+                f'menos canales.')
 
         sent = df.attrs.get('rows')
         if sent and len(df) < sent:
             notes.append(
-                f'{sent - len(df)} of {sent} row(s) sent never arrived: bytes were '
-                f'lost between the device and here.')
+                f'{sent - len(df)} de {sent} fila(s) enviadas nunca llegaron: se '
+                f'perdieron bytes entre el dispositivo y aca.')
 
         gaps = df.attrs.get('gaps') or 0
         if gaps and not (drops or (sent and len(df) < sent)):
-            notes.append(f'{gaps} gap(s) in the tick sequence: rows are missing '
-                         f'from the timeseries.')
+            notes.append(f'{gaps} hueco(s) en la secuencia de ticks: faltan filas '
+                         f'en la serie temporal.')
 
         sovr = df.attrs.get('sovr') or 0
         if sovr:
             notes.append(
-                f'{sovr} sensor overrun(s): an I2C transfer had not finished when '
-                f'the next sample was due, so that sample repeats the one before.')
+                f'{sovr} desborde(s) del sensor: una transferencia de I2C no habia '
+                f'terminado cuando vencia la muestra siguiente, asi que esa muestra '
+                f'repite la anterior.')
 
         serr = df.attrs.get('serr') or 0
         if serr:
-            notes.append(f'{serr} sensor transfer(s) failed -- check the wiring '
-                         f'and the bus pull-ups.')
+            notes.append(f'fallaron {serr} transferencia(s) del sensor -- revisar '
+                         f'el cableado y los pull-ups del bus.')
 
         return notes
 
     def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True):
-        """Captures a step response, with `t = 0` at the step itself.
+        """Captura una respuesta al escalón, con `t = 0` en el escalón mismo.
 
-        Holds for `pre` seconds, sets `name` to `value`, holds for `post` more.
-        If `back` is given the parameter is restored afterwards.
+        Mantiene `pre` segundos, pone `name` en `value`, y mantiene `post`
+        segundos más. Si se da `back`, el parámetro se restituye al final.
         """
         df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
 
         marks = [m for m in df.attrs['marks'] if m[1] == name]
         if marks:
-            # Shifted in tick space, not seconds: subtracting two floats that
-            # are each a tick times a period leaves a rounding residue, and a
-            # t of -5e-17 puts the step sample on the wrong side of t < 0.
+            # Se desplaza en el espacio de ticks, no en segundos: restar dos float
+            # que son cada uno un tick por un período deja un residuo de redondeo,
+            # y un t de -5e-17 pone la muestra del escalón del lado equivocado de
+            # t < 0.
             origin = self._mark_tick(df, marks[0][0])
             df['t'] = (df.attrs['tick'] - origin) * (df.attrs['dt_us'] * 1e-6)
 
@@ -587,10 +609,10 @@ class CtrlLink:
 
     @staticmethod
     def _mark_tick(df, raw_tick):
-        """Unwrapped tick of a mark, which the device reports as raw 16 bits.
+        """Tick desenrollado de una marca, que el dispositivo informa en 16 bits crudos.
 
-        The frame's own ticks have been unwrapped, so the two live in different
-        spaces and cannot simply be subtracted.
+        Los ticks del propio cuadro ya están desenrollados, así que los dos viven
+        en espacios distintos y no se pueden restar sin más.
         """
         tick = df.attrs['tick']
 
@@ -601,11 +623,12 @@ class CtrlLink:
         if len(here):
             return int(tick[here[0]])
 
-        # Decimation or a dropped row can leave the marked tick with no row of
-        # its own; place it by how far it is past the first tick of the capture.
+        # La diezmación o una fila descartada pueden dejar al tick marcado sin
+        # fila propia; se lo ubica por cuánto queda pasado el primer tick de la
+        # captura.
         return int(tick[0] + ((raw_tick - (tick[0] & 0xFFFF)) & 0xFFFF))
 
-    # --------------------------------------------------------------- decode
+    # ---------------------------------------------------------- decodificación
 
     @staticmethod
     def _parse_header(lines):
@@ -622,7 +645,7 @@ class CtrlLink:
                 dec = int(fields['dec'])
 
         if not columns or dt_us is None:
-            raise CtrlLinkError('device did not send a usable stream header')
+            raise CtrlLinkError('el dispositivo no envio un encabezado de flujo utilizable')
 
         return columns, dt_us, dec
 
@@ -632,8 +655,9 @@ class CtrlLink:
         dtype = np.dtype([(c.name, c.dtype) for c in columns])
         width = sum(c.width for c in columns)
 
-        # println() emits CRLF and rows emit bare LF; hex never contains CR, so
-        # dropping every CR up front makes both kinds of line uniform.
+        # println() emite CRLF y las filas emiten LF pelado; el hexadecimal nunca
+        # contiene CR, así que descartar todos los CR de entrada uniformiza los dos
+        # tipos de línea.
         lines = buf.replace(b'\r', b'').split(b'\n')
 
         marks, notes = [], []
@@ -657,10 +681,11 @@ class CtrlLink:
 
         raw = bytes.fromhex(b''.join(rows).decode('ascii')) if rows else b''
 
-        # The wire is big-endian, so frombuffer hands back big-endian fields.
-        # pandas refuses to index those on a little-endian machine, and some of
-        # its paths quietly return the wrong values instead of raising, so the
-        # array is brought into native order before anything else touches it.
+        # El cable es big-endian, así que frombuffer devuelve campos big-endian.
+        # pandas se niega a indexarlos en una máquina little-endian, y algunos de
+        # sus caminos devuelven los valores equivocados en silencio en lugar de dar
+        # error, así que el arreglo se lleva al orden nativo antes de que nada más
+        # lo toque.
         arr = np.frombuffer(raw, dtype=dtype).astype(dtype.newbyteorder('='))
 
         tick = self._unwrap(arr['tick'].astype(np.int64))
@@ -672,8 +697,9 @@ class CtrlLink:
             values = arr[column.name]
             df[column.name] = values * column.scale if column.scale != 1.0 else values
 
-        # A gap in the tick sequence is a row the device dropped or one lost on
-        # the way in. Either way it is a hole in the timeseries, not a pause.
+        # Un hueco en la secuencia de ticks es una fila que el dispositivo descartó
+        # o una que se perdió en el camino. En cualquier caso es un agujero en la
+        # serie temporal, no una pausa.
         gaps = int(np.count_nonzero(np.diff(tick) != dec)) if len(tick) > 1 else 0
 
         df.attrs.update(dt_us=dt_us, dec=dec, marks=marks, notes=notes,
@@ -684,7 +710,7 @@ class CtrlLink:
 
     @staticmethod
     def _unwrap(tick):
-        """Undoes the device's 16-bit tick rollover."""
+        """Deshace la vuelta al cero del tick de 16 bits del dispositivo."""
         if len(tick) < 2:
             return tick
         wraps = np.concatenate([[0], np.cumsum(np.diff(tick) < 0)])

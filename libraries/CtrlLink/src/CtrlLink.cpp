@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ------------------------------------------------------------------- storage
+// ------------------------------------------------------------ almacenamiento
 
 const CtrlParam*   CtrlLink::m_params        = 0;
 const CtrlChannel* CtrlLink::m_channels      = 0;
@@ -31,20 +31,22 @@ const CtrlParam CtrlLink::k_builtin[] PROGMEM =
     { "dec", CTRL_U16, (void*)&CtrlLink::m_decimate, 0 },
 };
 
-// ------------------------------------------------------------------- helpers
+// ------------------------------------------------------------------ auxiliares
 
 static const char HEXDIGITS[] PROGMEM = "0123456789ABCDEF";
 
-// Writes `digits` nibbles of `value`, most significant first, and returns the
-// position just past them. Nibbles above `digits` are discarded, which is what
-// makes a sign-extended narrow value come out right.
+// Escribe `digits` nibbles de `value`, el más significativo primero, y devuelve
+// la posición justo después de ellos. Los nibbles por encima de `digits` se
+// descartan, que es lo que hace que un valor angosto con signo extendido salga
+// bien.
 //
-// `digits` must be even: the value is consumed a byte at a time because AVR has
-// no barrel shifter, so a 32-bit `>>= 4` compiles to a four-pass loop of
-// lsr/ror/ror/ror -- 24 cycles per nibble, more than the rest of the work put
-// together. Shifting by 8 instead is just register moves, and the two nibbles of
-// a byte come out with an andi and a swap. Every width hex_width() returns is
-// even, so nothing here needs an odd count.
+// `digits` tiene que ser par: el valor se consume de a un byte porque el AVR no
+// tiene desplazador de barril, así que un `>>= 4` de 32 bits compila a un bucle
+// de cuatro pasadas de lsr/ror/ror/ror —24 ciclos por nibble, más que todo el
+// resto del trabajo junto—. Desplazar de a 8 son apenas movimientos entre
+// registros, y los dos nibbles de un byte salen con un andi y un swap. Todos los
+// anchos que devuelve hex_width() son pares, así que nada acá necesita una
+// cantidad impar.
 static char* put_hex(char* p, uint32_t value, uint8_t digits)
 {
     char* end = p + digits;
@@ -64,9 +66,9 @@ static char* put_hex(char* p, uint32_t value, uint8_t digits)
     return end;
 }
 
-// Reads a variable of `type` into the low bits of a uint32_t. A float is
-// reinterpreted rather than converted: its four bytes go out as they are, and
-// the host reads them back as big-endian IEEE 754.
+// Lee una variable de tipo `type` en los bits bajos de un uint32_t. Un float se
+// reinterpreta en lugar de convertirse: sus cuatro bytes salen tal cual, y la
+// computadora los lee como IEEE 754 big-endian.
 static uint32_t read_value(const void* addr, uint8_t type)
 {
     switch (type)
@@ -94,7 +96,8 @@ static void write_value(void* addr, uint8_t type, const char* text)
     }
 }
 
-// Compares a NUL-padded PROGMEM name against a NUL-terminated RAM string.
+// Compara un nombre en PROGMEM rellenado con NUL contra una cadena en RAM
+// terminada en NUL.
 static bool name_equals(const char* pgm_name, const char* text)
 {
     for (uint8_t i = 0; i < CTRL_NAME_LEN; i++)
@@ -112,7 +115,8 @@ static bool name_equals(const char* pgm_name, const char* text)
         text++;
     }
 
-    // Name filled the field exactly, so there is no NUL to match against.
+    // El nombre llenó el campo justo, así que no hay NUL contra el cual
+    // comparar.
     return *text == '\0';
 }
 
@@ -130,7 +134,7 @@ uint8_t CtrlLink::hex_width(uint8_t type)
 
 uint8_t CtrlLink::row_width(void)
 {
-    uint8_t width = 4 + 1;  // tick, newline
+    uint8_t width = 4 + 1;  // tick, fin de linea
 
     for (uint8_t i = 0; i < m_channel_count; i++)
     {
@@ -180,9 +184,10 @@ void CtrlLink::note(const __FlashStringHelper* text)
     Serial.println(text);
 }
 
-// ---------------------------------------------------------------- parameters
+// ------------------------------------------------------------------ parámetros
 
-// Built-ins occupy indices [0, K_BUILTIN_COUNT); the sketch's table follows.
+// Los incorporados ocupan los índices [0, K_BUILTIN_COUNT); la tabla del sketch
+// va a continuación.
 static const CtrlParam* param_at(const CtrlParam* user,
                                  const CtrlParam* builtin, uint8_t builtin_count,
                                  int16_t index)
@@ -231,7 +236,7 @@ void CtrlLink::print_param_value(int16_t index)
     }
 }
 
-// ------------------------------------------------------------------ commands
+// ------------------------------------------------------------------- comandos
 
 void CtrlLink::cmd_id(void)
 {
@@ -292,7 +297,7 @@ void CtrlLink::cmd_get(const char* name)
 
     if (index < 0)
     {
-        error(F("no such param"));
+        error(F("no existe ese parametro"));
         return;
     }
 
@@ -310,7 +315,7 @@ void CtrlLink::cmd_set(const char* name, const char* value)
 
     if (index < 0)
     {
-        error(F("no such param"));
+        error(F("no existe ese parametro"));
         return;
     }
 
@@ -322,9 +327,10 @@ void CtrlLink::cmd_set(const char* name, const char* value)
 
     m_writes++;
 
-    // A set that lands mid-capture is a step input, so the tick it took effect
-    // on is part of the measurement. Report it in the stream rather than
-    // leaving the host to infer it from line ordering.
+    // Un set que cae en medio de una captura es una entrada escalón, así que el
+    // tick en el que entró en vigencia es parte de la medición. Se informa en el
+    // flujo en lugar de dejar que la computadora lo deduzca del orden de las
+    // líneas.
     if (m_streaming)
     {
         Serial.print(F("# mark "));
@@ -348,7 +354,7 @@ void CtrlLink::cmd_start(void)
 {
     if (!m_usable)
     {
-        error(F("row too long"));
+        error(F("fila demasiado larga"));
         return;
     }
     if (m_decimate == 0)
@@ -367,8 +373,8 @@ void CtrlLink::cmd_start(void)
     Serial.print(F(" dec="));
     Serial.println(m_decimate);
 
-    // The tick is always column zero and always u16. It wraps every 65536
-    // control periods and the host unwraps it.
+    // El tick es siempre la columna cero y siempre u16. Da la vuelta cada 65536
+    // períodos de control y la computadora lo desenrolla.
     Serial.println(F("# col tick u16 1 tick"));
 
     for (uint8_t i = 0; i < m_channel_count; i++)
@@ -386,7 +392,8 @@ void CtrlLink::cmd_start(void)
 
     Serial.println(F("# data"));
 
-    // Set last: no row may go out before the header is complete.
+    // Se activa al final: ninguna fila puede salir antes de que el encabezado
+    // esté completo.
     m_streaming = true;
 }
 
@@ -401,8 +408,8 @@ void CtrlLink::cmd_stop(void)
     Serial.println(F("# ok"));
 }
 
-// Splits `line` at the first run of spaces and returns the remainder, which is
-// empty if there was none. The line is modified in place.
+// Parte `line` en la primera tanda de espacios y devuelve el resto, que queda
+// vacío si no había ninguno. La línea se modifica en el lugar.
 static char* split(char* line)
 {
     while (*line && *line != ' ')
@@ -428,7 +435,7 @@ void CtrlLink::handle_command(char* line)
     if (m_cmd_overflow)
     {
         m_cmd_overflow = false;
-        error(F("command too long"));
+        error(F("comando demasiado largo"));
         return;
     }
 
@@ -438,7 +445,7 @@ void CtrlLink::handle_command(char* line)
     }
     if (*line == '\0')
     {
-        return;  // bare newline: a resynchronisation nudge, not an error
+        return;  // linea vacia: un empujon para resincronizar, no un error
     }
 
     char* rest = split(line);
@@ -450,23 +457,23 @@ void CtrlLink::handle_command(char* line)
     else if (strcmp(line, "stop")   == 0) { cmd_stop(); }
     else if (strcmp(line, "get")    == 0)
     {
-        if (*rest == '\0') { error(F("get needs a name")); }
+        if (*rest == '\0') { error(F("get necesita un nombre")); }
         else               { cmd_get(rest); }
     }
     else if (strcmp(line, "set") == 0)
     {
         char* value = split(rest);
 
-        if (*rest == '\0' || *value == '\0') { error(F("set needs a name and a value")); }
+        if (*rest == '\0' || *value == '\0') { error(F("set necesita un nombre y un valor")); }
         else                                 { cmd_set(rest, value); }
     }
     else
     {
-        error(F("unknown command"));
+        error(F("comando desconocido"));
     }
 }
 
-// ------------------------------------------------------------- public surface
+// ----------------------------------------------------------- interfaz pública
 
 bool CtrlLink::begin(uint32_t baud,
                      const CtrlParam* params, uint8_t param_count,
@@ -482,14 +489,14 @@ bool CtrlLink::begin(uint32_t baud,
     Serial.begin(baud);
     while (!Serial)
     {
-        ;  // harmless on the UNO, needed on native-USB boards
+        ;  // inofensivo en el UNO, necesario en placas con USB nativo
     }
 
     m_usable = (row_width() <= CTRL_MAX_ROW);
 
     if (!m_usable)
     {
-        error(F("channel table makes a row longer than the transmit buffer"));
+        error(F("la tabla de canales genera una fila mas larga que el buffer de transmision"));
     }
 
     return m_usable;
@@ -512,8 +519,9 @@ void CtrlLink::poll(void)
             m_cmd_len        = 0;
             handle_command(m_cmd);
 
-            // One command per call. A burst of them must not turn into an
-            // unbounded amount of work inside a single control period.
+            // Un comando por llamada. Una ráfaga de comandos no puede
+            // convertirse en una cantidad de trabajo sin cota dentro de un mismo
+            // período de control.
             return;
         }
 
@@ -543,8 +551,9 @@ bool CtrlLink::emit(void)
         return true;
     }
 
-    // A zero would underflow the countdown and stall the stream for 65535
-    // ticks, and the host can set this parameter while streaming.
+    // Un cero haría desbordar la cuenta regresiva hacia abajo y frenaría el flujo
+    // durante 65535 ticks, y la computadora puede escribir este parámetro
+    // mientras hay flujo.
     m_dec_count = (m_decimate > 1) ? (m_decimate - 1) : 0;
 
     char  buf[CTRL_MAX_ROW];
@@ -562,9 +571,10 @@ bool CtrlLink::emit(void)
 
     uint8_t length = (uint8_t)(p - buf);
 
-    // Never block the control loop waiting for the UART. A dropped row leaves a
-    // gap in the tick sequence, which the host can see and account for; a
-    // blocking write would silently distort the loop timing instead.
+    // Nunca bloquear el lazo de control esperando a la UART. Una fila descartada
+    // deja un hueco en la secuencia de ticks, que la computadora puede ver y
+    // tener en cuenta; una escritura bloqueante distorsionaría en silencio la
+    // temporización del lazo.
     if (Serial.availableForWrite() < (int)length)
     {
         m_drops++;

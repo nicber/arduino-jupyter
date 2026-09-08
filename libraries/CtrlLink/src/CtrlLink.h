@@ -1,32 +1,37 @@
-// Telemetry and parameter link between an Arduino control loop and a host.
+// Enlace de telemetría y parámetros entre un lazo de control en Arduino y una
+// computadora.
 //
-// One serial port carries both directions at once:
+// Un solo puerto serie lleva las dos direcciones a la vez:
 //
-//   host -> device   ASCII commands, one per line, each answered by a reply
-//                    that ends in "# ok", "# err <reason>" or "# data".
-//   device -> host   lines starting with '#' are text (replies, events,
-//                    diagnostics); every other line is one telemetry row of
-//                    fixed-width uppercase hex, most significant nibble first.
+//   PC -> dispositivo   comandos ASCII, uno por línea, cada uno respondido por
+//                       una respuesta que termina en "# ok", "# err <motivo>" o
+//                       "# data".
+//   dispositivo -> PC   las líneas que empiezan con '#' son texto (respuestas,
+//                       eventos, diagnósticos); cualquier otra línea es una fila
+//                       de telemetría en hexadecimal de ancho fijo y mayúsculas,
+//                       con el nibble más significativo primero.
 //
-// A row is the 16-bit tick counter followed by the declared channels, with no
-// separators:
+// Una fila es el contador de ticks de 16 bits seguido de los canales declarados,
+// sin separadores:
 //
 //   0412 CDB9 0C80 0076
 //   tick ref   y    u          ->  "0412CDB90C800076\n"
 //
-// Widths come from the channel types, which the host reads from the header, so
-// the whole capture parses as one numpy structured dtype. Nothing in the row is
-// variable-width and nothing needs to be tokenised.
+// Los anchos salen de los tipos de los canales, que la computadora lee del
+// encabezado, así que toda la captura se interpreta como un único dtype
+// estructurado de numpy. Nada en la fila es de ancho variable y nada hay que
+// separarlo en tokens.
 //
-// Bandwidth: serial is 10 bits per byte, so the link moves baud/10 bytes per
-// second. A row costs 4 + sum(channel widths) + 1 bytes. At 1 Mbaud a 4-channel
-// int16 row is 21 bytes, so a 1 kHz loop uses 21% of the link. Keep utilisation
-// well under half: emit() never blocks, it drops a row instead, and a dropped
-// row is a hole in the timeseries.
+// Ancho de banda: el puerto serie usa 10 bits por byte, así que el enlace mueve
+// baud/10 bytes por segundo. Una fila cuesta 4 + suma(anchos de canal) + 1
+// bytes. A 1 Mbaud una fila de 4 canales int16 son 21 bytes, así que un lazo de
+// 1 kHz usa el 21 % del enlace. Conviene mantener la utilización bastante por
+// debajo de la mitad: emit() nunca bloquea, descarta una fila en su lugar, y una
+// fila descartada es un agujero en la serie temporal.
 //
-// Parameters and channels are declared as PROGMEM tables in the sketch. The
-// host discovers them at runtime, so adding a gain costs nothing on the Python
-// side.
+// Los parámetros y los canales se declaran como tablas en PROGMEM dentro del
+// sketch. La computadora los descubre en tiempo de ejecución, así que agregar
+// una ganancia no cuesta nada del lado de Python.
 
 #ifndef CTRLLINK_H
 #define CTRLLINK_H
@@ -35,8 +40,8 @@
 #include <stdint.h>
 #include <avr/pgmspace.h>
 
-// Storage types, shared by parameters and channels. The hex width of a channel
-// follows from its type: 2 nibbles per byte.
+// Tipos de almacenamiento, compartidos por parámetros y canales. El ancho
+// hexadecimal de un canal se desprende de su tipo: 2 nibbles por byte.
 enum : uint8_t
 {
     CTRL_I8  = 0,
@@ -48,39 +53,44 @@ enum : uint8_t
     CTRL_F32 = 6,
 };
 
-// Names are fixed-width and NUL-padded so the tables are plain PROGMEM arrays
-// with no separate string symbols to declare.
+// Los nombres son de ancho fijo y se rellenan con NUL, así que las tablas son
+// arreglos comunes en PROGMEM sin símbolos de cadena aparte que haya que
+// declarar.
 static const uint8_t CTRL_NAME_LEN = 8;
 
-// Longest command line accepted from the host, including arguments.
+// Línea de comando más larga que se acepta de la computadora, argumentos
+// incluidos.
 static const uint8_t CTRL_CMD_LEN = 40;
 
-// Ceiling on 4 + sum(channel widths) + 1. A row can never be longer than the
-// transmit buffer, because availableForWrite() never reports more than
-// SERIAL_TX_BUFFER_SIZE - 1 free and emit() refuses to write without room: an
-// over-long row would drop every sample and never send one. begin() rejects
-// such a channel table instead of failing silently.
+// Techo de 4 + suma(anchos de canal) + 1. Una fila nunca puede ser más larga que
+// el buffer de transmisión, porque availableForWrite() nunca informa más de
+// SERIAL_TX_BUFFER_SIZE - 1 libres y emit() se niega a escribir sin lugar: una
+// fila demasiado larga descartaría todas las muestras y no enviaría ninguna.
+// begin() rechaza una tabla de canales así en lugar de fallar en silencio.
 //
-// 63 bytes on an UNO, so up to 14 int16 or 7 float channels. Staying well under
-// the limit matters as well as fitting it -- a row close to the buffer size only
-// goes out when the buffer happens to be nearly empty.
+// Son 63 bytes en un UNO, o sea hasta 14 canales int16 o 7 float. Además de
+// entrar, importa quedarse bastante por debajo del límite: una fila cercana al
+// tamaño del buffer sólo sale cuando el buffer está casi vacío.
 static const uint8_t CTRL_MAX_ROW = SERIAL_TX_BUFFER_SIZE - 1;
 
-// A host-writable variable. `addr` points at RAM the sketch owns; the link
-// converts between the wire text and `type` on the way in and out.
+// Una variable que la computadora puede escribir. `addr` apunta a RAM que
+// pertenece al sketch; el enlace convierte entre el texto del cable y `type` a
+// la ida y a la vuelta.
 //
-// `frac` is how many fractional bits the stored integer carries: the host reads
-// `raw / 2^frac` and writes `round(value * 2^frac)`. It is what lets a device
-// hold a parameter in whatever fixed-point form its arithmetic wants -- a gain
-// in Q22, a filter pole in Q16 -- while the host still sets it as 0.5 or 0.02.
-// The conversion happens on the host, which has a floating-point unit and no
-// deadline; the device only ever sees the integer it wanted.
+// `frac` es cuántos bits fraccionarios lleva el entero almacenado: la
+// computadora lee `raw / 2^frac` y escribe `round(valor * 2^frac)`. Es lo que le
+// permite a un dispositivo guardar un parámetro en la forma de punto fijo que su
+// aritmética prefiera —una ganancia en Q22, el polo de un filtro en Q16— mientras
+// la computadora lo sigue fijando como 0.5 o 0.02. La conversión ocurre en la
+// computadora, que tiene unidad de punto flotante y no tiene plazo que cumplir;
+// el dispositivo sólo ve el entero que quería.
 //
-// A power of two rather than a channel's arbitrary float scale, because that is
-// what a fixed-point format actually is, and because it survives the wire
-// exactly: a Q22 scale is 2.38e-7, which no fixed number of decimal places
-// prints usefully for both it and a Q30's 9.3e-10. Use 0 for a parameter that
-// is already in natural units, including any f32. Negative values scale up.
+// Una potencia de dos en lugar de la escala flotante arbitraria de un canal,
+// porque eso es lo que realmente es un formato de punto fijo, y porque sobrevive
+// al cable de forma exacta: una escala Q22 es 2.38e-7, y ningún número fijo de
+// decimales la imprime de manera útil junto con los 9.3e-10 de una Q30. Usar 0
+// para un parámetro que ya está en unidades naturales, incluido cualquier f32.
+// Los valores negativos escalan hacia arriba.
 struct CtrlParam
 {
     char    name[CTRL_NAME_LEN];
@@ -89,9 +99,9 @@ struct CtrlParam
     int8_t  frac;
 };
 
-// A telemetry column. `scale` and `unit` are passed through to the host, which
-// multiplies the raw integer by `scale` to get engineering units -- the device
-// never spends cycles on the conversion.
+// Una columna de telemetría. `scale` y `unit` se pasan tal cual a la
+// computadora, que multiplica el entero crudo por `scale` para obtener unidades
+// de ingeniería; el dispositivo nunca gasta ciclos en la conversión.
 struct CtrlChannel
 {
     char        name[CTRL_NAME_LEN];
@@ -105,53 +115,57 @@ class CtrlLink
 {
     public:
 
-    // `dt_us` is the nominal control period, reported to the host so it can
-    // turn tick numbers into seconds. The tables stay owned by the caller and
-    // must live in PROGMEM.
+    // `dt_us` es el período de control nominal, que se le informa a la
+    // computadora para que pueda convertir números de tick en segundos. Las
+    // tablas siguen perteneciendo a quien llama y tienen que vivir en PROGMEM.
     //
-    // Returns false if the channel table would produce a row longer than
-    // CTRL_MAX_ROW; the link still runs, but streaming stays disabled.
+    // Devuelve false si la tabla de canales produjera una fila más larga que
+    // CTRL_MAX_ROW; el enlace igual funciona, pero el flujo queda deshabilitado.
     static bool begin(uint32_t baud,
                       const CtrlParam* params, uint8_t param_count,
                       const CtrlChannel* channels, uint8_t channel_count,
                       uint32_t dt_us);
 
-    // Reads whatever the host has sent and executes any complete command.
-    // Non-blocking. Call once per control period, before or after emit().
+    // Lee lo que haya mandado la computadora y ejecuta cualquier comando
+    // completo. No bloquea. Llamar una vez por período de control, antes o
+    // después de emit().
     static void poll(void);
 
-    // Advances the tick and, if streaming and the row is not decimated away,
-    // writes one row. Call exactly once per control period, from the same
-    // context that computed the channel variables -- the channels are read
-    // through their pointers here, so this must not race the code writing them.
+    // Avanza el tick y, si hay flujo y la diezmación no descarta la fila,
+    // escribe una fila. Llamar exactamente una vez por período de control, desde
+    // el mismo contexto que calculó las variables de los canales: acá los
+    // canales se leen a través de sus punteros, así que esto no puede competir
+    // con el código que los escribe.
     //
-    // Returns false if the row was dropped for lack of room in the transmit
-    // buffer. Never blocks and never stalls the control loop.
+    // Devuelve false si la fila se descartó por falta de lugar en el buffer de
+    // transmisión. Nunca bloquea y nunca frena el lazo de control.
     static bool emit(void);
 
     static bool     streaming(void) { return m_streaming; }
     static uint32_t rows(void)      { return m_rows; }
     static uint32_t drops(void)     { return m_drops; }
 
-    // Counts parameter writes accepted from the host. A sketch with constants
-    // derived from its parameters -- a gain converted to fixed point, a filter
-    // coefficient computed from a time constant -- can watch this one value
-    // instead of comparing every parameter it depends on, and do the derivation
-    // only when something actually moved. Wraps; compare for difference, not
-    // for order.
+    // Cuenta las escrituras de parámetros aceptadas de la computadora. Un sketch
+    // con constantes derivadas de sus parámetros —una ganancia convertida a
+    // punto fijo, un coeficiente de filtro calculado a partir de una constante
+    // de tiempo— puede vigilar este único valor en lugar de comparar cada
+    // parámetro del que depende, y hacer la derivación sólo cuando algo se movió
+    // de verdad. Da la vuelta; comparar por diferencia, no por orden.
     static uint16_t writes(void)    { return m_writes; }
 
-    // Nominal control period. The sketch may change it at runtime as long as it
-    // tells the link, so the header the host reads stays truthful.
+    // Período de control nominal. El sketch puede cambiarlo en tiempo de
+    // ejecución siempre que se lo avise al enlace, para que el encabezado que lee
+    // la computadora siga diciendo la verdad.
     static void     set_period_us(uint32_t dt_us) { m_dt_us = dt_us; }
     static uint32_t period_us(void)               { return m_dt_us; }
 
-    // Extra text for the "id" reply, e.g. the sketch name. Must be a PROGMEM
-    // string; kept as a pointer, not copied.
+    // Texto adicional para la respuesta de "id", por ejemplo el nombre del
+    // sketch. Tiene que ser una cadena en PROGMEM; se guarda como puntero, no se
+    // copia.
     static void set_id(const __FlashStringHelper* id) { m_id = id; }
 
-    // Emits "# note <text>" as an out-of-band line. Safe to call while
-    // streaming: the host records it against the current tick.
+    // Emite "# note <texto>" como línea fuera de banda. Es seguro llamarlo
+    // mientras hay flujo: la computadora lo registra contra el tick actual.
     static void note(const __FlashStringHelper* text);
 
     private:
@@ -165,8 +179,9 @@ class CtrlLink
     static void cmd_start(void);
     static void cmd_stop(void);
 
-    // Returns the index of `name` in the parameter table, or -1. Built-in
-    // parameters live above the user table and are searched first.
+    // Devuelve el índice de `name` en la tabla de parámetros, o -1. Los
+    // parámetros incorporados viven por encima de la tabla del usuario y se
+    // buscan primero.
     static int16_t find_param(const char* name);
     static void    print_param_value(int16_t index);
 
@@ -177,8 +192,9 @@ class CtrlLink
     static uint8_t hex_width(uint8_t type);
     static uint8_t row_width(void);
 
-    // Parameters the link owns itself. Searched before the sketch's table and
-    // listed alongside it, so the host discovers them the same way.
+    // Parámetros que el propio enlace administra. Se buscan antes que la tabla
+    // del sketch y se listan junto con ella, así que la computadora los descubre
+    // de la misma manera.
     static const CtrlParam k_builtin[];
     static const uint8_t   K_BUILTIN_COUNT = 1;
 
@@ -194,10 +210,10 @@ class CtrlLink
     static bool    m_cmd_overflow;
 
     static bool     m_streaming;
-    static bool     m_usable;      // row fits in CTRL_MAX_ROW
+    static bool     m_usable;      // la fila entra en CTRL_MAX_ROW
     static uint16_t m_tick;
-    static uint16_t m_decimate;    // emit one row every m_decimate ticks
-    static uint16_t m_dec_count;   // ticks still to skip before the next row
+    static uint16_t m_decimate;    // emitir una fila cada m_decimate ticks
+    static uint16_t m_dec_count;   // ticks que faltan saltear antes de la próxima fila
     static uint32_t m_dt_us;
     static uint32_t m_rows;
     static uint32_t m_drops;

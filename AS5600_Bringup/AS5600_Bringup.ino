@@ -1,27 +1,31 @@
-// AS5600 bring-up sketch
+// Sketch de puesta en marcha del AS5600
 //
 // Hardware:
 // Arduino UNO
-// Hall Position Sensor: AS5600 (I2C)
+// Sensor de posición de efecto Hall: AS5600 (I2C)
 //
-// Wiring: SDA -> A4, SCL -> A5, VDD -> 5V, GND -> GND
-// (The AS5600 breakout boards carry their own 3V3 regulator and bus pull-ups.
-//  A bare AS5600 in 3.3V mode needs level shifting and 4.7k pull-ups to 3V3.)
+// Conexionado: SDA -> A4, SCL -> A5, VDD -> 5V, GND -> GND
+// (Las plaquetas de AS5600 traen su propio regulador de 3V3 y las resistencias
+//  de pull-up del bus. Un AS5600 pelado en modo 3,3 V necesita adaptación de
+//  niveles y pull-ups de 4,7k a 3V3.)
 //
-// Register map, CONF fields and STATUS bits are per the AS5600 datasheet
-// [v1-06] 2018-Jun-20, Figures 21/22/23 (Docs/infineon-as5600-datasheet-en.pdf).
+// El mapa de registros, los campos de CONF y los bits de STATUS siguen la hoja
+// de datos del AS5600 [v1-06] 2018-Jun-20, Figuras 21/22/23
+// (Docs/infineon-as5600-datasheet-en.pdf).
 //
-// Output: 115200 baud. Configuration is dumped at startup (and again whenever a
-// character is sent over the serial monitor); telemetry streams at 5 Hz.
+// Salida: 115200 baudios. La configuración se vuelca al arrancar (y de nuevo
+// cada vez que se envía un carácter por el monitor serie); la telemetría sale a
+// 5 Hz.
 
 #include <Wire.h>
 
-// Set to 0 if the AS5600 is supplied from 3.3V: the AGC range halves.
+// Poner en 0 si el AS5600 se alimenta con 3,3 V: el rango del AGC se reduce a la
+// mitad.
 #define AS5600_VDD_5V 1
 
-static const uint8_t AS5600_ADDR = 0x36;  // 7-bit, 0110110b
+static const uint8_t AS5600_ADDR = 0x36;  // 7 bits, 0110110b
 
-// Register addresses (high byte first for the 12-bit registers).
+// Direcciones de registro (byte alto primero en los registros de 12 bits).
 static const uint8_t REG_ZMCO      = 0x00;
 static const uint8_t REG_ZPOS_H    = 0x01;
 static const uint8_t REG_MPOS_H    = 0x03;
@@ -33,39 +37,41 @@ static const uint8_t REG_STATUS    = 0x0B;
 static const uint8_t REG_AGC       = 0x1A;
 static const uint8_t REG_MAG_H     = 0x1B;
 
-// STATUS register bits (Figure 23).
-static const uint8_t STATUS_MH = _BV(3);  // AGC minimum gain overflow, magnet too strong
-static const uint8_t STATUS_ML = _BV(4);  // AGC maximum gain overflow, magnet too weak
-static const uint8_t STATUS_MD = _BV(5);  // magnet was detected
+// Bits del registro STATUS (Figura 23).
+static const uint8_t STATUS_MH = _BV(3);  // desborde de ganancia mínima del AGC, imán muy fuerte
+static const uint8_t STATUS_ML = _BV(4);  // desborde de ganancia máxima del AGC, imán muy débil
+static const uint8_t STATUS_MD = _BV(5);  // se detectó el imán
 
-// AGC should sit near the middle of its range; the airgap is adjusted to get there.
+// El AGC tiene que quedar cerca del medio de su rango; el entrehierro se ajusta
+// hasta llegar ahí.
 #if AS5600_VDD_5V
 static const uint8_t AGC_FULL_SCALE = 255;
 #else
 static const uint8_t AGC_FULL_SCALE = 128;
 #endif
 
-// Last I2C error, so every read can report why it failed instead of returning
-// a silent zero. 0 = OK, 1..4 = Wire.endTransmission() codes, 5 = short read.
+// Último error de I2C, para que cada lectura pueda informar por qué falló en
+// lugar de devolver un cero mudo. 0 = OK, 1..4 = códigos de
+// Wire.endTransmission(), 5 = lectura corta.
 static uint8_t g_i2cError = 0;
 
 static const __FlashStringHelper *i2cErrorText(uint8_t err) {
   switch (err) {
     case 0: return F("ok");
-    case 1: return F("data too long for buffer");
-    case 2: return F("NACK on address (device not responding)");
-    case 3: return F("NACK on data");
-    case 4: return F("bus error");
-    case 5: return F("short read (fewer bytes than requested)");
-    default: return F("unknown");
+    case 1: return F("datos demasiado largos para el buffer");
+    case 2: return F("NACK en la direccion (el dispositivo no responde)");
+    case 3: return F("NACK en los datos");
+    case 4: return F("error de bus");
+    case 5: return F("lectura corta (menos bytes de los pedidos)");
+    default: return F("desconocido");
   }
 }
 
-// Reads `count` bytes starting at `reg`. Returns false and sets g_i2cError on failure.
+// Lee `count` bytes a partir de `reg`. Devuelve false y carga g_i2cError si falla.
 static bool readRegs(uint8_t reg, uint8_t *buf, uint8_t count) {
   Wire.beginTransmission(AS5600_ADDR);
   Wire.write(reg);
-  uint8_t err = Wire.endTransmission();  // STOP, then a fresh START for the read
+  uint8_t err = Wire.endTransmission();  // STOP, y despues un START nuevo para la lectura
   if (err != 0) {
     g_i2cError = err;
     return false;
@@ -85,7 +91,8 @@ static bool read8(uint8_t reg, uint8_t *value) {
   return readRegs(reg, value, 1);
 }
 
-// 12-bit registers: high byte first, upper nibble of the high byte is unused.
+// Registros de 12 bits: byte alto primero, el nibble superior del byte alto no
+// se usa.
 static bool read12(uint8_t regHigh, uint16_t *value) {
   uint8_t buf[2];
   if (!readRegs(regHigh, buf, 2)) {
@@ -95,8 +102,9 @@ static bool read12(uint8_t regHigh, uint16_t *value) {
   return true;
 }
 
-// 0..4095 counts -> full int16_t range, i.e. Q15 turns: -32768..32767 maps to
-// -180..+180 degrees and wraps at the same point the sensor does.
+// 0..4095 cuentas -> rango completo de int16_t, es decir vueltas en Q15:
+// -32768..32767 mapea a -180..+180 grados y da la vuelta en el mismo punto que
+// el sensor.
 static int16_t angleToInt16(uint16_t counts) {
   return (int16_t)((uint16_t)counts << 4);
 }
@@ -114,14 +122,14 @@ static void printPaddedHex(uint16_t value, uint8_t digits) {
   Serial.print(value, HEX);
 }
 
-// ---------------------------------------------------------------- CONF decode
+// ------------------------------------------------------- decodificación de CONF
 
 static void printConf(uint16_t conf) {
   Serial.print(F("CONF     = 0x"));
   printPaddedHex(conf, 4);
   Serial.println();
 
-  Serial.print(F("  PM   (power mode)      = "));
+  Serial.print(F("  PM   (modo de consumo)   = "));
   switch (conf & 0x03) {
     case 0: Serial.println(F("NOM")); break;
     case 1: Serial.println(F("LPM1")); break;
@@ -129,23 +137,23 @@ static void printConf(uint16_t conf) {
     default: Serial.println(F("LPM3")); break;
   }
 
-  Serial.print(F("  HYST (hysteresis)      = "));
+  Serial.print(F("  HYST (histeresis)        = "));
   switch ((conf >> 2) & 0x03) {
-    case 0: Serial.println(F("OFF")); break;
+    case 0: Serial.println(F("APAGADA")); break;
     case 1: Serial.println(F("1 LSB")); break;
     case 2: Serial.println(F("2 LSBs")); break;
     default: Serial.println(F("3 LSBs")); break;
   }
 
-  Serial.print(F("  OUTS (output stage)    = "));
+  Serial.print(F("  OUTS (etapa de salida)   = "));
   switch ((conf >> 4) & 0x03) {
-    case 0: Serial.println(F("analog, full range 0..100% VDD")); break;
-    case 1: Serial.println(F("analog, reduced range 10..90% VDD")); break;
-    case 2: Serial.println(F("digital PWM")); break;
-    default: Serial.println(F("reserved")); break;
+    case 0: Serial.println(F("analogica, rango completo 0..100% VDD")); break;
+    case 1: Serial.println(F("analogica, rango reducido 10..90% VDD")); break;
+    case 2: Serial.println(F("PWM digital")); break;
+    default: Serial.println(F("reservado")); break;
   }
 
-  Serial.print(F("  PWMF (PWM frequency)   = "));
+  Serial.print(F("  PWMF (frecuencia de PWM) = "));
   switch ((conf >> 6) & 0x03) {
     case 0: Serial.println(F("115 Hz")); break;
     case 1: Serial.println(F("230 Hz")); break;
@@ -153,7 +161,7 @@ static void printConf(uint16_t conf) {
     default: Serial.println(F("920 Hz")); break;
   }
 
-  Serial.print(F("  SF   (slow filter)     = "));
+  Serial.print(F("  SF   (filtro lento)      = "));
   switch ((conf >> 8) & 0x03) {
     case 0: Serial.println(F("16x")); break;
     case 1: Serial.println(F("8x")); break;
@@ -161,9 +169,9 @@ static void printConf(uint16_t conf) {
     default: Serial.println(F("2x")); break;
   }
 
-  Serial.print(F("  FTH  (fast filter thr) = "));
+  Serial.print(F("  FTH  (umbral f. rapido)  = "));
   switch ((conf >> 10) & 0x07) {
-    case 0: Serial.println(F("slow filter only")); break;
+    case 0: Serial.println(F("solo filtro lento")); break;
     case 1: Serial.println(F("6 LSBs")); break;
     case 2: Serial.println(F("7 LSBs")); break;
     case 3: Serial.println(F("9 LSBs")); break;
@@ -173,35 +181,35 @@ static void printConf(uint16_t conf) {
     default: Serial.println(F("10 LSBs")); break;
   }
 
-  Serial.print(F("  WD   (watchdog)        = "));
-  Serial.println((conf & _BV(13)) ? F("ON") : F("OFF"));
+  Serial.print(F("  WD   (perro guardian)    = "));
+  Serial.println((conf & _BV(13)) ? F("ENCENDIDO") : F("APAGADO"));
 }
 
-// ------------------------------------------------------- one-shot config dump
+// ------------------------------------- volcado de configuración, una sola vez
 
 static void printAngleRegister(const __FlashStringHelper *name, uint8_t reg) {
   uint16_t counts;
   Serial.print(name);
   if (!read12(reg, &counts)) {
-    Serial.print(F("<read failed: "));
+    Serial.print(F("<fallo la lectura: "));
     Serial.print(i2cErrorText(g_i2cError));
     Serial.println('>');
     return;
   }
   Serial.print(counts);
-  Serial.print(F(" counts ("));
+  Serial.print(F(" cuentas ("));
   Serial.print(countsToDegrees(counts), 2);
-  Serial.println(F(" deg)"));
+  Serial.println(F(" grados)"));
 }
 
 static void dumpConfiguration() {
-  Serial.println(F("--- AS5600 configuration -------------------------------"));
+  Serial.println(F("--- configuracion del AS5600 ---------------------------"));
 
   uint8_t zmco;
   Serial.print(F("ZMCO     = "));
   if (read8(REG_ZMCO, &zmco)) {
     Serial.print(zmco & 0x03);
-    Serial.println(F(" (times ZPOS/MPOS have been burned; max 3)"));
+    Serial.println(F(" (veces que se grabaron ZPOS/MPOS; maximo 3)"));
   } else {
     Serial.println(i2cErrorText(g_i2cError));
   }
@@ -210,21 +218,22 @@ static void dumpConfiguration() {
   printAngleRegister(F("MPOS     = "), REG_MPOS_H);
   printAngleRegister(F("MANG     = "), REG_MANG_H);
 
-  // CONF is 14 bits wide, so read the two bytes directly rather than via read12().
+  // CONF tiene 14 bits de ancho, asi que se leen los dos bytes directamente en
+  // lugar de usar read12().
   uint8_t confBuf[2];
   if (readRegs(REG_CONF_H, confBuf, 2)) {
     printConf(((((uint16_t)confBuf[0] << 8) | confBuf[1]) & 0x3FFF));
   } else {
-    Serial.print(F("CONF     = <read failed: "));
+    Serial.print(F("CONF     = <fallo la lectura: "));
     Serial.print(i2cErrorText(g_i2cError));
     Serial.println('>');
   }
   Serial.println(F("--------------------------------------------------------"));
-  Serial.println(F("Send any character to re-dump the configuration."));
+  Serial.println(F("Enviar cualquier caracter para volcar de nuevo la configuracion."));
   Serial.println();
 }
 
-// ------------------------------------------------------------------- telemetry
+// ------------------------------------------------------------------ telemetría
 
 static void printTelemetry() {
   uint16_t rawAngle, angle, magnitude;
@@ -242,7 +251,7 @@ static void printTelemetry() {
   if (g_i2cError) err = g_i2cError;
 
   if (!ok) {
-    Serial.print(F("I2C ERROR: "));
+    Serial.print(F("ERROR DE I2C: "));
     Serial.println(i2cErrorText(err));
     return;
   }
@@ -252,8 +261,8 @@ static void printTelemetry() {
   Serial.print(F("  ANGLE="));
   Serial.print(angle);
   Serial.print(F("  int16="));
-  Serial.print(angleToInt16(angle));       // Q15 turns, +/-180 deg full scale
-  Serial.print(F("  deg="));
+  Serial.print(angleToInt16(angle));       // vueltas en Q15, +/-180 grados a fondo de escala
+  Serial.print(F("  grados="));
   Serial.print(countsToDegrees(angle), 2);
 
   Serial.print(F("  AGC="));
@@ -271,23 +280,24 @@ static void printTelemetry() {
   Serial.print((status & STATUS_MH) ? F(" MH") : F(" --"));
   Serial.print(']');
 
-  // Warnings and errors, spelled out.
+  // Advertencias y errores, dichos con todas las letras.
   if (!(status & STATUS_MD)) {
-    Serial.print(F("  ERROR: no magnet detected"));
+    Serial.print(F("  ERROR: no se detecta el iman"));
   }
   if (status & STATUS_ML) {
-    Serial.print(F("  WARN: AGC max gain overflow, magnet too weak / airgap too large"));
+    Serial.print(F("  AVISO: desborde de ganancia maxima del AGC, iman muy debil / entrehierro muy grande"));
   }
   if (status & STATUS_MH) {
-    Serial.print(F("  WARN: AGC min gain overflow, magnet too strong / airgap too small"));
+    Serial.print(F("  AVISO: desborde de ganancia minima del AGC, iman muy fuerte / entrehierro muy chico"));
   }
   if ((status & STATUS_MD) && !(status & (STATUS_ML | STATUS_MH))) {
-    // In range, but flag a gain that is far off centre: the airgap wants tuning.
+    // Está en rango, pero se marca una ganancia muy corrida del centro: el
+    // entrehierro pide ajuste.
     uint8_t quarter = AGC_FULL_SCALE / 4;
     if (agc < quarter) {
-      Serial.print(F("  NOTE: AGC low, consider increasing airgap"));
+      Serial.print(F("  NOTA: AGC bajo, conviene aumentar el entrehierro"));
     } else if (agc > (uint8_t)(AGC_FULL_SCALE - quarter)) {
-      Serial.print(F("  NOTE: AGC high, consider reducing airgap"));
+      Serial.print(F("  NOTA: AGC alto, conviene reducir el entrehierro"));
     }
   }
   Serial.println();
@@ -298,28 +308,28 @@ static void printTelemetry() {
 void setup() {
   Serial.begin(115200);
   while (!Serial) {
-    ;  // harmless on the UNO, needed on native-USB boards
+    ;  // inofensivo en el UNO, necesario en placas con USB nativo
   }
 
   Wire.begin();
-  Wire.setClock(400000);  // AS5600 supports fast mode
+  Wire.setClock(400000);  // el AS5600 soporta modo rapido
 
   Serial.println();
-  Serial.println(F("AS5600 bring-up"));
-  Serial.print(F("I2C address 0x"));
+  Serial.println(F("Puesta en marcha del AS5600"));
+  Serial.print(F("Direccion I2C 0x"));
   Serial.println(AS5600_ADDR, HEX);
-  Serial.print(F("Supply assumed: "));
+  Serial.print(F("Alimentacion supuesta: "));
   Serial.println(AS5600_VDD_5V ? F("5V (AGC 0..255)") : F("3.3V (AGC 0..128)"));
 
-  // Probe before doing anything else: a NACK here means wiring or pull-ups.
+  // Sondear antes que nada: un NACK acá es cableado o pull-ups.
   Wire.beginTransmission(AS5600_ADDR);
   uint8_t err = Wire.endTransmission();
   if (err != 0) {
-    Serial.print(F("Device did not ACK: "));
+    Serial.print(F("El dispositivo no dio ACK: "));
     Serial.println(i2cErrorText(err));
-    Serial.println(F("Check SDA/SCL wiring, pull-ups and supply; retrying in loop()."));
+    Serial.println(F("Revisar el cableado de SDA/SCL, los pull-ups y la alimentacion; se reintenta en loop()."));
   } else {
-    Serial.println(F("Device ACKed."));
+    Serial.println(F("El dispositivo dio ACK."));
   }
 
   dumpConfiguration();

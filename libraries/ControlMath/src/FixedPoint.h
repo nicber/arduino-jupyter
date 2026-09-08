@@ -1,39 +1,44 @@
-// Compile-time-scaled fixed point, for control loops that must not touch float.
+// Punto fijo con escala definida en tiempo de compilación, para lazos de control
+// que no pueden tocar el punto flotante.
 //
-// A `Fixed<Raw, Frac>` is an integer of type `Raw` holding a value scaled by
-// 2^Frac. The scale is a template parameter, so choosing it is free: every
-// shift is folded at compile time and a conversion between scales that a
-// float version would have done at runtime does not exist at all.
+// Un `Fixed<Raw, Frac>` es un entero de tipo `Raw` que guarda un valor escalado
+// por 2^Frac. La escala es un parámetro de plantilla, así que elegirla es gratis:
+// todo desplazamiento se resuelve en tiempo de compilación y una conversión entre
+// escalas que una versión en punto flotante habría hecho en tiempo de ejecución
+// directamente no existe.
 //
-// Why not an existing library: fpm and CNL are the good ones, and both need
-// <type_traits> and <limits>, which avr-g++ does not ship. The single trait
-// that is actually needed here is four lines, so it is spelled out below.
+// Por qué no una biblioteca existente: fpm y CNL son las buenas, y las dos
+// necesitan <type_traits> y <limits>, que avr-g++ no provee. El único rasgo que
+// hace falta acá son cuatro líneas, así que está escrito más abajo.
 //
-// Picking a scale. Frac buys resolution at the cost of range: a value needs
-// `Frac` bits below the point and enough above it for its largest magnitude,
-// and the two must fit in `Raw`. A gain of 0.5 and a gain of 0.00005 want very
-// different scales, which is exactly why this is a parameter and not 16.
+// Cómo elegir una escala. Frac compra resolución a costa de rango: un valor
+// necesita `Frac` bits debajo de la coma y los suficientes arriba para su mayor
+// magnitud, y los dos tienen que entrar en `Raw`. Una ganancia de 0,5 y una de
+// 0,00005 quieren escalas muy distintas, que es justamente por qué esto es un
+// parámetro y no 16.
 //
-//   Fixed<int32_t, 22> kp;   // +/-511,     resolution 2.4e-7
-//   Fixed<int32_t, 30> ki;   // +/-1.99,    resolution 9.3e-10
+//   Fixed<int32_t, 22> kp;   // +/-511,     resolución 2.4e-7
+//   Fixed<int32_t, 30> ki;   // +/-1.99,    resolución 9.3e-10
 //
-// Cost on an AVR. Products of two `int32_t` go through a 64-bit intermediate
-// (__muldi3, of the order of 200 cycles); products of two `int16_t` compile to
-// a handful of MUL instructions. Prefer the narrowest `Raw` that holds the
-// range, and keep multiplies out of the inner loop where the operands are
-// known to be small.
+// Costo en un AVR. Los productos de dos `int32_t` pasan por un intermedio de
+// 64 bits (__muldi3, del orden de 200 ciclos); los productos de dos `int16_t`
+// compilan a un puñado de instrucciones MUL. Conviene el `Raw` más angosto que
+// contenga el rango, y mantener las multiplicaciones fuera del bucle interno
+// donde se sabe que los operandos son chicos.
 //
-// Every operation that discards bits rounds to nearest, ties towards positive
-// infinity. An arithmetic right shift on its own rounds towards minus infinity
-// instead, which puts a half-LSB DC offset on a proportional term -- a steady
-// pull to one side that a control loop then has to integrate away.
+// Toda operación que descarta bits redondea al más cercano, con los empates
+// hacia más infinito. Un desplazamiento aritmético a la derecha por sí solo
+// redondea hacia menos infinito, lo que le pone medio LSB de continua a un
+// término proporcional: un tirón permanente hacia un lado que después el lazo de
+// control tiene que integrar para sacárselo de encima.
 
 #ifndef CONTROLMATH_FIXEDPOINT_H
 #define CONTROLMATH_FIXEDPOINT_H
 
 #include <stdint.h>
 
-// The one trait needed: the type a product of two `T` is computed in.
+// El único rasgo que hace falta: el tipo en el que se calcula el producto de dos
+// `T`.
 template <typename T> struct FixedWider;
 template <> struct FixedWider<int8_t>  { typedef int16_t type; };
 template <> struct FixedWider<int16_t> { typedef int32_t type; };
@@ -50,15 +55,15 @@ class Fixed
     static const unsigned FRAC = Frac;
     static const Raw      ONE  = (Raw)1 << Frac;
 
-    // Half an LSB, used to round rather than truncate. Frac == 0 is a plain
-    // integer and has nothing to round, and the shift below must still be a
-    // legal one for the compiler to accept the dead branch.
+    // Medio LSB, para redondear en lugar de truncar. Frac == 0 es un entero
+    // común y no tiene nada que redondear, y el desplazamiento de abajo igual
+    // tiene que ser legal para que el compilador acepte la rama muerta.
     static const Raw      HALF = Frac ? ((Raw)1 << (Frac ? Frac - 1 : 0)) : 0;
 
     constexpr Fixed(void) : m_raw(0) {}
 
-    // Tagged so that a bare integer cannot silently become a Fixed with a
-    // scale it was never in.
+    // Etiquetado para que un entero pelado no pueda convertirse en silencio en un
+    // Fixed con una escala en la que nunca estuvo.
     struct FromRaw {};
     constexpr Fixed(Raw value, FromRaw) : m_raw(value) {}
 
@@ -67,9 +72,10 @@ class Fixed
         return Fixed(value, FromRaw());
     }
 
-    // The only place a float is allowed. Call it on a literal and it folds to a
-    // constant; call it when a host-supplied gain changes and it costs one
-    // float multiply, outside the control step.
+    // El único lugar donde se permite un float. Llamarlo sobre un literal y se
+    // reduce a una constante; llamarlo cuando cambia una ganancia enviada por la
+    // computadora y cuesta una multiplicación en punto flotante, fuera del paso
+    // de control.
     static constexpr Fixed from_float(float value)
     {
         return from_raw((Raw)(value * (float)ONE + (value >= 0.0f ? 0.5f : -0.5f)));
@@ -84,36 +90,38 @@ class Fixed
     constexpr float to_float(void) const { return (float)m_raw / (float)ONE; }
     constexpr Raw   to_int(void)   const { return (Raw)((m_raw + HALF) >> Frac); }
 
-    // Multiply a plain integer by this value and get a plain integer back --
-    // the workhorse of a control law, where a gain in engineering units meets a
-    // signal in raw counts. The product is formed in the wider type, so the
-    // only overflow to worry about is of the result itself.
+    // Multiplicar un entero común por este valor y recuperar un entero común: el
+    // caballito de batalla de una ley de control, donde una ganancia en unidades
+    // de ingeniería se encuentra con una señal en cuentas crudas. El producto se
+    // forma en el tipo ancho, así que el único desborde del que preocuparse es el
+    // del resultado.
     template <typename Int>
     constexpr Raw scale(Int x) const
     {
         return round_shift((wide_type)m_raw * (wide_type)x);
     }
 
-    // scale(), but exact over a sequence of calls. The bits below the result's
-    // LSB are handed back in `carry` instead of being rounded away, so feeding
-    // the same carry to the next call recovers them. A running sum of these is
-    // exact where a sum of scale() drifts by up to half an LSB per term -- and,
-    // worse, stalls completely once a term rounds to zero.
+    // scale(), pero exacto a lo largo de una secuencia de llamadas. Los bits por
+    // debajo del LSB del resultado se devuelven en `carry` en lugar de perderse
+    // por redondeo, así que pasarle el mismo carry a la llamada siguiente los
+    // recupera. Una suma corriente de estos es exacta, mientras que una suma de
+    // scale() se desvía hasta medio LSB por término y, peor todavía, se frena del
+    // todo apenas un término redondea a cero.
     //
-    // `carry` must start at zero and belongs to the sequence, not to the value:
-    // one accumulator per running total.
+    // `carry` tiene que arrancar en cero y pertenece a la secuencia, no al valor:
+    // un acumulador por cada suma corriente.
     template <typename Int>
     Raw scale_carry(Int x, Raw& carry) const
     {
         wide_type product = (wide_type)m_raw * (wide_type)x + carry;
 
-        // The shift floors, so the remainder is never negative and the split
-        // is exact rather than merely close.
+        // El desplazamiento trunca hacia abajo, así que el resto nunca es
+        // negativo y la separación es exacta en lugar de apenas aproximada.
         carry = (Raw)product & (ONE - 1);
         return (Raw)(product >> Frac);
     }
 
-    // Same scale in, same scale out.
+    // Misma escala a la entrada, misma escala a la salida.
     constexpr Fixed operator+(Fixed o) const { return from_raw((Raw)(m_raw + o.m_raw)); }
     constexpr Fixed operator-(Fixed o) const { return from_raw((Raw)(m_raw - o.m_raw)); }
     constexpr Fixed operator-(void)    const { return from_raw((Raw)(-m_raw)); }
@@ -123,9 +131,9 @@ class Fixed
         return from_raw(round_shift((wide_type)m_raw * (wide_type)o.m_raw));
     }
 
-    // Re-scale to a different number of fractional bits. Both shift counts are
-    // clamped because both branches of the ternary are compiled, even though
-    // only one can ever be taken for a given pair of scales.
+    // Reescalar a otra cantidad de bits fraccionarios. Las dos cuentas de
+    // desplazamiento se acotan porque las dos ramas del ternario se compilan,
+    // aunque para un par de escalas dado sólo una pueda tomarse.
     template <unsigned Frac2>
     constexpr Fixed<Raw, Frac2> rescale(void) const
     {
@@ -143,9 +151,10 @@ class Fixed
 
     private:
 
-    // Shift `product` back down by Frac bits, rounding to nearest. The shift
-    // itself floors, so adding half an LSB first turns it into round-to-nearest
-    // with ties going up -- which is symmetric about zero, unlike the floor.
+    // Baja `product` de vuelta Frac bits, redondeando al más cercano. El
+    // desplazamiento en sí trunca hacia abajo, así que sumarle medio LSB antes lo
+    // convierte en redondeo al más cercano con los empates para arriba, que es
+    // simétrico respecto del cero, a diferencia del truncamiento.
     static constexpr Raw round_shift(wide_type product)
     {
         return (Raw)((product + (wide_type)HALF) >> Frac);

@@ -1,18 +1,22 @@
-// AS5600 magnetic angle sensor, read asynchronously for a fast poll loop.
+// Sensor magnético de ángulo AS5600, leído de manera asíncrona para un lazo de
+// muestreo rápido.
 //
-// The AS5600 suppresses auto-increment of its address pointer on reads of the
-// ANGLE, RAW ANGLE and MAGNITUDE registers (datasheet [v1-06] 2018-Jun-20,
-// page 13), so while the pointer is parked on RAW ANGLE every sample is a bare
-// two-byte read with no register write:
-//   START + SLA+R + high + low + STOP  ~= 90 us at 400 kHz.
-// That fits a 200 us (5 kHz) budget with room to spare; reloading the pointer
-// on every sample would cost roughly half again as much.
+// El AS5600 suprime el autoincremento de su puntero de direcciones en las
+// lecturas de los registros ANGLE, RAW ANGLE y MAGNITUDE (hoja de datos [v1-06]
+// 2018-Jun-20, página 13), así que mientras el puntero está estacionado en RAW
+// ANGLE cada muestra es una lectura pelada de dos bytes, sin escritura de
+// registro:
+//   START + SLA+R + alto + bajo + STOP  ~= 90 us a 400 kHz.
+// Eso entra con holgura en un presupuesto de 200 us (5 kHz); recargar el puntero
+// en cada muestra costaría alrededor de la mitad más.
 //
-// The pointer is armed lazily: whenever it is known to be somewhere else (at
-// startup, after a STATUS read, after a bus error) the next sample uses the
-// register-addressed form instead, which costs ~140 us once and re-parks it.
+// El puntero se prepara de manera perezosa: cada vez que se sabe que está en otro
+// lado (al arrancar, después de leer STATUS, después de un error de bus) la
+// muestra siguiente usa la forma con dirección de registro, que cuesta ~140 us
+// una sola vez y lo vuelve a estacionar.
 //
-// Bus is a static-dispatch policy (no virtuals). It must provide:
+// Bus es una política de despacho estático (sin funciones virtuales). Tiene que
+// proveer:
 //   static void begin(uint8_t address);
 //   static bool read(uint8_t* buffer, uint8_t length, void (*callback)(uint8_t));
 //   static bool read_register(uint8_t reg, uint8_t* buffer, uint8_t length,
@@ -31,29 +35,31 @@ class AS5600
 {
     public:
 
-    static const uint8_t DEVICE_ADDRESS = 0x36;  // 7-bit, 0110110b
+    static const uint8_t DEVICE_ADDRESS = 0x36;  // 7 bits, 0110110b
     static const uint8_t REG_STATUS     = 0x0B;
     static const uint8_t REG_RAWANGLE_H = 0x0C;
 
-    // STATUS register bits (datasheet Figure 23).
-    static const uint8_t STATUS_MH = _BV(3);  // AGC minimum gain overflow, magnet too strong
-    static const uint8_t STATUS_ML = _BV(4);  // AGC maximum gain overflow, magnet too weak
-    static const uint8_t STATUS_MD = _BV(5);  // magnet was detected
+    // Bits del registro STATUS (Figura 23 de la hoja de datos).
+    static const uint8_t STATUS_MH = _BV(3);  // desborde de ganancia mínima del AGC, imán muy fuerte
+    static const uint8_t STATUS_ML = _BV(4);  // desborde de ganancia máxima del AGC, imán muy débil
+    static const uint8_t STATUS_MD = _BV(5);  // se detectó el imán
 
-    // Call once, before the sample loop starts. The address pointer is armed by
-    // the first do_transfer(), so this does not touch the bus and cannot fail.
+    // Llamar una vez, antes de que arranque el lazo de muestreo. El puntero de
+    // direcciones lo prepara el primer do_transfer(), así que esto no toca el bus
+    // y no puede fallar.
     static void begin(void)
     {
         Bus::begin(DEVICE_ADDRESS);
         m_armed = false;
     }
 
-    // Start one sample. Non-blocking; meant to be called from a timer ISR.
+    // Lanza una muestra. No bloquea; está pensado para llamarse desde la ISR de
+    // un temporizador.
     static void do_transfer(void)
     {
         if (m_inflight)
         {
-            // Previous transfer has not completed: the bus is not keeping up.
+            // La transferencia anterior no terminó: el bus no está llegando.
             m_overruns++;
             return;
         }
@@ -64,8 +70,9 @@ class AS5600
 
         if (m_status_request)
         {
-            // Housekeeping, in place of one sample. Reading STATUS moves the
-            // address pointer, so the next sample has to re-arm it.
+            // Tarea de mantenimiento, en lugar de una muestra. Leer STATUS mueve
+            // el puntero de direcciones, así que la muestra siguiente tiene que
+            // volver a prepararlo.
             m_status_request = false;
             m_armed = false;
             started = Bus::read_register(REG_STATUS, m_rx, 1, &process_status_data);
@@ -86,20 +93,22 @@ class AS5600
         }
     }
 
-    // Latest completed sample, 0..4095.
-    // A 16-bit load is two instructions on AVR and the TWI ISR can land between
-    // them, so the read is made atomic rather than merely volatile.
+    // Última muestra completada, 0..4095.
+    // Una lectura de 16 bits son dos instrucciones en AVR y la ISR de TWI puede
+    // caer entre las dos, así que la lectura se hace atómica y no meramente
+    // volátil.
     static uint16_t counts(void) { return snapshot(m_counts); }
 
     static uint16_t samples(void)  { return snapshot(m_samples); }
     static uint16_t overruns(void) { return snapshot(m_overruns); }
     static uint16_t errors(void)   { return snapshot(m_errors); }
 
-    // Fetch the STATUS register. Hands the work to the sample loop, which does
-    // it on its next tick in place of one sample, then waits for the result.
-    // The caller blocks for up to one sample period; the loop itself is never
-    // held up and never reads a stale pointer. Costs 2 samples out of 5000.
-    // Returns false if the sample loop is not running.
+    // Busca el registro STATUS. Le encarga el trabajo al lazo de muestreo, que lo
+    // hace en su próximo tick en lugar de una muestra, y después espera el
+    // resultado. Quien llama se bloquea a lo sumo un período de muestreo; el lazo
+    // en sí nunca se demora y nunca lee un puntero desactualizado. Cuesta
+    // 2 muestras de 5000. Devuelve false si el lazo de muestreo no está
+    // corriendo.
     static bool read_status(uint8_t& out, uint16_t timeout_ms = 5)
     {
         m_status_ready = false;
@@ -121,19 +130,20 @@ class AS5600
 
     private:
 
-    // Runs in the TWI ISR.
+    // Corre en la ISR de TWI.
     static void process_read_data(uint8_t status)
     {
         if (Bus::ok(status))
         {
-            // 12-bit value, high byte first, upper nibble unused.
+            // Valor de 12 bits, byte alto primero, nibble superior sin usar.
             m_counts = (((uint16_t)m_rx[0] << 8) | m_rx[1]) & 0x0FFF;
             m_samples++;
             m_armed = true;
         }
         else
         {
-            // A failed transfer may have left the pointer anywhere.
+            // Una transferencia fallida puede haber dejado el puntero en
+            // cualquier lado.
             m_errors++;
             m_armed = false;
         }
@@ -141,7 +151,7 @@ class AS5600
         m_inflight = false;
     }
 
-    // Runs in the TWI ISR.
+    // Corre en la ISR de TWI.
     static void process_status_data(uint8_t status)
     {
         if (Bus::ok(status))
@@ -154,9 +164,10 @@ class AS5600
             m_errors++;
         }
 
-        // The pointer auto-incremented onto RAW ANGLE, but suppression is only
-        // documented when the pointer was *written* to the high byte, so treat
-        // it as unarmed and let the next sample set it explicitly.
+        // El puntero autoincrementó hasta RAW ANGLE, pero la supresión sólo está
+        // documentada para cuando el puntero fue *escrito* al byte alto, así que
+        // se lo trata como no preparado y se deja que la muestra siguiente lo
+        // fije explícitamente.
         m_armed = false;
         m_inflight = false;
     }
@@ -168,7 +179,7 @@ class AS5600
         return value;
     }
 
-    // Touched only in ISR context, so plain.
+    // Sólo se toca en contexto de ISR, así que va sin calificar.
     static uint8_t m_rx[2];
 
     static volatile bool     m_inflight;

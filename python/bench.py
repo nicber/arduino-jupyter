@@ -1,7 +1,7 @@
-"""The bench: this particular rig's build, connect and unit conventions.
+"""El banco: las convenciones de compilación, conexión y unidades de este equipo.
 
-Everything here is plumbing. It lives out of the notebook so that a notebook
-cell contains a controller and an experiment and nothing else.
+Todo lo que hay acá es cañería. Vive fuera del notebook para que una celda del
+notebook contenga un controlador y un experimento y nada más.
 
     from bench import *
 
@@ -10,10 +10,10 @@ cell contains a controller and an experiment and nothing else.
     dev.ref = dev.deg(45)
     df = dev.step('ref', dev.deg(90))
 
-`sync_board()` compiles if a source file changed, uploads if the binary changed,
-and reopens the link -- which resets the board. Every cell calls it, so every
-cell starts from the sketch's own defaults and no cell depends on the one above
-it having been run.
+`sync_board()` compila si cambió algún archivo fuente, carga si cambió el binario,
+y reabre el enlace, lo que resetea la placa. Todas las celdas lo llaman, así que
+cada celda arranca desde los valores por omisión del propio sketch y ninguna
+depende de que se haya corrido la de arriba.
 """
 
 from __future__ import annotations
@@ -37,164 +37,169 @@ SKETCH    = _HERE / 'ControlDemo'
 LIBRARIES = _HERE / 'libraries'
 BUILD_DIR = _HERE / 'build'
 
-# `mode` picks the controller, `target` picks the feedback it closes on.
+# `mode` elige el controlador, `target` elige la realimentación sobre la que
+# cierra.
 MODE_OPEN, MODE_PID, MODE_RAMP = 0, 1, 2
 POSITION,  CURRENT             = 0, 1
 
-# AS5600 STATUS bits.
+# Bits del registro STATUS del AS5600.
 _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
 
 _link = None
 
 
-# ----------------------------------------------------------------- the device
+# -------------------------------------------------------------- el dispositivo
 
 class Bench(CtrlLink):
-    """A CtrlLink that knows what this rig's numbers mean.
+    """Un CtrlLink que sabe qué significan los números de este equipo.
 
-    The board's parameters are all in its own units -- counts, ADC LSBs, gains
-    per sample. These turn them into the units an experiment is designed in.
+    Los parámetros de la placa están todos en sus propias unidades: cuentas, LSBs
+    del ADC, ganancias por muestra. Éstos los convierten a las unidades en las que
+    se diseña un experimento.
     """
 
     def channel(self, name):
         for column in self.channels:
             if column.name == name:
                 return column
-        raise CtrlLinkError(f'no channel called {name!r}')
+        raise CtrlLinkError(f'no hay ningun canal llamado {name!r}')
 
-    # ------------------------------------------------------------ setpoints
+    # ------------------------------------------------------------ referencias
 
     def deg(self, degrees):
-        """Degrees of shaft angle -> a `ref` for target = POSITION."""
+        """Grados de ángulo del eje -> un `ref` para target = POSITION."""
         return degrees / self.channel('y_uw').scale
 
     def ma(self, milliamps):
-        """Milliamps -> a `ref` for target = CURRENT."""
+        """Miliamperes -> un `ref` para target = CURRENT."""
         return milliamps / self.channel('i').scale
 
     def rev_per_s(self, revs):
-        """Revolutions per second -> a `refrate`, for target = POSITION.
+        """Vueltas por segundo -> un `refrate`, para target = POSITION.
 
-        `refrate` is added to `ref` once per control period, so the speed a
-        given rate produces depends on how fast the loop runs.
+        `refrate` se le suma a `ref` una vez por período de control, así que la
+        velocidad que produce una pendiente dada depende de qué tan rápido corre
+        el lazo.
         """
         return self.deg(revs * 360.0) * self.dt
 
-    # The other direction, for the two channels whose units follow `target`.
+    # El otro sentido, para los dos canales cuyas unidades siguen a `target`.
     def as_deg(self, values):
-        """`ref` or `e`, captured with target = POSITION -> degrees."""
+        """`ref` o `e`, capturados con target = POSITION -> grados."""
         return values * self.channel('y_uw').scale
 
     def as_ma(self, values):
-        """`ref` or `e`, captured with target = CURRENT -> milliamps."""
+        """`ref` o `e`, capturados con target = CURRENT -> miliamperes."""
         return values * self.channel('i').scale
 
-    # --------------------------------------------------------------- tuning
+    # --------------------------------------------------------------- ajuste
 
     def gains(self, kp=0.0, ki=0.0, kd=0.0):
-        """PID gains in continuous time: ki per second, kd in seconds.
+        """Ganancias del PID en tiempo continuo: ki por segundo, kd en segundos.
 
-        The board's gains are per sample, because that is what its arithmetic
-        does. dt converts. Set them through `dev.kp` directly to work in the
-        board's own terms instead.
+        Las ganancias de la placa son por muestra, porque eso es lo que hace su
+        aritmética. dt hace la conversión. Para trabajar en los términos de la
+        propia placa, fijarlas directamente con `dev.kp`.
         """
         dt = self.dt
         self.kp, self.ki, self.kd = kp, ki * dt, kd / dt
 
     def smooth(self, which, tau):
-        """Set a filter by time constant in seconds; tau = 0 turns it off.
+        """Fija un filtro por constante de tiempo en segundos; tau = 0 lo apaga.
 
-        `which` is 'y' (position), 'i' (current) or 'e' (the error the
-        derivative term sees). The board holds the pole itself, alpha, because
-        that is what the filter multiplies by.
+        `which` es 'y' (posición), 'i' (corriente) o 'e' (el error que ve el
+        término derivativo). La placa guarda el polo en sí, alpha, porque es por
+        lo que multiplica el filtro.
         """
         dt = self.dt
         self.set(f'alpha_{which}', dt / (tau + dt) if tau > 0 else 1.0)
 
     def zero(self):
-        """Call the shaft's present position zero.
+        """Toma la posición actual del eje como cero.
 
-        `y` reads as `offset - counts` wrapped, so moving `offset` down by the
-        present `y` puts `offset` on the present count and `y` on zero.
+        `y` se lee como `offset - counts` con vuelta, así que bajar `offset` en el
+        `y` actual pone `offset` sobre la cuenta actual y `y` en cero.
         """
         self.offset = (self.offset - self.y) % 4096
         self.y_uw = 0
 
     def rest(self):
-        """Open loop, zero command. Where every experiment should end."""
+        """Lazo abierto, comando en cero. Donde tendría que terminar todo experimento."""
         self.mode = MODE_OPEN
         self.uff = 0
 
-    # ------------------------------------------------------------- bringup
+    # ------------------------------------------------------- puesta en marcha
 
     def bringup(self, motor=True, u=120):
-        """Checks the hardware, one subsystem at a time.
+        """Verifica el hardware, un subsistema por vez.
 
-        Each line is a thing that can be wrong on its own: the link, the loop,
-        the magnet, the I2C bus, the current sense, the actuator. Run it first,
-        and after any change to the wiring -- a controller tuned against a
-        sensor that is not reading is a long afternoon.
+        Cada línea es algo que puede estar mal por su cuenta: el enlace, el lazo,
+        el imán, el bus I2C, la medición de corriente, el actuador. Conviene
+        correrlo primero, y después de cualquier cambio en el cableado: un
+        controlador ajustado contra un sensor que no está leyendo es una tarde
+        larga.
         """
         results = []
 
         def report(label, ok, detail):
             results.append(ok)
-            tag = {True: 'ok', False: 'FAIL', None: 'note'}[ok]
-            print(f'  [{tag:>4}]  {label:<14}  {detail}')
+            tag = {True: 'ok', False: 'FALLA', None: 'nota'}[ok]
+            print(f'  [{tag:>5}]  {label:<18}  {detail}')
 
-        print(f'bringup: {self.info}')
+        print(f'puesta en marcha: {self.info}')
 
         self.rest()
 
-        # 1. The control loop, and whether it is keeping to its period.
+        # 1. El lazo de control, y si está respetando su período.
         df = self.capture(1.0, warn=False)
         span = df['t'].iloc[-1] - df['t'].iloc[0]
         rate = len(df) / span
         want = 1e6 / df.attrs['dt_us']
-        report('control loop', abs(rate - want) < want * 0.02,
-               f'{rate:.0f} Hz against {want:.0f} nominal, '
-               f'{df.attrs["missed"]} missed, {df.attrs["drops"]} dropped')
+        report('lazo de control', abs(rate - want) < want * 0.02,
+               f'{rate:.0f} Hz contra {want:.0f} nominales, '
+               f'{df.attrs["missed"]} perdidos, {df.attrs["drops"]} descartados')
 
-        report('timing margin', df.attrs['maxlate'] < df.attrs['dt_us'] // 2,
-               f'worst service delay {df.attrs["maxlate"]} us of '
+        report('margen de tiempo', df.attrs['maxlate'] < df.attrs['dt_us'] // 2,
+               f'peor retardo de atencion {df.attrs["maxlate"]} us de '
                f'{df.attrs["dt_us"]} us')
 
-        # 2. The magnet, as the AS5600 itself sees it. This is the check that
-        #    catches a magnet mounted too far from the die, which otherwise
-        #    shows up only as a noisy angle nobody trusts.
+        # 2. El imán, tal como lo ve el propio AS5600. Ésta es la verificación que
+        #    detecta un imán montado demasiado lejos del chip, que si no aparece
+        #    sólo como un ángulo ruidoso en el que nadie confía.
         status = self.mstat
         if not status & _MAGNET_PRESENT:
-            report('magnet', False, 'not detected -- is it mounted over the chip?')
+            report('iman', False, 'no se detecta -- esta montado sobre el chip?')
         elif status & _MAGNET_WEAK:
-            report('magnet', False, 'too weak (AGC at maximum) -- move it closer')
+            report('iman', False, 'muy debil (AGC al maximo) -- acercarlo')
         elif status & _MAGNET_STRONG:
-            report('magnet', False, 'too strong (AGC at minimum) -- move it away')
+            report('iman', False, 'muy fuerte (AGC al minimo) -- alejarlo')
         else:
-            report('magnet', True, 'detected, AGC in range')
+            report('iman', True, 'detectado, AGC en rango')
 
-        # 3. The bus carrying the angle, separately from the magnet on the end
-        #    of it: a pull-up problem and a mounting problem look the same in
-        #    the data and are fixed in different places.
-        report('i2c bus', df.attrs['serr'] == 0 and df.attrs['sovr'] == 0,
-               f'{df.attrs["serr"]} transfer errors, {df.attrs["sovr"]} overruns')
+        # 3. El bus que transporta el ángulo, por separado del imán que está en la
+        #    otra punta: un problema de pull-ups y uno de montaje se ven igual en
+        #    los datos y se arreglan en lugares distintos.
+        report('bus i2c', df.attrs['serr'] == 0 and df.attrs['sovr'] == 0,
+               f'{df.attrs["serr"]} errores de transferencia, '
+               f'{df.attrs["sovr"]} desbordes')
 
         spread = df['y_uw'].max() - df['y_uw'].min()
-        report('angle', None if spread < 0.5 else True,
-               f'{df["y_uw"].iloc[-1]:.1f} deg, moved {spread:.2f} deg over the '
-               f'second' + ('  (turn the magnet to see it follow)'
-                            if spread < 0.5 else ''))
+        report('angulo', None if spread < 0.5 else True,
+               f'{df["y_uw"].iloc[-1]:.1f} grados, se movio {spread:.2f} grados '
+               f'en el segundo' + ('  (girar el iman para verlo seguir)'
+                                   if spread < 0.5 else ''))
 
-        # 4. Current sense at rest. A sensor reading far from zero with nothing
-        #    driven is an offset that will be integrated into every measurement
-        #    after it.
+        # 4. La medición de corriente en reposo. Un sensor que lee lejos de cero
+        #    sin nada accionado es un offset que se va a integrar en toda medición
+        #    posterior.
         rest_ma = df['i'].mean()
-        report('current sense', abs(rest_ma) < 50,
-               f'{rest_ma:+.1f} mA at rest (noise {df["i"].std():.1f} mA)')
+        report('medicion de i', abs(rest_ma) < 50,
+               f'{rest_ma:+.1f} mA en reposo (ruido {df["i"].std():.1f} mA)')
 
-        # 5. The actuator, and with it the whole chain: a command out, motion
-        #    and current back.
+        # 5. El actuador, y con él toda la cadena: un comando que sale, movimiento
+        #    y corriente que vuelven.
         if motor:
-            print(f'  driving the motor at u = {u} for 0.4 s ...')
+            print(f'  accionando el motor con u = {u} durante 0,4 s ...')
             self.zero()
             self.uff = u
             spun = self.capture(0.4, warn=False)
@@ -203,22 +208,22 @@ class Bench(CtrlLink):
             turned = abs(spun['y_uw'].iloc[-1] - spun['y_uw'].iloc[0]) / 360.0
             drawn = spun['i'].abs().max()
             report('motor', turned > 0.05 or drawn > rest_ma + 50,
-                   f'{turned:.2f} rev, {drawn:.0f} mA peak')
+                   f'{turned:.2f} vueltas, {drawn:.0f} mA de pico')
         else:
-            report('motor', None, 'skipped (motor=False)')
+            report('motor', None, 'omitido (motor=False)')
 
         bad = results.count(False)
-        print(f'\n{"all checks passed" if not bad else f"{bad} check(s) FAILED"}')
+        print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')
         return not bad
 
 
-# ------------------------------------------------------------- build and flash
+# ------------------------------------------------------- compilación y carga
 
 def _sources_hash():
-    """Fingerprint of everything the sketch is built from.
+    """Huella digital de todo aquello a partir de lo cual se construye el sketch.
 
-    Contents rather than timestamps: a git checkout rewrites mtimes without
-    changing a line, and would otherwise trigger a pointless rebuild.
+    Por contenido y no por marca de tiempo: un checkout de git reescribe las
+    mtime sin cambiar una línea, y si no dispararía una recompilación al pedo.
     """
     digest = hashlib.sha256()
     files = sorted(list(SKETCH.glob('*.ino')) +
@@ -230,27 +235,29 @@ def _sources_hash():
 
 
 def _run(argv, what):
-    """Runs a build tool and returns its output, or explains why it could not.
+    """Corre una herramienta de compilación y devuelve su salida, o explica por qué no pudo.
 
-    The encoding is pinned rather than left to the locale: arduino-cli emits
-    UTF-8, and a Windows console defaulting to cp1252 turns a stray character
-    in a compiler diagnostic into a UnicodeDecodeError that hides the actual
-    error. `errors` is set for the same reason -- a mangled byte should not be
-    the thing that stops a build being reported.
+    La codificación se fija en lugar de dejarla al locale: arduino-cli emite
+    UTF-8, y una consola de Windows con cp1252 por omisión convierte un carácter
+    perdido en un diagnóstico del compilador en un UnicodeDecodeError que esconde
+    el error de verdad. `errors` se fija por la misma razón: un byte mal formado no
+    tendría que ser lo que impida informar una falla de compilación.
     """
     try:
         done = subprocess.run(argv, capture_output=True,
                               encoding='utf-8', errors='replace')
     except FileNotFoundError:
         raise RuntimeError(
-            f'{argv[0]} was not found on PATH, so the sketch cannot be {what}d.\n'
-            f'Install the Arduino CLI and make sure the shell that started this '
-            f'kernel can see it: on Windows that usually means reopening the '
-            f'terminal after installing, since PATH is read once at startup.'
+            f'{argv[0]} no se encontro en el PATH, asi que no se puede {what} el '
+            f'sketch.\n'
+            f'Instalar el Arduino CLI y asegurarse de que la terminal que arranco '
+            f'este kernel lo vea: en Windows eso normalmente significa reabrir la '
+            f'terminal despues de instalarlo, porque el PATH se lee una sola vez '
+            f'al arrancar.'
         ) from None
 
     if done.returncode:
-        raise RuntimeError(f'{what} failed:\n{(done.stdout + done.stderr).strip()}')
+        raise RuntimeError(f'fallo al {what}:\n{(done.stdout + done.stderr).strip()}')
     return done.stdout + done.stderr
 
 
@@ -267,11 +274,11 @@ def _save_state(state):
 
 
 def _wait_for_port(hint=None, timeout=2.0):
-    """find_port(), but tolerant of a board that is still re-enumerating.
+    """find_port(), pero tolerante con una placa que todavía se está reenumerando.
 
-    The default is short because an absent board should be reported at once; the
-    long wait is only worth it just after an upload, when the bridge may
-    genuinely take a few seconds to come back.
+    Por omisión la espera es corta porque una placa ausente tiene que informarse
+    enseguida; la espera larga sólo vale la pena justo después de una carga,
+    cuando el puente puede tardar genuinamente unos segundos en volver.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -284,15 +291,15 @@ def _wait_for_port(hint=None, timeout=2.0):
 
 
 def sync_board(port=None, force_compile=False, force_upload=False, verbose=True):
-    """Bring the board and the link up to date, and reconnect. Returns a Bench.
+    """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
 
-    Compiles only when a source file has actually changed, uploads only when the
-    resulting binary differs from what this port was last given, and always
-    reopens the link -- which resets the board, so the loop starts from the
-    sketch's defaults whether or not anything needed flashing. That reset is the
-    point of calling it at the top of every cell.
+    Compila sólo cuando algún archivo fuente cambió de verdad, carga sólo cuando
+    el binario resultante difiere del que este puerto recibió por última vez, y
+    siempre reabre el enlace, lo que resetea la placa, así que el lazo arranca
+    desde los valores por omisión del sketch haya hecho falta o no grabar. Ese
+    reset es el motivo de llamarlo al principio de cada celda.
 
-    force_compile and force_upload each override their own check.
+    force_compile y force_upload saltean cada uno su propia verificación.
     """
     global _link
 
@@ -309,8 +316,8 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         output = _run(['arduino-cli', 'compile', '--fqbn', FQBN,
                        '--libraries', str(LIBRARIES),
                        '--build-path', str(BUILD_DIR),
-                       str(SKETCH)], 'compile')
-        notes.append('compiled')
+                       str(SKETCH)], 'compilar')
+        notes.append('compilado')
         state['sources'] = sources
         _save_state(state)
 
@@ -321,24 +328,26 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
             port = _wait_for_port()
         except CtrlLinkError:
             raise CtrlLinkError(
-                'the sketch is built, but no board is reachable: no USB serial '
-                'port was found. Plug it in and run this again -- the build is '
-                'cached, so it will go straight to uploading.') from None
+                'el sketch esta compilado, pero no hay ninguna placa alcanzable: '
+                'no se encontro ningun puerto serie USB. Enchufarla y correr esto '
+                'de nuevo; la compilacion esta en cache, asi que va a ir derecho a '
+                'la carga.') from None
 
     uploaded = state.get('uploaded', {})
 
     if force_upload or uploaded.get(port) != binary:
-        # Uploading needs the port to itself, and resets the board regardless.
+        # La carga necesita el puerto para sí sola, y resetea la placa igual.
         if _link is not None:
             _link.close()
             _link = None
         _run(['arduino-cli', 'upload', '--fqbn', FQBN, '-p', port,
-              '--input-dir', str(BUILD_DIR), str(SKETCH)], 'upload')
-        notes.append('uploaded')
+              '--input-dir', str(BUILD_DIR), str(SKETCH)], 'cargar')
+        notes.append('cargado')
         uploaded[port] = binary
         state['uploaded'] = uploaded
         _save_state(state)
-        port = _wait_for_port(timeout=15.0)  # some bridges drop off the bus while resetting
+        # algunos puentes se caen del bus mientras se resetean
+        port = _wait_for_port(timeout=15.0)
 
     if _link is not None:
         _link.close()
@@ -348,11 +357,11 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         _link = Bench(port)
     except serial.SerialException as exc:
         raise CtrlLinkError(
-            f'{port} could not be opened: {exc}\n'
-            f'Something else is holding it -- the Arduino IDE\'s serial monitor, '
-            f'or a kernel from an earlier session. Close it, or restart this '
-            f'kernel, and run this cell again. A serial port is exclusive on '
-            f'every platform and unforgiving about it on Windows.'
+            f'no se pudo abrir {port}: {exc}\n'
+            f'Algo mas lo tiene tomado: el monitor serie del IDE de Arduino, o un '
+            f'kernel de una sesion anterior. Cerrarlo, o reiniciar este kernel, y '
+            f'volver a correr esta celda. Un puerto serie es exclusivo en todas '
+            f'las plataformas, e implacable al respecto en Windows.'
         ) from None
 
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
