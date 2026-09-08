@@ -642,6 +642,15 @@ class _MutePort:
     """Un puerto que abre pero del que no contesta nadie."""
     def __init__(self):
         self.is_open = True
+        self.edges = []          # transiciones de DTR, que es lo que resetea la placa
+        self._dtr = True
+    @property
+    def dtr(self):
+        return self._dtr
+    @dtr.setter
+    def dtr(self, value):
+        self._dtr = value
+        self.edges.append(value)
     def readline(self):
         return b''
     def read(self, n=1):
@@ -675,12 +684,22 @@ def _mute_sync(self, timeout=4.0):
 _cl.serial.Serial, _cl.CtrlLink.sync = _mute_serial, _mute_sync
 try:
     check('un descubrimiento fallido se explica',
-          _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0), _cl.CtrlLinkError))
+          _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0.02), _cl.CtrlLinkError))
+    _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0), _cl.CtrlLinkError)
 finally:
     _cl.serial.Serial, _cl.CtrlLink.sync = _real_serial, _real_sync
 
 check('un descubrimiento fallido no se queda con el puerto',
       bool(_opened) and not _opened[0].is_open)
+
+# Lo que resetea un UNO es el flanco de bajada de DTR, no que DTR quede activado.
+# Abrir el puerto no alcanza: la linea puede venir activada de la conexion
+# anterior, y entonces no hay flanco y la placa sigue corriendo con el estado que
+# le dejo la corrida pasada.
+check('la placa se resetea con un flanco de DTR y no con abrir el puerto',
+      _opened[0].edges == [False, True], str(_opened[0].edges))
+check('reset_wait=0 se engancha a un sketch que ya corre, sin resetear',
+      _opened[1].edges == [], str(_opened[1].edges))
 
 # ------------------------------------------------- error del lado dispositivo
 try:

@@ -240,16 +240,19 @@ class CtrlLink:
     _broken = False  # una operación se cortó por el medio y dejó el enlace sucio
 
     def __init__(self, port=None, baud=1_000_000, reset_wait=1.8, timeout=1.0):
+        """Abre el puerto, resetea la placa y descubre el dispositivo.
+
+        `reset_wait` es cuánto se le da al bootloader; con 0 no se resetea nada y
+        el enlace se engancha a un sketch que ya está corriendo.
+        """
         if port is None:
             port = find_port()
 
-        # Abrir el puerto activa DTR, lo que resetea un UNO. Nada de lo que diga
-        # el dispositivo antes de rearrancar y correr setup() vale la pena leerse.
         self.ser = serial.Serial(port, baud, timeout=timeout)
 
         try:
-            time.sleep(reset_wait)
-            self.ser.reset_input_buffer()
+            if reset_wait:
+                self._reset_board(reset_wait)
 
             self.info = self.sync()
             self._params = self._read_params()
@@ -264,6 +267,34 @@ class CtrlLink:
             raise
 
     # ------------------------------------------------------------- cañerías
+
+    def _reset_board(self, wait):
+        """Resetea la placa y espera a que arranque el sketch.
+
+        Lo que resetea un UNO es el flanco de bajada de DTR, no que DTR esté
+        activado: la línea llega al RESET por un condensador. Abrir el puerto
+        activa DTR, así que alcanzaría con abrirlo *si* DTR hubiera estado
+        desactivado antes; y no siempre lo está. En macOS, con un puente CH340,
+        la línea se queda activada entre un cierre y la apertura siguiente, así
+        que reabrir el puerto no genera ningún flanco y la placa no se entera.
+
+        Eso hacía que reconectar pareciera resetear la placa sin hacerlo. La
+        segunda corrida del notebook heredaba `tickdiv`, las ganancias y el modo
+        de la primera —el lazo entero a 100 Hz porque una celda anterior lo había
+        dejado ahí—, y la puesta en marcha lo informaba como «100 Hz reales
+        contra 100 nominales, ok», porque el dispositivo contesta el período en
+        el que efectivamente está corriendo.
+
+        Así que el flanco se produce a mano. Después hay que esperar: el
+        bootloader tarda, y nada de lo que diga el dispositivo antes de correr
+        setup() vale la pena leerse.
+        """
+        self.ser.dtr = False
+        time.sleep(0.05)
+        self.ser.dtr = True
+
+        time.sleep(wait)
+        self.ser.reset_input_buffer()
 
     def close(self):
         if not self.ser.is_open:

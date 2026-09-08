@@ -196,8 +196,12 @@ entra en los datos.
 
 ## API del lado de la computadora
 
-`CtrlLink(port, baud=1_000_000)` abre el puerto, espera a que pase el reset
-automático por DTR y descubre el dispositivo.
+`CtrlLink(port, baud=1_000_000)` abre el puerto, resetea la placa y descubre el
+dispositivo. El reset se fuerza con un flanco de bajada de DTR: abrir el puerto
+no alcanza, porque la línea puede venir activada de la conexión anterior —en
+macOS con un puente CH340 se queda así—, y entonces no hay flanco y la placa
+sigue corriendo con el estado que le dejó la corrida pasada. `reset_wait=0` se
+engancha a un sketch que ya está corriendo, sin resetear nada.
 
 - Los parámetros son atributos, siempre en unidades reales: `dev.kp = 2.5`,
   `print(dev.kp)`. `dev.params` los lee todos de vuelta.
