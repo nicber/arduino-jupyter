@@ -317,6 +317,20 @@ check('el escalon tiene datos previos al disparo', (df['t'] < 0).sum() > 50, str
 check('el escalon tiene datos posteriores al disparo', (df['t'] > 0).sum() > 100, str((df['t'] > 0).sum()))
 check('ref efectivamente dio el escalon', df['ref'].iloc[0] == 0 and df['ref'].iloc[-1] > 100,
       f"{df['ref'].iloc[0]} -> {df['ref'].iloc[-1]}")
+
+# Un escalon sobre un parametro en punto fijo tiene que llegar en unidades
+# reales, igual que un `set`. El camino del evento no espera confirmacion --en
+# medio de una captura no hay respuesta que esperar-- asi que la marca que
+# devuelve el dispositivo es la unica prueba de lo que realmente guardo, y es
+# contra eso que se verifica.
+dev.kq = 0.0
+dfq = dev.step('kq', 1.5, pre=0.05, post=0.10)
+mq = [m for m in dfq.attrs['marks'] if m[1] == 'kq']
+check('un escalon en punto fijo llega en unidades reales',
+      len(mq) == 1 and abs(mq[0][2] - 1.5) < 2.0 ** -22, str(dfq.attrs['marks']))
+check('y el dispositivo lo guardo escalado', abs(dev.kq - 1.5) < 2.0 ** -22, str(dev.kq))
+dev.kq = 0.0
+
 check('la respuesta se establece hacia ref',
       abs(df['y'].iloc[-1] - df['ref'].iloc[-1]) < abs(df['y'].iloc[0] - df['ref'].iloc[-1]))
 check('se aplico el escalado', abs(df['ref'].max() - 2048 * 0.0878906) < 0.01, str(df['ref'].max()))

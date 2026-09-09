@@ -5,7 +5,7 @@
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
 // Medición de corriente (opcional): ACS712 en A0
-// Actuador (opcional): PWM en el pin 5, sentido de giro en el pin 8
+// Actuador (opcional): puente L298N, ENA -> 9 (PWM, 1 kHz), IN1 -> 6, IN2 -> 7
 //
 // El Timer2 muestrea el AS5600 a 5 kHz; cada `tickdiv` muestras se ejecuta la
 // ley de control, así que la frecuencia del lazo es 5000/tickdiv Hz y por
@@ -34,9 +34,11 @@
 // protocolo; conviene subir `dec` para corridas largas, o sacar un canal.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
-// en los pines 3 y 11 y tone() dejan de funcionar; y el ADC, que se maneja
-// directamente acá, así que no hay que llamar a analogRead(). Los pines 9 y 10
-// (Timer1) y 5 y 6 (Timer0) no se ven afectados.
+// en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
+// puente con su propio TOP, así que analogWrite() en los pines 9 y 10 y Servo
+// dejan de servir; y el ADC, que se maneja directamente acá, así que no hay que
+// llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
+// 5 y 6 andan como siempre.
 
 #include <nI2C.h>
 
@@ -52,30 +54,98 @@ static const uint32_t BAUD           = 1000000;
 static const uint16_t SAMPLE_HZ      = 5000;
 static const int16_t  COUNTS_PER_REV = 4096;
 
-// Dejar MOTOR_PWM_PIN sin definir para correr el lazo sin actuador conectado:
-// todo lo demás, telemetría incluida, se comporta igual.
+// Actuador: un puente en H L298N. ENA lleva la magnitud por PWM y el par
+// IN1/IN2 el sentido. Ese reparto deja toda la modulación en un solo pin y el
+// sentido en dos salidas digitales comunes, y es lo que permite apagar el puente
+// entero con una sola escritura; ver drive().
 //
-// Definir además MOTOR_DIR_PIN da un accionamiento bidireccional, -255..255. Con
-// ese pin sin definir el puente es de un solo cuadrante y el comando se recorta
-// en cero, que es lo que se le informa a la lógica anti-windup a través de U_MIN.
-#define MOTOR_PWM_PIN 5
-//#define MOTOR_DIR_PIN 8
+// Se puede correr el lazo sin nada conectado acá: los pines conmutan igual y
+// todo lo demás, telemetría incluida, se comporta idéntico.
+//
+// ENA va al pin 9, modulado por el Timer1; ver startMotorPwm(). El pin no es una
+// preferencia: el Timer0 (pines 5 y 6) lleva millis() y no se le puede tocar el
+// preescalador, y el Timer2 (pines 3 y 11) es el muestreador de 5 kHz, así que el
+// único temporizador que queda libre es el Timer1 y sus salidas son los pines 9 y
+// 10. Este código habla con OC1A directamente, así que mudar ENA al pin 10 es
+// cambiar acá y además OCR1A por OCR1B y COM1A1 por COM1B1.
+//
+// IN1 e IN2 son salidas digitales comunes y pueden ir a cualquier pin.
+static const uint8_t MOTOR_PWM_PIN = 9;     // ENA del L298N, OC1A
+static const uint8_t MOTOR_IN1_PIN = 6;     // IN1
+static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 
-#ifdef MOTOR_DIR_PIN
-static const int16_t U_MIN = -255;
-#else
-static const int16_t U_MIN = 0;
-#endif
+// El TOP del Timer1, que es la forma en que se guarda la frecuencia del PWM:
+//
+//     f = 16 MHz / (2 * pwmtop)
+//
+// Se guarda el TOP y no los Hz por la misma razón por la que `tickdiv` se guarda
+// como divisor y no como frecuencia de lazo: es por lo que cuenta el hardware, es
+// exacto, y la conversión la hace la computadora, que es el lado que tiene la
+// aritmética para hacerla. `dev.pwm(20000)` del lado del notebook.
+//
+// El piso son 255. Por debajo de ese TOP el ciclo de trabajo tendría menos
+// escalones que el comando, así que `u` dejaría de ser fiel; y 31,4 kHz, que es
+// lo que ese piso significa, ya está bastante más arriba de lo que le conviene a
+// un puente de Darlington bipolares. El techo lo pone el propio uint16: 65535 son
+// 122 Hz, lo bastante lento como para ver la ondulación con los ojos.
+static const uint16_t PWM_TOP_MIN     = 255;    // 31,4 kHz
+static const uint16_t PWM_TOP_DEFAULT = 8000;   //  1,0 kHz
+
+// El techo del comando, y el único de los dos extremos que es constante. El piso
+// lo decide el parámetro `bidir` en tiempo de ejecución --ver g_u_min--: un puente
+// que acciona en los dos sentidos recorta en -U_MAX, y uno cableado para un solo
+// cuadrante recorta en cero, que es lo que hay que informarle a la lógica
+// anti-windup para que no cargue el integrador contra un límite que no existe.
+// Es parámetro y no #define porque es una propiedad del banco y no del programa:
+// se contesta desde el notebook y sin recompilar.
+//
+// 255 no es negociable sin tocar pwm_write(), que aprovecha que U_MAX + 1 sea una
+// potencia de dos para escalar con un corrimiento en vez de una división.
 static const int16_t U_MAX = 255;
 
-// Medición de corriente en A0. ACS712-05B: 185 mV/A alrededor de un cero de
-// 2,5 V, o sea media escala con referencia de 5 V. Cambiar SENSE_MV_PER_A para
-// otro componente; sólo afecta las unidades que se le informan a la computadora,
-// nunca al lazo.
+// Medición de corriente en A0. Nada de este bloque entra en la ley de control:
+// sólo fija las unidades que se le informan a la computadora, así que equivocarlo
+// mueve una etiqueta, no un lazo.
+//
+// `i` se lee como `adc - izero`, así que crece cuando crece la tensión que entrega
+// el sensor. Cuál de los dos sentidos de giro sale positivo depende de dónde esté
+// insertado el sensor, y para un sensor unipolar --en la alimentación del puente--
+// los dos salen positivos. Eso es una propiedad del banco, no de la aritmética.
 static const uint8_t  SENSE_CHANNEL   = 0;
-static const int16_t  SENSE_ZERO      = 512;
+
+// La sensibilidad del sensor, que es lo único que convierte cuentas en amperes.
+// 185 mV/A es un ACS712-05B conectado directo. OJO si no cierra con lo que mide
+// un tester en serie con el motor: en este banco el reposo está en 489 mV y no en
+// los 2500 que da un ACS712 alimentado a 5 V, y un divisor de ~5:1 en la salida
+// explicaría las dos cosas a la vez --el cero corrido y la sensibilidad chica--,
+// en cuyo caso acá va 36 y no 185. Ver README.
 static const float    SENSE_MV_PER_A  = 185.0f;
-static const float    ADC_MV_PER_LSB  = 5000.0f / 1024.0f;
+
+// La referencia del ADC, que es la única perilla de ganancia que tiene el AVR de
+// este lado. Con AVcc un LSB son 4,9 mV; con la referencia interna de 1,1 V son
+// 1,07 mV, o sea 4,5 veces más resolución sobre la misma señal. Para un motor
+// chico eso es la diferencia entre medir y no medir: un ACS712-05B da 185 mV/A, así
+// que 200 mA son 37 mV, que contra AVcc es apenas un escalón de cuantización.
+//
+// El precio es el techo: la entrada no puede pasar de la referencia sin recortar.
+// Con la interna, el reposo del sensor tiene que caer por debajo de 1,1 V, lo que
+// descarta un ACS712 alimentado a 5 V --reposa en 2,5 V y quedaría fuera de escala
+// desde el vamos-- y sirve para uno unipolar, que reposa cerca de cero. Poner
+// SENSE_REF_INTERNAL en false vuelve a AVcc, que admite cualquiera de los dos y
+// mide los dos mal.
+//
+// SENSE_ZERO es sólo el punto de partida de `izero`; el cero de verdad lo mide la
+// computadora. Ver Bench.zero_current().
+//
+// La interna no vale 1,100 V: el bandgap está especificado entre 1,0 y 1,2 V, o
+// sea +/-10 % de error de ganancia de chip a chip. Se mide sin instrumental,
+// leyendo el canal 14 del multiplexor contra AVcc: en esta placa dio 1093 mV, y
+// AVcc 5006. Cambiar el número al que mida la placa de uno; el error va derecho a
+// los mA que se informan.
+static const bool     SENSE_REF_INTERNAL = true;
+static const float    ADC_REF_MV      = SENSE_REF_INTERNAL ? 1093.0f : 5006.0f;
+static const int16_t  SENSE_ZERO      = SENSE_REF_INTERNAL ? 0 : 512;
+static const float    ADC_MV_PER_LSB  = ADC_REF_MV / 1024.0f;
 static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER_A;
 
 // `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
@@ -148,17 +218,22 @@ static int32_t g_alpha_e = Alpha::from_float(0.0909f).raw();    // error, un pol
 static int32_t g_ref     = 0;   // referencia, unidades del target << REF_FRAC
 static int32_t g_refrate = 0;   // pendiente de rampa, mismas unidades por período
 static int16_t g_uff     = 0;   // comando prealimentado / de lazo abierto
-static int16_t g_offset  = 0;   // cero del sensor, en cuentas
+static int16_t g_offset  = 0;   // cero del sensor de ángulo, en cuentas
+static int16_t g_izero   = SENSE_ZERO;  // cero del sensor de corriente, en LSBs del ADC
 static uint8_t g_target  = TARGET_POSITION;
 static uint8_t g_mode    = MODE_OPEN;
 static uint8_t g_tickdiv = 5;   // muestras de 5 kHz por período de control: 5 -> 1 kHz
+static uint8_t g_bidir   = 1;   // 1: el puente acciona en los dos sentidos
+static uint8_t g_uinvert = 1;   // 1: un comando positivo hace bajar el ángulo medido
+
+static uint16_t g_pwmtop = PWM_TOP_DEFAULT;   // TOP del Timer1: f = 8 MHz / pwmtop
 
 static int16_t g_y     = 0;     // ángulo medido, cuentas, con el offset aplicado
 static int32_t g_y_uw  = 0;     // ángulo desenrollado, cuentas, sin filtrar
 static int32_t g_y_uwf = 0;     // ángulo desenrollado, cuentas, filtrado por alpha_y
-static int16_t g_i     = 0;     // corriente, LSBs del ADC alrededor de SENSE_ZERO, filtrada
+static int16_t g_i     = 0;     // corriente, LSBs del ADC alrededor de izero, filtrada
 static int16_t g_e     = 0;     // error, unidades del target, recortado para la telemetría
-static int16_t g_u     = 0;     // comando al actuador, U_MIN..U_MAX
+static int16_t g_u     = 0;     // comando al actuador, u_min..U_MAX
 
 // Contadores de salud. Todos los puede escribir la computadora, así que poner uno
 // en cero reinicia esa cuenta.
@@ -178,8 +253,9 @@ static int32_t g_integral = 0;
 static int32_t g_e_filt   = 0;
 static int32_t g_e_prev   = 0;
 
-// La única magnitud derivada que queda, recalculada por refresh_tuning().
+// Las magnitudes derivadas, recalculadas por refresh_tuning().
 static int32_t g_integral_max = INT32_MAX / 2;
+static int16_t g_u_min        = -U_MAX;
 
 static FirstOrderFilter<4> g_y_filt[2];   // posición: cuenta libre, necesita el margen
 static FirstOrderFilter<8> g_i_filt[2];   // corriente: señal chica, quiere la resolución
@@ -211,9 +287,13 @@ static const CtrlParam PROGMEM g_params[] =
     { "refrate", CTRL_I32, &g_refrate,  REF_FRAC    },
     { "uff",     CTRL_I16, &g_uff,      0           },
     { "offset",  CTRL_I16, &g_offset,   0           },
+    { "izero",   CTRL_I16, &g_izero,    0           },
     { "target",  CTRL_U8,  &g_target,   0           },
     { "mode",    CTRL_U8,  &g_mode,     0           },
     { "tickdiv", CTRL_U8,  &g_tickdiv,  0           },
+    { "bidir",   CTRL_U8,  &g_bidir,    0           },
+    { "uinvert", CTRL_U8,  &g_uinvert,  0           },
+    { "pwmtop",  CTRL_U16, &g_pwmtop,   0           },
     { "y",       CTRL_I16, &g_y,        0           },
     { "y_uw",    CTRL_I32, &g_y_uw,     0           },
     { "mstat",   CTRL_U8,  &g_mstat,    0           },
@@ -244,8 +324,8 @@ static const CtrlChannel PROGMEM g_channels[] =
 // ----------------------------------------------------------------- temporizador
 
 // Timer2, CTC, preescalador 32: 16 MHz / 32 / 100 = exactamente 5,000 kHz.
-// El Timer2 deja en paz a millis() (Timer0) y a Servo (Timer1), pero choca con
-// tone() y con analogWrite() en los pines 3 y 11.
+// El Timer2 deja en paz a millis() (Timer0), pero choca con tone() y con
+// analogWrite() en los pines 3 y 11.
 static void startSampleTimer(void)
 {
     TCCR2A = _BV(WGM21);                // CTC, TOP = OCR2A
@@ -253,6 +333,41 @@ static void startSampleTimer(void)
     OCR2A = 99;
     TCNT2 = 0;
     TIMSK2 = _BV(OCIE2A);
+}
+
+// Timer1, phase-correct con TOP = ICR1, preescalador 1: f = 16 MHz / (2*pwmtop),
+// o sea 1 kHz con el TOP por omisión. El TOP propio es lo que hace que la
+// frecuencia sea un parámetro y no un modo fijo; el precio es que analogWrite()
+// deja de servir sobre este pin, porque da por sentado que el TOP son 255. De ahí
+// pwm_write().
+//
+// En abstracto conviene modular rápido: fuera del rango audible, y con la
+// ondulación de corriente --que es inversamente proporcional a la frecuencia--
+// bien lejos de la banda del lazo. Pero este banco no lo tolera, y el motivo es
+// instructivo. El L298 es un puente de Darlington bipolares: cae del orden de 2 V
+// entre sus dos lados y tarda unos 2 us en conmutar. Contra una alimentación de
+// 5 V eso deja unos 2,5 V para el motor, y a 20 kHz --períodos de 50 us-- lo que
+// se pierde en cada transición, más lo que se pierda en la recuperación de los
+// diodos del módulo, se lleva una fracción grande de un tiempo de encendido que
+// ya venía escaso: medido en este banco, a 20 kHz el motor directamente no
+// arranca, y a 1 kHz anda. Bajar la frecuencia multiplica por veinte el tiempo de
+// encendido sin cambiar las pérdidas por transición, y eso es lo que devuelve el
+// par.
+//
+// 1 kHz sale exacto (TOP = 8000) y cae justo sobre el período del lazo, así que
+// los dos quedan enganchados en fase en lugar de batir: el muestreador de 5 kHz
+// toma siempre las mismas cinco fases de la ondulación, lo que da un sesgo fijo en
+// `i` en lugar de una oscilación lenta. Con un puente MOSFET --un TB6612FNG, un
+// DRV8833-- nada de esto haría falta y `dev.pwm(20000)` sería lo correcto.
+//
+// Se arranca con la salida de comparación desconectada, que es el puente abierto:
+// la conecta pwm_write() cuando hay algo que accionar.
+static void startMotorPwm(void)
+{
+    TCCR1A = _BV(WGM11);                    // modo 10: phase-correct, TOP = ICR1
+    TCCR1B = _BV(WGM13) | _BV(CS10);        // preescalador /1
+    TCNT1  = 0;
+    ICR1   = g_pwmtop;
 }
 
 // ------------------------------------------------------------------------ adc
@@ -266,7 +381,8 @@ static void startSampleTimer(void)
 // de 1000 us.
 static void startAdc(void)
 {
-    ADMUX  = _BV(REFS0) | (SENSE_CHANNEL & 0x07);   // referencia AVcc
+    ADMUX  = (SENSE_REF_INTERNAL ? (_BV(REFS1) | _BV(REFS0)) : _BV(REFS0))
+           | (SENSE_CHANNEL & 0x07);
     ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0) | _BV(ADSC);
 }
 
@@ -319,16 +435,100 @@ static int16_t clamp16(int32_t v, int32_t lo, int32_t hi)
     return (int16_t)v;
 }
 
+// Desconecta la salida de comparación del pin, que vuelve a ser una salida común
+// con su bit de PORT en bajo desde setup(): ENA queda en bajo y el puente abierto,
+// en el ciclo en el que se pide y no al final del período de PWM.
+static inline void pwm_off(void)
+{
+    TCCR1A &= ~_BV(COM1A1);
+}
+
+// `mag` va de 0 a U_MAX y el temporizador cuenta hasta `pwmtop`, que es otra
+// escala. Se divide por U_MAX + 1 = 256 en lugar de por 255, que es un corrimiento
+// en vez de una división y deja el ciclo de trabajo a lo sumo un escalón corto; el
+// extremo de arriba, que es el que se notaría --U_MAX tiene que ser encendido
+// permanente y no 255/256 de él--, se atiende aparte. Cambiar U_MAX obliga a
+// cambiar el corrimiento con él. OCR1A está doblemente amortiguado, así
+// que el valor nuevo entra al terminar el período en curso y ningún pulso sale
+// cortado por la mitad.
+static inline void pwm_write(int16_t mag)
+{
+    if (mag <= 0)
+    {
+        pwm_off();
+        return;
+    }
+
+    OCR1A = (mag >= U_MAX) ? g_pwmtop
+                           : (uint16_t)(((uint32_t)mag * g_pwmtop) >> 8);
+
+    TCCR1A |= _BV(COM1A1);
+}
+
+// Pone `u` sobre el puente: la magnitud en ENA por PWM, el sentido en IN1/IN2.
+//
+// Un cambio de sentido no escribe las entradas de sentido con el puente vivo.
+// Primero baja ENA, que apaga las cuatro llaves de una sola escritura; recién
+// entonces mueve IN1 e IN2, y pasa por el estado con las dos en bajo antes de
+// levantar la que corresponde. El PWM vuelve al final, ya con el sentido nuevo
+// en pie.
+//
+// ¿Alcanza como tiempo muerto el intervalo entre apagar ENA y mover IN1? Sí, y
+// con holgura: pwm_off() suelta el pin en el ciclo en que se ejecuta, y el
+// digitalWrite() que sigue se pasa unos 4 us leyendo tablas en PROGMEM y
+// deshabilitando interrupciones antes de llegar a tocar su propio pin --eso es lo
+// que cuesta un digitalWrite() en un AVR de 16 MHz--, contra el orden de 1 a 2 us
+// que tarda el L298 en abrir una salida. El tiempo muerto sobra por un factor de
+// dos o tres sin escribir un solo delay.
+//
+// Pero la protección de verdad no es ese tiempo, y conviene no apoyar el
+// argumento ahí. Cada medio puente del L298 cuelga de una sola entrada lógica, y
+// el reparto entre el transistor de arriba y el de abajo es interno: desde afuera
+// no hay forma de pedirle a una rama que conduzca por los dos lados a la vez, se
+// escriba como se escriba. Lo que compra bajar ENA primero es que el cambio de
+// sentido no atraviese ningún estado conduciendo, y eso vale por sí solo, sin
+// depender de cuántos microsegundos separen las escrituras.
+//
+// Lo que ningún tiempo muerto arregla es lo otro que pasa al invertir: la
+// corriente que ya circula por el motor no se puede cortar, así que sale por los
+// diodos del puente contra la fuente. Eso es milisegundos —la constante L/R del
+// motor—, no microsegundos, y la respuesta es no pedir saltos de +255 a -255, no
+// separar más las escrituras.
+//
+// `u == 0` deja las entradas de sentido donde estaban en lugar de forzarlas: con
+// ENA en cero el puente ya está abierto y el motor en punto muerto, y así un
+// comando que ronda el cero no golpea IN1/IN2 en cada período. El cambio cuesta
+// tres digitalWrite(), del orden de 12 us, y sólo en los períodos en los que el
+// signo realmente da vuelta.
 static void drive(int16_t u)
 {
-#ifdef MOTOR_PWM_PIN
-#ifdef MOTOR_DIR_PIN
-    digitalWrite(MOTOR_DIR_PIN, (u >= 0) ? HIGH : LOW);
-#endif
-    analogWrite(MOTOR_PWM_PIN, (uint8_t)(u >= 0 ? u : -u));
-#else
-    (void)u;
-#endif
+    static int8_t dir = 0;
+
+    // `uinvert` reconcilia dos convenciones de signo que se fijan con cables: la
+    // del motor en las salidas del puente, y la del imán sobre el sensor. Si no
+    // coinciden, el lazo de posición realimenta en positivo y se escapa en lugar
+    // de establecerse -- y se escapa igual con la referencia de cualquier signo,
+    // así que no hay manera de descubrirlo probando. Dar vuelta los dos cables del
+    // motor es el arreglo físico y equivale exactamente a esto.
+    int8_t sign = (u > 0) ? 1 : ((u < 0) ? -1 : 0);
+
+    if (g_uinvert)
+    {
+        sign = (int8_t)-sign;
+    }
+
+    int8_t want = sign ? sign : dir;
+
+    if (want != dir)
+    {
+        pwm_off();                              // ENA: puente abierto
+        digitalWrite(MOTOR_IN1_PIN, LOW);
+        digitalWrite(MOTOR_IN2_PIN, LOW);
+        digitalWrite((want > 0) ? MOTOR_IN1_PIN : MOTOR_IN2_PIN, HIGH);
+        dir = want;
+    }
+
+    pwm_write((u >= 0) ? u : (int16_t)-u);
 }
 
 // El imán gira en sentido contrario al eje, de ahí la negación; `offset` es
@@ -348,7 +548,7 @@ static void measure(void)
     adc = g_adc;
     interrupts();
 
-    g_i = clamp16(g_i_filt[1].update(g_i_filt[0].update(SENSE_ZERO - adc)),
+    g_i = clamp16(g_i_filt[1].update(g_i_filt[0].update(adc - g_izero)),
                   INT16_MIN, INT16_MAX);
 
     int16_t y = sensor_measurement();
@@ -392,7 +592,7 @@ static int32_t target_error(void)
 static void controller_open(void)
 {
     (void)target_error();
-    g_u = clamp16(g_uff, U_MIN, U_MAX);
+    g_u = clamp16(g_uff, g_u_min, U_MAX);
 }
 
 static void controller_pid(void)
@@ -407,12 +607,12 @@ static void controller_pid(void)
                       + Kd::from_raw(g_kd).scale(g_e_filt - g_e_prev)
                       + (int32_t)g_uff;
 
-    g_u = clamp16(candidate, U_MIN, U_MAX);
+    g_u = clamp16(candidate, g_u_min, U_MAX);
 
     // Integración condicional: dejar de cargar el integrador en cuanto el
     // actuador satura en el sentido hacia el que el integrador está empujando.
     bool saturated = (candidate > U_MAX && e > 0)
-                  || (candidate < U_MIN && e < 0);
+                  || (candidate < g_u_min && e < 0);
 
     if (!saturated)
     {
@@ -527,6 +727,30 @@ static void refresh_tuning(void)
     g_divider = g_tickdiv;
     CtrlLink::set_period_us((uint32_t)g_tickdiv * 1000000UL / SAMPLE_HZ);
 
+    // El recorte y el anti-windup tienen que describir el puente que está
+    // cableado: prometerle al integrador un sentido que el hardware no tiene lo
+    // deja cargando contra un límite que no existe.
+    g_u_min = g_bidir ? (int16_t)-U_MAX : (int16_t)0;
+
+    // La frecuencia del PWM se aplica sólo cuando cambió de verdad. ICR1 no está
+    // amortiguado en este modo, así que escribirlo con el contador ya pasado del
+    // TOP nuevo cuesta un período largo hasta que la cuenta da la vuelta entera;
+    // rearrancar el temporizador desde cero lo evita. Pero eso interrumpe el PWM,
+    // y este cuerpo corre después de cada escritura de cualquier parámetro: un
+    // barrido de kp no tiene por qué sacudir el puente.
+    static uint16_t pwm_applied = 0;
+
+    if (g_pwmtop < PWM_TOP_MIN)
+    {
+        g_pwmtop = PWM_TOP_MIN;
+    }
+
+    if (g_pwmtop != pwm_applied)
+    {
+        pwm_applied = g_pwmtop;
+        startMotorPwm();
+    }
+
     // Acotar el integrador en la suma cuyo término por sí solo satura el
     // actuador, para que siempre pueda descargarse en un período o dos. Un ki lo
     // bastante chico como para poner esa cota más allá de lo que entra en un
@@ -615,14 +839,16 @@ static void reset_health_on_capture(void)
 
 void setup()
 {
-#ifdef MOTOR_PWM_PIN
+    // ENA primero: mientras el puente esté abierto las entradas de sentido no
+    // gobiernan nada, así que ése es el orden en el que ningún estado intermedio
+    // acciona el motor. Las dos en bajo es el estado del que parte drive().
+    startMotorPwm();
     pinMode(MOTOR_PWM_PIN, OUTPUT);
-    analogWrite(MOTOR_PWM_PIN, 0);
-#endif
-#ifdef MOTOR_DIR_PIN
-    pinMode(MOTOR_DIR_PIN, OUTPUT);
-    digitalWrite(MOTOR_DIR_PIN, HIGH);
-#endif
+    digitalWrite(MOTOR_PWM_PIN, LOW);
+    pinMode(MOTOR_IN1_PIN, OUTPUT);
+    digitalWrite(MOTOR_IN1_PIN, LOW);
+    pinMode(MOTOR_IN2_PIN, OUTPUT);
+    digitalWrite(MOTOR_IN2_PIN, LOW);
 
     CtrlLink::set_id(F("ControlDemo"));
     CtrlLink::begin(BAUD,

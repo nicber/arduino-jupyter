@@ -717,7 +717,16 @@ class CtrlLink:
 
             while pending and now - started >= pending[0][0]:
                 _, name, value = pending.pop(0)
-                self._send(f'set {name} {value}')
+
+                # Con el formato del parámetro, igual que set(): un evento habla
+                # las mismas unidades reales que el resto de la interfaz, y sin
+                # esto un `ref` en punto fijo sale 2**frac veces más chico. Lo que
+                # este camino sí saltea es la confirmación, y a propósito: en
+                # medio de una captura no hay respuesta que esperar sin comerse la
+                # serie temporal. El `# mark` que devuelve el dispositivo trae el
+                # valor que efectivamente guardó, así que la verificación existe
+                # igual, sólo que después y en los datos.
+                self._send(f'set {name} {self._encode(name, value)}')
 
             if now >= deadline:
                 break

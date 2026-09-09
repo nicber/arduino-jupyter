@@ -45,10 +45,18 @@ POSITION,  CURRENT             = 0, 1
 # Bits del registro STATUS del AS5600.
 _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
 
-# La corriente se mide como `SENSE_ZERO - adc`, así que su recorrido es +/-512
-# LSB y los extremos son los rieles del ADC. Una lectura ahí arriba no es una
-# corriente grande: es una entrada al aire, o un cable suelto.
-_ADC_RAILED = 460
+# El reloj de la placa. La frecuencia del PWM se guarda como el TOP del Timer1,
+# que es por lo que cuenta el hardware, así que la conversión a Hz pasa por acá.
+_F_CPU = 16_000_000
+
+# El ADC del UNO da 10 bits sobre su referencia. Dónde tiene que reposar el sensor
+# depende de cuál sea y de cómo esté alimentado, así que acá no se juzga el valor:
+# se juzga que quede fuera de los rieles --contra un riel no hay una corriente
+# grande sino una entrada al aire-- y que sobre margen hacia arriba para que una
+# corriente tenga adónde crecer.
+_ADC_FULL     = 1023
+_ADC_RAIL     = 20   # a menos de esto de cualquiera de los dos extremos
+_ADC_HEADROOM = 100  # cuentas de margen que se le piden al reposo
 
 _link = None
 
@@ -119,6 +127,28 @@ class Bench(CtrlLink):
         dt = self.dt
         self.set(f'alpha_{which}', dt / (tau + dt) if tau > 0 else 1.0)
 
+    def pwm(self, hz):
+        """Fija la frecuencia del PWM del puente, en Hz, y devuelve la que quedó.
+
+        La placa guarda el TOP del Timer1, que es por lo que cuenta el
+        temporizador: `f = 16 MHz / (2 * pwmtop)`. El TOP es entero, así que no
+        toda frecuencia es representable; se toma la más cercana y se informa cuál
+        quedó, en lugar de dejar creer que se fijó la pedida.
+
+        El recorrido va de 122 Hz a 31,4 kHz. Por omisión son 1 kHz, que es lo que
+        tolera un L298N alimentado con 5 V --más arriba las pérdidas de conmutación
+        se comen un tiempo de encendido que ya viene escaso y el motor no arranca.
+        Con un puente MOSFET conviene subirla bien por encima del rango audible.
+        """
+        top = min(65535, max(255, round(_F_CPU / (2 * hz))))
+        self.pwmtop = top
+        return _F_CPU / (2 * top)
+
+    @property
+    def pwm_hz(self):
+        """La frecuencia del PWM del puente, en Hz, tal como quedó en la placa."""
+        return _F_CPU / (2 * self.pwmtop)
+
     def zero(self):
         """Toma la posición actual del eje como cero.
 
@@ -128,10 +158,49 @@ class Bench(CtrlLink):
         self.offset = (self.offset - self.y) % 4096
         self.y_uw = 0
 
+    def zero_current(self, seconds=0.3):
+        """Toma la corriente que se mida ahora como el cero. Devuelve `izero`.
+
+        Con el puente abierto no circula corriente, así que lo que marque el sensor
+        es su offset: el suyo propio, más la tolerancia de su alimentación y la de
+        cualquier divisor que haya en el medio. Un cero corrido es un error que
+        después se integra en toda medición, y no hay forma de conocerlo salvo
+        midiéndolo acá.
+
+        `i` se lee como `adc - izero`, así que sumarle a `izero` la lectura actual
+        pone el cero sobre la cuenta actual y `i` en cero. Es exactamente lo que
+        hace zero() con el ángulo. Deja el motor en reposo, que es la condición
+        bajo la cual la medición significa algo.
+        """
+        self.rest()
+        df = self.capture(seconds, warn=False)
+        self.izero = round(self.izero + df['i'].mean() / self.channel('i').scale)
+        return self.izero
+
     def rest(self):
-        """Lazo abierto, comando en cero. Donde tendría que terminar todo experimento."""
+        """Lazo abierto, comando en cero. Donde tendría que terminar todo experimento.
+
+        Con el comando en cero el sketch deja ENA en bajo, así que el puente queda
+        abierto y el motor en punto muerto: no frena el eje, sólo deja de
+        empujarlo.
+        """
         self.mode = MODE_OPEN
         self.uff = 0
+
+    def spin(self, u, seconds=0.4):
+        """Lazo abierto con `u` sobre el puente por un instante, y de vuelta a reposo.
+
+        Devuelve (vueltas, mA de pico). Las vueltas van con signo, que es lo que
+        hace verificable el sentido; la corriente no, porque que el ACS712 vea o no
+        el signo depende de en qué parte del circuito esté insertado, y para el
+        pico da igual.
+        """
+        self.zero()
+        self.uff = u
+        df = self.capture(seconds, warn=False)
+        self.rest()
+
+        return (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0, df['i'].abs().max()
 
     # ------------------------------------------------------- puesta en marcha
 
@@ -139,7 +208,8 @@ class Bench(CtrlLink):
         """Verifica el hardware, un subsistema por vez.
 
         Cada línea es algo que puede estar mal por su cuenta: el enlace, el lazo,
-        el imán, el bus I2C, la medición de corriente, el actuador. Conviene
+        el imán, el bus I2C, el cero de la medición de corriente --que de paso se
+        calibra--, el actuador y el sentido en el que empuja. Conviene
         correrlo primero, y después de cualquier cambio en el cableado: un
         controlador ajustado contra un sensor que no está leyendo es una tarde
         larga.
@@ -221,21 +291,57 @@ class Bench(CtrlLink):
                f'en el segundo' + ('  (girar el iman para verlo seguir)'
                                    if spread < 0.5 else ''))
 
-        # 5. La medición de corriente en reposo. Un sensor que lee lejos de cero
-        #    sin nada accionado es un offset que se va a integrar en toda medición
-        #    posterior. Pero antes hay que separar el caso en que no hay nada
-        #    conectado: una entrada al aire termina contra un riel del ADC, y eso
-        #    da una lectura fuera de escala que no es un offset sino una ausencia.
-        rest_ma = df['i'].mean()
-        rest_lsb = rest_ma / self.channel('i').scale
-        sensed   = abs(rest_lsb) <= _ADC_RAILED
+        # 5. El cero de la medición de corriente, que acá se mide y se calibra.
+        #    En reposo el puente está abierto y no circula corriente, así que lo
+        #    que marque el sensor es su offset y restarlo es todo lo que hace
+        #    falta. Pero hay dos casos que un offset no arregla y que conviene no
+        #    tapar calibrándolos:
+        #
+        #    Una entrada al aire termina contra un riel del ADC. Eso es una
+        #    ausencia, no un offset, y calibrarla dejaría un canal que informa
+        #    ceros perfectos sin haber medido nada.
+        #
+        #    Y un reposo pegado a un extremo no deja lugar para medir, aunque no
+        #    llegue al riel: la corriente tiene que poder crecer para los dos lados
+        #    sin recortar. Eso se juzga por el margen y no por el valor, porque
+        #    dónde reposa depende del sensor y de con qué esté alimentado.
+        lsb = self.channel('i').scale
+        adc = self.izero + df['i'].mean() / lsb
+        sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
+
         if not sensed:
-            report('medicion de i', None,
-                   f'entrada contra el riel del ADC ({rest_ma:+.0f} mA, fuera de '
-                   f'escala): no parece haber nada conectado en A0')
+            rest_ma = 0.0
+            report('cero de i', None,
+                   f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): no '
+                   f'parece haber nada conectado en A0')
         else:
-            report('medicion de i', abs(rest_ma) < 50,
-                   f'{rest_ma:+.1f} mA en reposo (ruido {df["i"].std():.1f} mA)')
+            # Lo que hay que mirar es el margen, no el valor: desde el reposo hasta
+            # el tope de escala es todo lo que una corriente puede crecer antes de
+            # recortar, y hacia abajo es lo mismo para el otro sentido de giro.
+            up, down = _ADC_FULL - adc, adc
+            report('cero de i', min(up, down) >= _ADC_HEADROOM,
+                   f'{adc:.0f} de {_ADC_FULL}, margen +{up * lsb / 1000:.1f} A / '
+                   f'-{down * lsb / 1000:.1f} A'
+                   + ('' if min(up, down) >= _ADC_HEADROOM else
+                      '  -- el reposo esta muy cerca del tope: sin lugar para medir'))
+
+            self.zero_current()
+            zeroed  = self.capture(0.3, warn=False)
+            rest_ma = zeroed['i'].mean()
+            noise   = zeroed['i'].std()
+
+            # Un canal demasiado quieto es tan sospechoso como uno ruidoso. Un
+            # ruido de cero exacto no es una medicion limpia: es una senal mas
+            # chica que un escalon de cuantizacion, y entonces el ADC devuelve
+            # siempre la misma cuenta y no hay forma de saber que hay abajo. Con
+            # dither de una fraccion de LSB, en cambio, el promedio de la ventana
+            # resuelve por debajo del escalon.
+            report('calibracion de i',
+                   abs(rest_ma) < lsb and 0.1 * lsb < noise < 8 * lsb,
+                   f'izero = {self.izero}, {lsb:.2f} mA por cuenta, quedan '
+                   f'{rest_ma:+.1f} mA en reposo (ruido {noise / lsb:.2f} cuentas)'
+                   + ('' if noise > 0.1 * lsb else
+                      '  -- sin dither: la senal no llega a un escalon del ADC'))
 
         # 6. El actuador, y con él toda la cadena: un comando que sale, movimiento
         #    y corriente que vuelven. Hay dos evidencias posibles y cada una
@@ -244,17 +350,14 @@ class Bench(CtrlLink):
         #    cuando la entrada de corriente está al aire, es peor que no medir.
         if not motor:
             report('motor', None, 'omitido (motor=False)')
+            report('sentido', None, 'omitido (motor=False)')
+            report('polaridad', None, 'omitido (motor=False)')
         else:
-            print(f'  accionando el motor con u = {u} durante 0,4 s ...')
-            self.zero()
-            self.uff = u
-            spun = self.capture(0.4, warn=False)
-            self.rest()
+            print(f'  accionando el motor con u = {u:+} durante 0,4 s, '
+                  f'PWM a {self.pwm_hz / 1000:.1f} kHz ...')
+            fwd, drawn = self.spin(u)
 
-            turned = abs(spun['y_uw'].iloc[-1] - spun['y_uw'].iloc[0]) / 360.0
-            drawn  = spun['i'].abs().max()
-
-            evidence = ([f'{turned:.2f} vueltas'] if present else []) + \
+            evidence = ([f'{abs(fwd):.2f} vueltas'] if present else []) + \
                        ([f'{drawn:.0f} mA de pico'] if sensed else [])
 
             if not evidence:
@@ -262,9 +365,49 @@ class Bench(CtrlLink):
                                       'angulo ni medicion de corriente')
             else:
                 report('motor',
-                       (present and turned > 0.05) or
-                       (sensed and drawn > rest_ma + 50),
+                       (present and abs(fwd) > 0.05) or
+                       (sensed and drawn > abs(rest_ma) + 50),
                        ', '.join(evidence))
+
+            # 7. El sentido, que es una verificación aparte porque falla aparte y
+            #    en otro lado: IN1 e IN2 intercambiados, o uno de los dos sin
+            #    conectar, dejan pasar todo lo anterior y recién se notan como un
+            #    lazo cerrado que se escapa en vez de establecerse. La evidencia
+            #    tiene que ser el angulo: la corriente mide lo mismo en los dos
+            #    sentidos, asi que no distingue el caso.
+            if not self.bidir:
+                report('sentido', None, 'bidir = 0, el puente esta declarado de un '
+                                        'solo cuadrante')
+                report('polaridad', None, 'no se puede evaluar sin invertir')
+            elif not present:
+                report('sentido', None, 'no se puede evaluar sin el sensor de angulo')
+                report('polaridad', None, 'no se puede evaluar sin el sensor de angulo')
+            else:
+                print(f'  y ahora con u = {-u:+} ...')
+                rev, _ = self.spin(-u)
+                reverses = fwd * rev < 0 and abs(rev) > 0.05
+                report('sentido', reverses,
+                       f'{fwd:+.2f} vueltas con u = {u:+}, {rev:+.2f} con u = {-u:+}'
+                       + ('' if reverses else '  -- revisar IN1 (6) e IN2 (7)'))
+
+                # 8. Y la polaridad, que es distinta de que el puente invierta: un
+                #    comando positivo tiene que hacer *subir* el angulo medido. Si
+                #    lo hace bajar, el lazo de posicion realimenta en positivo y se
+                #    escapa con una referencia de cualquier signo, asi que probando
+                #    no se descubre. Depende de dos cables --los del motor en el
+                #    puente, y el sentido en que el iman mira al sensor-- y `uinvert`
+                #    es el que los reconcilia.
+                if not reverses:
+                    report('polaridad', None,
+                           'no se puede evaluar mientras el puente no invierta')
+                else:
+                    ok = fwd > 0
+                    report('polaridad', ok,
+                           f'un u positivo hace {"subir" if ok else "BAJAR"} el '
+                           f'angulo, con uinvert = {self.uinvert}'
+                           + ('' if ok else
+                              f'  -- poner uinvert = {0 if self.uinvert else 1}, '
+                              f'o dar vuelta los dos cables del motor'))
 
         bad = results.count(False)
         print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')
