@@ -446,8 +446,22 @@ class Calibracion:
     notas: str = ''
 
     @classmethod
-    def desde_armonicos(cls, arm, **meta):
-        """Muestrea el error modelado en los LUT_SIZE ángulos de la tabla."""
+    def desde_armonicos(cls, arm, permitir_recorte=False, **meta):
+        """Muestrea el error modelado en los LUT_SIZE ángulos de la tabla.
+
+        Se planta si el error no entra en la tabla. Una entrada `int8` en octavos
+        de cuenta llega a ±15,9 cuentas, o sea ±1,4 grados, que es de sobra para
+        lo que corrige un AS5600 bien montado --la hoja de datos promete ±0,5--
+        y bastante menos que lo que mide uno mal montado. El límite es una
+        propiedad del diseño y no un accidente: un error de varios grados no es
+        un error que haya que corregir por tabla, es un imán a la distancia
+        equivocada, y el destornillador es más barato y funciona mejor.
+
+        Medido en un banco con el AGC contra el tope: 453 cuentas pico a pico,
+        de las cuales la tabla representaba 32. Recortar eso en silencio habría
+        dado una calibración que corrige el siete por ciento del error y no lo
+        dice. `permitir_recorte=True` para quien sepa lo que está haciendo.
+        """
         ang = np.arange(LUT_SIZE) * (CUENTAS / LUT_SIZE)
         error = arm.evaluar(ang)
 
@@ -457,7 +471,20 @@ class Calibracion:
         # sin haberlo pedido.
         error = error - error.mean()
 
-        octavos = np.clip(np.round(error * OCTAVOS), -127, 127).astype(int)
+        exacto = np.round(error * OCTAVOS)
+        octavos = np.clip(exacto, -127, 127).astype(int)
+
+        if not permitir_recorte and not np.array_equal(exacto, octavos):
+            pico = np.abs(error).max()
+            raise ValueError(
+                f'el error medido no entra en la tabla: {pico:.1f} cuentas de pico '
+                f'({pico*GRADOS_POR_CUENTA:.2f} grados) contra los {127/OCTAVOS:.1f} '
+                f'cuentas ({127/OCTAVOS*GRADOS_POR_CUENTA:.2f} grados) que una entrada '
+                f'int8 puede representar.\n'
+                f'Un error de este tamaño no se corrige con una tabla: revisar el '
+                f'montaje del imán --el registro AGC contra un extremo es la señal-- '
+                f'y volver a medir. Ver la compuerta G0 en Docs/CALIBRACION_AS5600.md.\n'
+                f'permitir_recorte=True si de todas formas se quiere la tabla recortada.')
 
         arms = {k: (float(arm.A[k-1]), float(arm.phi[k-1]))
                 for k in range(1, arm.K + 1) if arm.A[k-1] > 0}

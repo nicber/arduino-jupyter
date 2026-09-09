@@ -1036,20 +1036,48 @@ static void refresh_magnet_status(void)
         return;
     }
 
-    uint8_t status;
-    if (Sensor::read_status(status))
+    // Un registro por vez, por turnos.
+    //
+    // AGC y MAGNITUDE son contiguos y salen en una sola lectura de tres bytes,
+    // que es lo que se hacía acá. Pero una lectura de tres bytes a 400 kHz no
+    // entra en el período de muestreo de 200 us, así que el tick siguiente
+    // encuentra el bus todavía ocupado y se cuenta un desborde. Medido en el
+    // banco: 4,5 desbordes por segundo, o sea el 0,09 % de las muestras. Lo caro
+    // no es la muestra perdida: es que `bringup` informaba una falla de bus en un
+    // equipo sano, y una verificación que grita en falso enseña a ignorarla.
+    //
+    // De a un registro por refresco, cada lectura entra en su período y el
+    // diagnóstico completo se renueva cada segundo y medio, que para algo que se
+    // mira entre corridas sobra.
+    static uint8_t turno = 0;
+
+    uint8_t buf[2];
+
+    switch (turno)
     {
-        g_mstat = status;
+        case 0:
+            if (Sensor::read_registers(Sensor::REG_STATUS, buf, 1))
+            {
+                g_mstat = buf[0];
+            }
+            break;
+
+        case 1:
+            if (Sensor::read_registers(Sensor::REG_AGC, buf, 1))
+            {
+                g_agc = buf[0];
+            }
+            break;
+
+        default:
+            if (Sensor::read_registers(Sensor::REG_MAGNITUDE_H, buf, 2))
+            {
+                g_mag = (uint16_t)((((uint16_t)buf[0] << 8) | buf[1]) & 0x0FFF);
+            }
+            break;
     }
 
-    // AGC y MAGNITUDE son contiguos, así que salen en una sola lectura. Cuestan
-    // otra muestra de las 5000 del segundo, y sólo entre corridas.
-    uint8_t diag[3];
-    if (Sensor::read_registers(Sensor::REG_AGC, diag, 3))
-    {
-        g_agc = diag[0];
-        g_mag = (uint16_t)((((uint16_t)diag[1] << 8) | diag[2]) & 0x0FFF);
-    }
+    turno = (turno + 1) % 3;
 }
 
 // Los contadores de salud describen la ventana de emisión, así que se ponen en

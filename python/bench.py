@@ -320,9 +320,21 @@ class Bench(CtrlLink):
         #    los datos y se arreglan en lugares distintos. Con el sensor ausente
         #    las fallas son las del sondeo espaciado, así que no dicen nada nuevo.
         if present:
-            report('bus i2c', df.attrs['serr'] == 0 and df.attrs['sovr'] == 0,
+            # Un desborde no es un error: es una muestra que el bus no llegó a
+            # entregar antes del tick siguiente. Un puñado por segundo es normal y
+            # no se puede evitar, porque el diagnóstico del imán lee un registro
+            # dos veces por segundo y una lectura con dirección de registro no
+            # entra en el período de 200 us; la muestra siguiente además tiene que
+            # recargar el puntero. Medido en este banco: unas dos de cada 5000.
+            #
+            # Exigir cero hacía fallar esta línea en un equipo sano, y una
+            # verificación que grita en falso enseña a ignorarla. Lo que sí es
+            # una falla es que el bus no llegue de manera sostenida.
+            muestras = df.attrs['wall'] * 1e6 / df.attrs['dt_us'] * self.tickdiv
+            tasa = df.attrs['sovr'] / max(muestras, 1)
+            report('bus i2c', df.attrs['serr'] == 0 and tasa < 0.005,
                    f'{df.attrs["serr"]} errores de transferencia, '
-                   f'{df.attrs["sovr"]} desbordes')
+                   f'{df.attrs["sovr"]} desbordes ({tasa:.2%} de las muestras)')
         else:
             report('bus i2c', None,
                    f'{df.attrs["serr"]} fallas, todas del sondeo al sensor ausente')

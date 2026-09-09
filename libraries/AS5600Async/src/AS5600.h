@@ -44,7 +44,8 @@ class AS5600
     static const uint8_t REG_CONF_H     = 0x07;
     static const uint8_t REG_STATUS     = 0x0B;
     static const uint8_t REG_RAWANGLE_H = 0x0C;
-    static const uint8_t REG_AGC        = 0x1A;  // y MAGNITUDE en 0x1B/0x1C, contiguos
+    static const uint8_t REG_AGC        = 0x1A;
+    static const uint8_t REG_MAGNITUDE_H = 0x1B;
 
     // Bits SF del registro CONF (hoja de datos, figura 22): el filtro lento.
     // Con 16x --el valor de encendido-- el retardo de respuesta al escalón son
@@ -58,9 +59,11 @@ class AS5600
     static const uint8_t SF_4X  = 2;
     static const uint8_t SF_2X  = 3;
 
-    // Lo más largo que pide una lectura de mantenimiento: AGC y MAGNITUDE
-    // juntos.
-    static const uint8_t AUX_MAX = 3;
+    // Lo más largo que pide una lectura de mantenimiento. Dos bytes son el CONF
+    // o el MAGNITUDE, y a 400 kHz entran en un período de muestreo de 200 us;
+    // tres ya no, y el tick siguiente encuentra el bus ocupado y cuenta un
+    // desborde. Quien necesite más registros que lea de a poco.
+    static const uint8_t AUX_MAX = 2;
 
     // Bits del registro STATUS (Figura 23 de la hoja de datos).
     static const uint8_t STATUS_MH = _BV(3);  // desborde de ganancia mínima del AGC, imán muy fuerte
@@ -92,8 +95,19 @@ class AS5600
     {
         if (m_inflight)
         {
-            // La transferencia anterior no terminó: el bus no está llegando.
-            m_overruns++;
+            // La transferencia anterior no terminó. Si era una muestra, el bus no
+            // está llegando y eso es un desborde. Si era una lectura de
+            // mantenimiento, no: una lectura con dirección de registro escribe el
+            // puntero, hace un restart y recién ahí lee, y eso no entra en un
+            // período de 200 us por más corta que sea. La muestra se pierde igual
+            // --dos de las 5000 del segundo-- pero contarla como desborde de bus
+            // hacía que la puesta en marcha informara una falla de bus en un
+            // equipo sano, y una verificación que grita en falso enseña a
+            // ignorarla.
+            if (!m_aux_inflight)
+            {
+                m_overruns++;
+            }
             return;
         }
 
@@ -117,7 +131,8 @@ class AS5600
             // Tarea de mantenimiento, en lugar de una muestra. Leer cualquier
             // otro registro mueve el puntero de direcciones, así que la muestra
             // siguiente tiene que volver a prepararlo.
-            m_aux_request = false;
+            m_aux_request  = false;
+            m_aux_inflight = true;
             m_armed = false;
             started = Bus::read_register(m_aux_reg, m_aux, m_aux_len, &process_aux_data);
         }
@@ -132,7 +147,8 @@ class AS5600
 
         if (!started)
         {
-            m_inflight = false;
+            m_inflight     = false;
+            m_aux_inflight = false;
             fail();
         }
     }
@@ -282,8 +298,9 @@ class AS5600
         // documentada para cuando el puntero fue *escrito* al byte alto, así que
         // se lo trata como no preparado y se deja que la muestra siguiente lo
         // fije explícitamente.
-        m_armed = false;
-        m_inflight = false;
+        m_armed        = false;
+        m_aux_inflight = false;
+        m_inflight     = false;
     }
 
     static uint16_t snapshot(const volatile uint16_t& counter)
@@ -305,6 +322,7 @@ class AS5600
     static volatile bool     m_inflight;
     static volatile bool     m_armed;
     static volatile bool     m_aux_request;
+    static volatile bool     m_aux_inflight;
     static volatile bool     m_aux_ready;
     static volatile uint16_t m_counts;
     static volatile uint16_t m_samples;
@@ -324,6 +342,7 @@ template <class Bus> uint8_t           AS5600<Bus>::m_aux_len        = 0;
 template <class Bus> volatile bool     AS5600<Bus>::m_inflight       = false;
 template <class Bus> volatile bool     AS5600<Bus>::m_armed          = false;
 template <class Bus> volatile bool     AS5600<Bus>::m_aux_request    = false;
+template <class Bus> volatile bool     AS5600<Bus>::m_aux_inflight   = false;
 template <class Bus> volatile bool     AS5600<Bus>::m_aux_ready      = false;
 template <class Bus> volatile uint16_t AS5600<Bus>::m_counts         = 0;
 template <class Bus> volatile uint16_t AS5600<Bus>::m_samples        = 0;

@@ -156,6 +156,22 @@ check('la correccion achica el error mas de cinco veces',
 check('lo que queda es del orden del redondeo a cuenta entera',
       np.abs(residual).max() < 1.0, f'{np.abs(residual).max():.2f} cuentas')
 
+# Y un error que no entra en la tabla tiene que plantarse, no recortarse solo.
+# Medido en un banco con el iman mal montado: 453 cuentas pico a pico contra las
+# 32 que la tabla representa. Recortar eso en silencio da una calibracion que
+# corrige el siete por ciento del error y no lo dice.
+grande = calib.Armonicos(A=np.array([180.0, 0, 0, 0]), phi=np.zeros(4),
+                         sigma=np.zeros(4), omega=5.0, vueltas=50, residuo=1.0)
+try:
+    calib.Calibracion.desde_armonicos(grande)
+    check('un error que no entra en la tabla se rechaza', False, 'recorto sin protestar')
+except ValueError as exc:
+    check('un error que no entra en la tabla se rechaza', 'no entra en la tabla' in str(exc))
+    check('y el rechazo apunta al montaje', 'AGC' in str(exc) and 'G0' in str(exc))
+
+recortada = calib.Calibracion.desde_armonicos(grande, permitir_recorte=True)
+check('pero se puede pedir igual', max(recortada.lut) == 127 and min(recortada.lut) == -127)
+
 # La suma de Fletcher tiene que distinguir dos entradas intercambiadas; una suma
 # pelada no, y una entrada en el índice equivocado es el error que se comete acá.
 otra = calib.Calibracion(lut=list(cal.lut))
