@@ -299,7 +299,21 @@ class Bench(CtrlLink):
         elif status & _MAGNET_STRONG:
             report('iman', False, 'muy fuerte (AGC al minimo) -- alejarlo')
         else:
-            report('iman', True, 'detectado, AGC en rango')
+            # El AGC en números, no sólo "no está en ningún extremo". Es la
+            # compuerta de la calibración: contra un borde el imán está a la
+            # distancia equivocada, y ahí ninguna tabla arregla nada porque el
+            # error deja de ser una función suave del ángulo. La banda cómoda es
+            # el tercio del medio; el registro va de 0 a 255 alimentado a 5 V, y
+            # de 0 a 128 a 3,3 V.
+            agc = df.attrs.get('agc')
+            if agc is None:
+                report('iman', True, 'detectado, AGC en rango')
+            else:
+                comodo = 32 <= agc <= 224
+                report('iman', True if comodo else None,
+                       f'detectado, AGC {agc:.0f}/255, campo {df.attrs.get("mag", 0):.0f}'
+                       + ('' if comodo else '  (cerca del borde: centrar la distancia'
+                                            ' antes de calibrar)'))
 
         # 4. El bus que transporta el ángulo, por separado del imán que está en la
         #    otra punta: un problema de pull-ups y uno de montaje se ven igual en

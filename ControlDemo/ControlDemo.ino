@@ -29,10 +29,10 @@
 // compensarlo; ver PROTOCOL.md. Los comandos son raros y diminutos, así que eso
 // no cuesta nada.
 //
-// La tabla de canales por omisión son 41 bytes por fila, o el 21 % del enlace a
+// La tabla de canales por omisión son 45 bytes por fila, o el 23 % del enlace a
 // 500 Hz, que es el "bastante por debajo de la mitad" que le gusta a este
 // protocolo. Bajar `tickdiv` a 5 devuelve el lazo a 1 kHz y lleva la fila al
-// 41 %, que ya es demasiado: ahí conviene subir `dec` o sacar un canal.
+// 45 %, que ya es demasiado: ahí conviene subir `dec` o sacar un canal.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
@@ -229,6 +229,21 @@ static uint8_t g_uinvert = 1;   // 1: un comando positivo hace bajar el ángulo 
 
 static uint16_t g_pwmtop = PWM_TOP_DEFAULT;   // TOP del Timer1: f = 8 MHz / pwmtop
 
+// Calibración del sensor. `cal` prende y apaga la corrección en caliente, que es
+// lo que permite medir cuánto sirve en lugar de suponerlo.
+static uint8_t  g_cal    = 0;
+static uint8_t  g_sfilt  = 3;   // filtro lento del AS5600: 3 es 2x, el más rápido
+
+// Una entrada de la tabla por escritura, empaquetada como (índice << 8) | valor.
+// El índice viaja adentro del mismo valor para que dos escrituras seguidas nunca
+// sean iguales por casualidad: el sketch aplica la escritura al ver que este
+// parámetro cambió, y con índice y valor separados una tabla con dos entradas
+// iguales seguidas perdería la segunda. 0xFFFF es "nada que hacer", porque el
+// índice 255 no existe; de ahí sale el valor de arranque.
+static uint16_t g_lutw   = 0xFFFF;
+static uint16_t g_lutsum = 0;   // suma de Fletcher de la tabla; la computadora la verifica
+
+static uint16_t g_y_raw = 0;    // cuenta cruda del sensor, 0..4095, sin corregir
 static int16_t g_y     = 0;     // ángulo medido, cuentas, con el offset aplicado
 static int32_t g_y_uw  = 0;     // ángulo desenrollado, cuentas, sin filtrar
 static int32_t g_y_uwf = 0;     // ángulo desenrollado, cuentas, filtrado por alpha_y
@@ -238,12 +253,24 @@ static int16_t g_u     = 0;     // comando al actuador, u_min..U_MAX
 
 // Contadores de salud. Todos los puede escribir la computadora, así que poner uno
 // en cero reinicia esa cuenta.
+// Si el muestreador de 5 kHz ya está corriendo. Lo consulta refresh_tuning()
+// para saber si puede hablarle al sensor: una lectura de mantenimiento viaja en
+// un tick de muestreo, así que antes del primer tick no hay quién la lleve.
+static bool g_sampling = false;
+
 static uint16_t g_maxlate = 0;  // peor retardo observado entre la ISR y su atención, us
 static uint16_t g_missed  = 0;  // períodos de control que loop() nunca atendió
 static uint16_t g_sovr    = 0;  // muestras del sensor que el bus I2C no llegó a seguir
 static uint16_t g_serr    = 0;  // transferencias del sensor que fallaron
 static uint8_t  g_mstat   = 0;  // registro STATUS del AS5600: imán presente, muy débil, muy fuerte
 static uint8_t  g_spres   = 1;  // el sensor contesta en el bus
+
+// Diagnóstico de montaje. `agc` a media escala es la única evidencia barata de
+// que el imán está a la distancia correcta: contra un extremo quiere decir
+// demasiado lejos o demasiado cerca, y ahí ninguna tabla arregla nada. Se leen
+// junto con STATUS, entre corridas.
+static uint8_t  g_agc     = 0;  // registro AGC del AS5600, 0..255 a 5 V
+static uint16_t g_mag     = 0;  // registro MAGNITUDE: módulo del vector de campo
 
 // Estado del integrador, en unidades de error sumadas a lo largo de los ticks.
 // Guardar la suma cruda y aplicar ki*dt una sola vez al final es lo que permite
@@ -271,6 +298,139 @@ static volatile uint16_t g_missed_isr = 0;
 static volatile int16_t  g_adc        = 0;   // última conversión completada de A0
 static volatile uint8_t  g_divider    = 10;
 
+// --------------------------------------------------------- calibración del AS5600
+
+// El AS5600 no mide el ángulo que uno cree. Un imán descentrado respecto del
+// integrado --la hoja de datos pide ±0,25 mm-- corre la lectura en una cantidad
+// que depende del ángulo y que se repite vuelta tras vuelta: al lazo se le
+// presenta como ondulación de velocidad, y ninguna ganancia la saca. La forma del
+// error son los primeros armónicos de la vuelta mecánica; ver
+// Docs/CALIBRACION_AS5600.md, que además explica cómo se lo mide sin tener un
+// encoder de referencia.
+//
+// Acá vive nada más que la corrección: una tabla indexada por el ángulo crudo.
+// Quién la calcula y de dónde sale es asunto de la computadora.
+static const uint8_t LUT_SIZE = 64;
+
+// Entradas en octavos de cuenta. Un int8 llega entonces a ±15,9 cuentas, que son
+// ±1,4 grados: de sobra para lo que corrige una tabla, y la resolución de un
+// octavo de cuenta existe porque el error entero es de unas pocas cuentas. En
+// cuentas enteras la tabla tendría tres o cuatro valores distintos y sería un
+// escalón, no una corrección.
+static int8_t g_lut[LUT_SIZE];
+
+// La tabla NO se guarda en la placa. El dispositivo arranca siempre sin
+// calibrar, y quien tiene la tabla es la computadora, que la empuja al conectarse
+// --ver python/calib.py--. Es una decisión, no una limitación de memoria:
+//
+//   - Una calibración es una propiedad del *banco* --este imán, en este eje, con
+//     este sensor--, no de la placa. En un archivo se lee, se compara, se revisa
+//     y entra en el repositorio; en la EEPROM es estado invisible que sobrevive
+//     a la reprogramación y que nadie recuerda haber puesto.
+//   - Un dispositivo que arranca sin corregir no puede mentirle a nadie. El caso
+//     feo de la EEPROM no es la tabla que falta: es la tabla vieja, de otro
+//     montaje, que se aplica en silencio.
+//   - Y para el aula: la corrección se prende y se apaga con `cal` mientras el
+//     motor gira. Eso es lo que hace que se pueda mostrar.
+//
+// Para dejarla fija en un tablero que se enciende solo, `calib.escribir_header()`
+// genera Calibracion.h y este sketch lo toma si está.
+#if defined(__has_include)
+#  if __has_include("Calibracion.h")
+#    include "Calibracion.h"
+#    define TIENE_CALIBRACION 1
+#  endif
+#endif
+
+// Suma de Fletcher de 16 bits sobre la tabla. La computadora la calcula por su
+// lado y la compara con `lutsum`, así que las 64 escrituras se verifican con una
+// sola lectura. Fletcher y no una suma pelada porque una suma no distingue una
+// tabla de otra con dos entradas intercambiadas, y una entrada en el índice
+// equivocado es exactamente el error que se comete acá.
+static uint16_t lut_checksum(void)
+{
+    uint8_t a = 0;
+    uint8_t b = 0;
+
+    for (uint8_t i = 0; i < LUT_SIZE; i++)
+    {
+        a += (uint8_t)g_lut[i];
+        b += a;
+    }
+
+    return ((uint16_t)b << 8) | a;
+}
+
+// Corrección en cuentas para un ángulo crudo, interpolada linealmente entre las
+// dos entradas que lo rodean. 64 entradas son 64 cuentas --5,6 grados-- de
+// separación, ocho puntos por ciclo del octavo armónico; la interpolación se
+// hace cargo del resto.
+static int8_t lut_lookup(int16_t counts)
+{
+    uint8_t i    = (uint8_t)(counts >> 6) & (LUT_SIZE - 1);
+    uint8_t frac = (uint8_t)counts & 0x3F;
+
+    int16_t a = (int16_t)g_lut[i];
+    int16_t b = (int16_t)g_lut[(uint8_t)(i + 1) & (LUT_SIZE - 1)];
+
+    // Como mucho 127*64 = 8128, así que la suma entra en un int16 con lugar de
+    // sobra.
+    int16_t eighths = (int16_t)((a * (int16_t)(64 - frac) + b * (int16_t)frac) >> 6);
+
+    // Redondeo al medio hacia arriba. Con corrimiento aritmético `(e + 4) >> 3`
+    // sirve para los dos signos; el `e < 0 ? -4 : 4` que uno escribe de reflejo
+    // redondea mal los negativos chicos --3/8 daría -1 en lugar de 0--.
+    return (int8_t)((eighths + 4) >> 3);
+}
+
+// Escribe los bits SF del CONF del sensor.
+//
+// El muestreador se para para escribir: nI2C encola la escritura y la completa
+// su propia ISR, pero encolar reserva memoria y el muestreador de 5 kHz llama a
+// nI2C desde una ISR de temporizador. Con el muestreador quieto no hay nadie más
+// pidiendo el bus. Cuesta un par de milisegundos de lazo detenido, y pasa sólo
+// cuando alguien mueve el parámetro.
+//
+// Lee-modifica-escribe en lugar de escribir la palabra entera: CONF también
+// lleva la histéresis, el modo de potencia y la salida, y ninguno de ésos es
+// asunto de este parámetro.
+static bool apply_sensor_filter(void)
+{
+    uint8_t conf[2];
+
+    // La lectura sí pasa por el lazo de muestreo, así que va con el muestreador
+    // todavía corriendo.
+    if (!Sensor::read_registers(Sensor::REG_CONF_H, conf, 2))
+    {
+        return false;
+    }
+
+    uint16_t value = ((uint16_t)conf[0] << 8) | conf[1];
+    value = (uint16_t)((value & ~0x0300u) | ((uint16_t)(g_sfilt & 0x03) << 8));
+
+    conf[0] = (uint8_t)(value >> 8);
+    conf[1] = (uint8_t)value;
+
+    TIMSK2 &= ~_BV(OCIE2A);
+
+    // Dejar terminar la transferencia que ya estaba en el aire. Acotado: sin
+    // sensor en el bus esto no puede quedarse esperando para siempre.
+    uint32_t deadline = millis() + 5;
+    while (Sensor::busy() && (int32_t)(millis() - deadline) < 0)
+    {
+    }
+
+    bool queued = Sensor::write_registers(Sensor::REG_CONF_H, conf, 2);
+
+    // Cuatro bytes a 400 kHz son unos 100 us; dos milisegundos es holgura, no
+    // cálculo.
+    delay(2);
+
+    TIMSK2 |= _BV(OCIE2A);
+
+    return queued;
+}
+
 // --------------------------------------------------------------------- tablas
 
 // Cada entrada se guarda exactamente como la quiere la aritmética; la columna de
@@ -295,10 +455,16 @@ static const CtrlParam PROGMEM g_params[] =
     { "bidir",   CTRL_U8,  &g_bidir,    0           },
     { "uinvert", CTRL_U8,  &g_uinvert,  0           },
     { "pwmtop",  CTRL_U16, &g_pwmtop,   0           },
+    { "cal",     CTRL_U8,  &g_cal,      0           },
+    { "sfilt",   CTRL_U8,  &g_sfilt,    0           },
+    { "lutw",    CTRL_U16, &g_lutw,     0           },
+    { "lutsum",  CTRL_U16, &g_lutsum,   0           },
     { "y",       CTRL_I16, &g_y,        0           },
     { "y_uw",    CTRL_I32, &g_y_uw,     0           },
     { "mstat",   CTRL_U8,  &g_mstat,    0           },
     { "spres",   CTRL_U8,  &g_spres,    0           },
+    { "agc",     CTRL_U8,  &g_agc,      0           },
+    { "mag",     CTRL_U16, &g_mag,      0           },
     { "maxlate", CTRL_U16, &g_maxlate,  0           },
     { "missed",  CTRL_U16, &g_missed,   0           },
     { "sovr",    CTRL_U16, &g_sovr,     0           },
@@ -315,6 +481,12 @@ static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
 static const CtrlChannel PROGMEM g_channels[] =
 {
     { "ref",   CTRL_I32, &g_ref,   1.0f / (1 << REF_FRAC), "tgt" },
+    // La cuenta cruda, sin `offset`, sin el signo invertido de `y` y sin
+    // corregir. Es lo que indexa la tabla de calibración, así que es lo que la
+    // computadora necesita para calcularla: reconstruirla desde `y_uw` se puede,
+    // pero deshacer un signo y un offset a mano es justo el lugar donde una
+    // calibración sale espejada y nadie se da cuenta hasta el final.
+    { "y_raw", CTRL_U16, &g_y_raw, COUNTS_TO_DEG,      "deg" },
     { "y_uw",  CTRL_I32, &g_y_uw,  COUNTS_TO_DEG,      "deg" },
     { "y_uwf", CTRL_I32, &g_y_uwf, COUNTS_TO_DEG,      "deg" },
     { "e",     CTRL_I16, &g_e,     1.0f,               "tgt" },
@@ -535,9 +707,29 @@ static void drive(int16_t u)
 
 // El imán gira en sentido contrario al eje, de ahí la negación; `offset` es
 // entonces la cuenta que se lee como cero.
+// La cuenta del sensor, corregida si hay calibración, en el dominio crudo y
+// antes de desenrollar.
+//
+// Antes de desenrollar porque la tabla se indexa con el ángulo dentro de la
+// vuelta, y una vez desenrollado ese ángulo ya no está. Y sobre la cuenta cruda
+// y no sobre `y`, porque `y` lleva el signo invertido y el offset: dos
+// oportunidades de equivocarse a cambio de nada.
+//
+// g_lut se toca acá y en refresh_tuning(), las dos desde loop(), así que no hay
+// nada que sincronizar. Si alguna vez la corrección se mudara a la ISR de
+// muestreo, dejaría de ser cierto.
 static int16_t sensor_measurement(void)
 {
-    return wrapped_error(g_offset, (int16_t)Sensor::counts());
+    int16_t counts = (int16_t)Sensor::counts();
+
+    g_y_raw = (uint16_t)counts;
+
+    if (g_cal)
+    {
+        counts = (int16_t)((counts - lut_lookup(counts)) & (COUNTS_PER_REV - 1));
+    }
+
+    return wrapped_error(g_offset, counts);
 }
 
 // Lee los sensores y actualiza todas las variables medidas. Corre una vez por
@@ -777,6 +969,46 @@ static void refresh_tuning(void)
     g_i_filt[0].set_alpha(Alpha::from_raw(g_alpha_i));
     g_i_filt[1].set_alpha(Alpha::from_raw(g_alpha_i));
     g_err_filt.set_alpha(Alpha::from_raw(g_alpha_e));
+
+    // Una entrada de la tabla de calibración por escritura de `lutw`. Aplicar al
+    // ver que el parámetro cambió es lo que permite cargar la tabla sin
+    // agregarle un comando al protocolo: son 64 `set` comunes, cada uno con la
+    // misma respuesta verificada que cualquier otro. Ver g_lutw.
+    static uint16_t lutw_applied = 0xFFFF;
+
+    if (g_lutw != lutw_applied)
+    {
+        lutw_applied = g_lutw;
+
+        uint8_t index = (uint8_t)(g_lutw >> 8);
+
+        if (index < LUT_SIZE)
+        {
+            g_lut[index] = (int8_t)(uint8_t)g_lutw;
+        }
+    }
+
+    // Se recalcula siempre y no sólo al escribir la tabla: así `lutsum` describe
+    // lo que hay, incluso si alguien lo escribió a mano, y la computadora puede
+    // verificar 64 entradas con una sola lectura.
+    g_lutsum = lut_checksum();
+
+    // El filtro del sensor, sólo cuando cambió: escribirlo en cada `set kp`
+    // pararía el muestreador sin motivo. Y sólo con el muestreador corriendo,
+    // porque la lectura del CONF que precede a la escritura viaja en un tick de
+    // muestreo. Si la escritura no sale, no se marca como aplicada y el intento
+    // siguiente vuelve a probar.
+    static uint8_t sfilt_applied = 0xFF;
+
+    if (g_sfilt > Sensor::SF_2X)
+    {
+        g_sfilt = Sensor::SF_2X;
+    }
+
+    if (g_sampling && g_sfilt != sfilt_applied && apply_sensor_filter())
+    {
+        sfilt_applied = g_sfilt;
+    }
 }
 
 // La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy
@@ -799,6 +1031,8 @@ static void refresh_magnet_status(void)
         // Sin sensor en el bus no hay nada que informar del imán, y dejar el
         // último valor sería peor que no decir nada.
         g_mstat = 0;
+        g_agc   = 0;
+        g_mag   = 0;
         return;
     }
 
@@ -806,6 +1040,15 @@ static void refresh_magnet_status(void)
     if (Sensor::read_status(status))
     {
         g_mstat = status;
+    }
+
+    // AGC y MAGNITUDE son contiguos, así que salen en una sola lectura. Cuestan
+    // otra muestra de las 5000 del segundo, y sólo entre corridas.
+    uint8_t diag[3];
+    if (Sensor::read_registers(Sensor::REG_AGC, diag, 3))
+    {
+        g_agc = diag[0];
+        g_mag = (uint16_t)((((uint16_t)diag[1] << 8) | diag[2]) & 0x0FFF);
     }
 }
 
@@ -852,6 +1095,15 @@ void setup()
     pinMode(MOTOR_IN2_PIN, OUTPUT);
     digitalWrite(MOTOR_IN2_PIN, LOW);
 
+    // Si el proyecto trae una calibración compilada, entra acá y queda activa
+    // desde el arranque. Sin ella la tabla es toda ceros y `cal` arranca en 0:
+    // un dispositivo sin calibrar tiene que decir que no está calibrado, no
+    // corregir con lo que haya quedado.
+#ifdef TIENE_CALIBRACION
+    memcpy_P(g_lut, CAL_LUT, LUT_SIZE);
+    g_cal = 1;
+#endif
+
     CtrlLink::set_id(F("ControlDemo"));
     CtrlLink::begin(BAUD,
                     g_params,   sizeof(g_params)   / sizeof(g_params[0]),
@@ -863,6 +1115,12 @@ void setup()
     startAdc();
     Sensor::begin();
     startSampleTimer();
+
+    // El filtro del sensor se escribe recién ahora: la lectura del CONF que
+    // precede a la escritura viaja en un tick de muestreo, así que antes de esta
+    // línea no hay quién la lleve. refresh_tuning() lo sabe por g_sampling.
+    g_sampling = true;
+    refresh_tuning();
 
     CtrlLink::note(F("ControlDemo listo"));
 }

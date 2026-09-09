@@ -197,8 +197,12 @@ Los parámetros son atributos, siempre en unidades reales:
 | `alpha_y`, `alpha_i`, `alpha_e` | polos de los filtros de posición, corriente y error |
 | `offset` | cuenta del sensor de ángulo que se lee como cero |
 | `izero` | LSB del ADC que se lee como corriente cero |
+| `cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
+| `sfilt` | filtro lento del AS5600: 0 es 16x (2,2 ms de retardo), 3 es 2x (0,286 ms) |
+| `lutw`, `lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `maxlate`, `missed`, `sovr`, `serr` | contadores de salud del lazo |
 | `spres`, `mstat` | estado del sensor: si contesta en el bus, y qué dice del imán |
+| `agc`, `mag` | ganancia y campo que ve el AS5600: con `agc` contra un extremo, el imán está a la distancia equivocada |
 
 `bench.py` agrega encima las conversiones de este equipo, que son las que conviene
 usar: `dev.gains(kp, ki, kd)` toma las ganancias **en tiempo continuo** y las
@@ -215,6 +219,43 @@ a `controller_pid()` y un caso al `switch` de `control_step()`; agregar una
 realimentación nueva es una rama en `target_error()`. Un parámetro nuevo es una
 línea en la tabla `g_params[]`, y aparece solo en el notebook: del lado de Python
 no hay nada que cambiar.
+
+---
+
+## Calibrar el sensor
+
+El AS5600 no mide el ángulo que uno cree. Un imán descentrado --la hoja de datos
+pide un cuarto de milímetro-- corre la lectura en una cantidad que depende del
+ángulo y se repite vuelta tras vuelta, y al lazo se le presenta como una
+ondulación de velocidad que ninguna ganancia arregla.
+
+`notebooks/calibracion.ipynb` la mide, decide cuánto de lo que midió es el sensor
+y cuánto es el motor, y arma una tabla de 64 bytes que la corrige adentro del
+Arduino. Corre igual sin la placa: si no encuentra el banco cae en uno simulado y
+lo dice. El método está en `Docs/CALIBRACION_AS5600.md`.
+
+**La tabla no vive en la placa.** El dispositivo arranca siempre sin calibrar y la
+dueña de la tabla es la computadora, que la empuja al conectarse:
+
+```python
+import calib
+calib.asegurar(dev, 'calibracion.json')     # la carga y la aplica si no está puesta
+```
+
+No es una limitación de memoria. Una calibración es una propiedad de *este banco*
+--este imán, en este eje-- y no del programa: en un archivo se lee, se compara y
+se revisa; adentro de la placa es estado invisible que sobrevive a la
+reprogramación. El caso feo no es la tabla que falta, es la tabla vieja de otro
+montaje aplicándose en silencio. Para un tablero que se enciende solo,
+`cal.escribir_header()` genera `ControlDemo/Calibracion.h` y el sketch lo toma en
+la próxima compilación; ahí la calibración queda adentro de la placa, pero a la
+vista en el código.
+
+Y antes de calibrar nada, `sfilt = 3`. El AS5600 arranca con su filtro lento en
+16x, que son 2,2 ms de retardo; en 2x son 0,286 ms. A cinco vueltas por segundo
+esa diferencia son 39 cuentas de ángulo, contra un error que se espera de unas
+pocas. Es la mejora más grande y más barata del asunto, y le sirve al lazo de
+control tanto como a la medición.
 
 ---
 
@@ -282,9 +323,13 @@ libraries/AS5600Async/   lectura asincrónica del AS5600
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y unidades de este equipo
-python/test_ctrllink.py  pruebas, no necesitan hardware
-notebooks/               el notebook de demostración
+python/calib.py          calibración del AS5600: medición, decisión y tabla
+python/banco_simulado.py un banco de mentira, para dar la clase sin la placa
+python/fakeuno.py        simulación del dispositivo, fiel byte a byte
+python/test_*.py         pruebas, no necesitan hardware
+notebooks/               los notebooks: demostración y calibración
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
+Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
 ```
 
 Compilar y grabar a mano, si hiciera falta:

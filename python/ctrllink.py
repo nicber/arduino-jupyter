@@ -79,7 +79,12 @@ _HEALTH = ('missed', 'maxlate', 'sovr', 'serr')
 #
 #   spres    el sensor contesta en el bus (0 = no está)
 #   mstat    registro STATUS del AS5600: imán detectado, muy débil, muy fuerte
-_STATUS = ('spres', 'mstat')
+#   agc      registro AGC: contra un extremo es un imán mal montado
+#   mag      registro MAGNITUDE: módulo del vector de campo
+#
+# Un sketch que no declare alguno simplemente no lo informa; la lista se cruza
+# contra la tabla de parámetros del dispositivo.
+_STATUS = ('spres', 'mstat', 'agc', 'mag')
 
 # Fracción del período de control a partir de la cual vale la pena mencionar un
 # retardo de atención, aunque todavía no se haya perdido nada.

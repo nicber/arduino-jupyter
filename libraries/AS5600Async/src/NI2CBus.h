@@ -40,6 +40,19 @@ struct NI2CBus
         return nI2C->Read(m_handle, reg, buffer, length, callback) == CI2C::STATUS_OK;
     }
 
+    // Escritura con dirección de registro. nI2C la encola y la completa su ISR,
+    // así que esto vuelve enseguida y sin resultado: lo único que informa el
+    // valor de retorno es si la petición entró en la cola. Que haya entrado
+    // basta, porque el único uso es configurar el sensor y el efecto se verifica
+    // volviendo a leer el registro.
+    //
+    // Encolar una escritura reserva memoria --es el único camino de nI2C que lo
+    // hace--, así que esto no se llama desde una ISR; ver AS5600::write_registers.
+    static bool write_register(uint8_t reg, const uint8_t* data, uint8_t length)
+    {
+        return nI2C->Write(m_handle, reg, data, length) == CI2C::STATUS_OK;
+    }
+
     static bool ok(uint8_t status) { return status == CI2C::STATUS_OK; }
 
     static CI2C::Handle m_handle;
