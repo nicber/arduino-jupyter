@@ -230,7 +230,7 @@ pide un cuarto de milímetro-- corre la lectura en una cantidad que depende del
 ondulación de velocidad que ninguna ganancia arregla.
 
 `notebooks/calibracion.ipynb` la mide, decide cuánto de lo que midió es el sensor
-y cuánto es el motor, y arma una tabla de 64 bytes que la corrige adentro del
+y cuánto es el motor, y arma una tabla de 128 bytes que la corrige adentro del
 Arduino. Corre igual sin la placa: si no encuentra el banco cae en uno simulado y
 lo dice. El método está en `Docs/CALIBRACION_AS5600.md`.
 

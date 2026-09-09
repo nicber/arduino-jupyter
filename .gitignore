@@ -11,4 +11,4 @@ ControlDemo/Calibracion.h
 
 # La calibración medida en un banco concreto. Es un dato de ese banco, no del
 # proyecto: cada uno guarda la suya.
-notebooks/calibracion.json
+notebooks/calibracion*.json

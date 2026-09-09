@@ -214,20 +214,51 @@ class Bench(CtrlLink):
         self.mode = MODE_OPEN
         self.uff = 0
 
-    def spin(self, u, seconds=0.4):
+    def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
         """Lazo abierto con `u` sobre el puente por un instante, y de vuelta a reposo.
 
         Devuelve (vueltas, mA de pico). Las vueltas van con signo, que es lo que
         hace verificable el sentido; la corriente no, porque que el ACS712 vea o no
         el signo depende de en qué parte del circuito esté insertado, y para el
         pico da igual.
+
+        Espera primero a que el eje esté realmente quieto, y esa espera no es una
+        precaución de más: con el puente abierto el motor no frena, sigue por
+        inercia, y en este banco tarda segundos en parar desde las decenas de
+        vueltas por segundo a las que llega. Midiendo enseguida, lo que se mide es
+        la inercia de la medición anterior. Así se equivocó de signo la
+        verificación de polaridad --dos veces, y con el sentido opuesto cada vez--,
+        que es justamente la que existe porque probando no se descubre.
+
+        `quieto` es el umbral en grados por segundo por debajo del cual se
+        considera parado.
         """
+        self.rest()
+
+        limite = time.monotonic() + espera
+        arrastre = None
+
+        while True:
+            reposo = self.capture(0.2, warn=False)
+            arrastre = abs(reposo['y_uw'].iloc[-1] - reposo['y_uw'].iloc[0]) / 0.2
+
+            if arrastre < quieto or time.monotonic() > limite:
+                break
+
         self.zero()
         self.uff = u
         df = self.capture(seconds, warn=False)
         self.rest()
 
-        return (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0, df['i'].abs().max()
+        vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
+
+        # Si no llegó a parar, el número que sigue no significa lo que dice, y es
+        # mejor que quien mira lo sepa que un signo inventado con cara de dato.
+        if arrastre >= quieto:
+            print(f'  OJO: el eje seguia girando a {arrastre:.0f} grados/s al empezar '
+                  f'esta medicion; el sentido que informa puede ser el de la inercia')
+
+        return vueltas, df['i'].abs().max()
 
     # ------------------------------------------------------- puesta en marcha
 

@@ -46,7 +46,7 @@ class BancoSimulado:
         self.kp = self.ki = self.kd = 0.0
 
         self.lut = [0] * 64
-        self._lutw = 0xFFFF
+        self._lutw = 0xFFFFFFFF
 
         self.dt = self.tickdiv / 5000.0
         self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
@@ -56,13 +56,13 @@ class BancoSimulado:
 
     def set(self, name, value, tries=3):
         if name == 'lutw':
-            value = int(value) & 0xFFFF
+            value = int(value) & 0xFFFFFFFF
             if value != self._lutw:
                 self._lutw = value
-                i = value >> 8
+                i = value >> 16
                 if i < 64:
-                    v = value & 0xFF
-                    self.lut[i] = v - 256 if v > 127 else v
+                    v = value & 0xFFFF
+                    self.lut[i] = v - 65536 if v > 32767 else v
             return value
 
         setattr(self, name, value)
@@ -72,8 +72,9 @@ class BancoSimulado:
         if name == 'lutsum':
             a = b = 0
             for v in self.lut:
-                a = (a + (v & 0xFF)) & 0xFF
-                b = (b + a) & 0xFF
+                for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
+                    a = (a + byte) & 0xFF
+                    b = (b + a) & 0xFF
             return (b << 8) | a
         return getattr(self, name)
 

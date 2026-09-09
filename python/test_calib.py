@@ -139,7 +139,8 @@ check('lo aceptado conserva su amplitud', abs(aceptados.A[0] - 6.0) < 0.3,
 cal = calib.Calibracion.desde_armonicos(aceptados, banco='banco de prueba')
 
 check('la tabla tiene el tamano del dispositivo', len(cal.lut) == calib.LUT_SIZE)
-check('la tabla entra en un int8', all(-128 <= v <= 127 for v in cal.lut))
+check('la tabla entra en el rango del dispositivo',
+      all(-calib.LUT_MAX <= v <= calib.LUT_MAX for v in cal.lut))
 check('la tabla queda centrada', abs(sum(cal.lut)) < calib.LUT_SIZE,
       f'suma {sum(cal.lut)}')
 
@@ -157,20 +158,24 @@ check('lo que queda es del orden del redondeo a cuenta entera',
       np.abs(residual).max() < 1.0, f'{np.abs(residual).max():.2f} cuentas')
 
 # Y un error que no entra en la tabla tiene que plantarse, no recortarse solo.
-# Medido en un banco con el iman mal montado: 453 cuentas pico a pico contra las
-# 32 que la tabla representa. Recortar eso en silencio da una calibracion que
-# corrige el siete por ciento del error y no lo dice.
-grande = calib.Armonicos(A=np.array([180.0, 0, 0, 0]), phi=np.zeros(4),
+# La primera version recortaba en silencio: medido en un banco con el iman lejos,
+# 453 cuentas pico a pico contra las 32 que la tabla representaba entonces, o sea
+# una calibracion que corregia el siete por ciento del error y decia que lo habia
+# corregido. La tabla desde entonces llega a 45 grados, pero el techo sigue
+# existiendo y sigue teniendo que avisar.
+grande = calib.Armonicos(A=np.array([900.0, 0, 0, 0]), phi=np.zeros(4),
                          sigma=np.zeros(4), omega=5.0, vueltas=50, residuo=1.0)
 try:
     calib.Calibracion.desde_armonicos(grande)
     check('un error que no entra en la tabla se rechaza', False, 'recorto sin protestar')
 except ValueError as exc:
     check('un error que no entra en la tabla se rechaza', 'no entra en la tabla' in str(exc))
-    check('y el rechazo apunta al montaje', 'AGC' in str(exc) and 'G0' in str(exc))
+    check('y el rechazo apunta al montaje',
+          'montaje del iman' in str(exc) and 'G0' in str(exc), str(exc))
 
 recortada = calib.Calibracion.desde_armonicos(grande, permitir_recorte=True)
-check('pero se puede pedir igual', max(recortada.lut) == 127 and min(recortada.lut) == -127)
+check('pero se puede pedir igual',
+      max(recortada.lut) == calib.LUT_MAX and min(recortada.lut) == -calib.LUT_MAX)
 
 # La suma de Fletcher tiene que distinguir dos entradas intercambiadas; una suma
 # pelada no, y una entrada en el índice equivocado es el error que se comete acá.
@@ -208,7 +213,7 @@ with tempfile.TemporaryDirectory() as carpeta:
     header = cal.escribir_header(os.path.join(carpeta, 'Calibracion.h'))
     texto = open(header).read()
     check('el header declara la tabla en PROGMEM',
-          'static const int8_t CAL_LUT[64] PROGMEM' in texto)
+          'static const int16_t CAL_LUT[64] PROGMEM' in texto)
     check('el header trae los 64 valores',
           texto.count(',') >= calib.LUT_SIZE, f'{texto.count(",")} comas')
     check('el header dice de donde salio', 'banco de prueba' in texto)
@@ -228,11 +233,11 @@ class FakeUnoConLut(FakeUno):
         super().__init__(**kw)
         self.lut = [0] * 64
         self.params = dict(self.params)
-        self.params['lutw'] = ('u16', 0, 0xFFFF)
+        self.params['lutw'] = ('u32', 0, 0xFFFFFFFF)
         self.params['lutsum'] = ('u16', 0, 0)
         self.params['cal'] = ('u8', 0, 0)
         self.params['sfilt'] = ('u8', 0, 3)
-        self.lutw_aplicado = 0xFFFF
+        self.lutw_aplicado = 0xFFFFFFFF
 
     def command(self, cmd):
         super().command(cmd)
@@ -243,19 +248,21 @@ class FakeUnoConLut(FakeUno):
             self.refresh_tuning()
 
     def refresh_tuning(self):
-        lutw = self.params['lutw'][2] & 0xFFFF
+        lutw = self.params['lutw'][2] & 0xFFFFFFFF
 
         if lutw != self.lutw_aplicado:
             self.lutw_aplicado = lutw
-            indice = lutw >> 8
+            indice = lutw >> 16
             if indice < 64:
-                valor = lutw & 0xFF
-                self.lut[indice] = valor - 256 if valor > 127 else valor
+                valor = lutw & 0xFFFF
+                valor = valor - 65536 if valor > 32767 else valor
+                self.lut[indice] = max(-4095, min(4095, valor))
 
         a = b = 0
         for v in self.lut:
-            a = (a + (v & 0xFF)) & 0xFF
-            b = (b + a) & 0xFF
+            for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
+                a = (a + byte) & 0xFF
+                b = (b + a) & 0xFF
 
         self.params['lutsum'] = ('u16', 0, (b << 8) | a)
 

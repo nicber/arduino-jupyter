@@ -374,15 +374,26 @@ oportunidades de equivocarse a cambio de nada.
 
 ### La tabla
 
-64 entradas `int8`, en unidades de 1/8 de cuenta, con interpolación lineal:
+64 entradas `int16`, en unidades de 1/8 de cuenta, con interpolación lineal:
 
 | | |
 |---|---|
-| Tamaño | 64 entradas × 1 byte = 64 B de SRAM |
+| Tamaño | 64 entradas × 2 bytes = 128 B de SRAM |
 | Índice | `counts >> 6`, fracción `counts & 63` |
 | Unidad | 1/8 de cuenta = 0,011° |
-| Rango | ±15,9 cuentas = ±1,4° |
+| Rango | ±511 cuentas = ±45° |
 | Separación angular entre entradas | 5,6° |
+
+Las entradas empezaron siendo `int8`, que en octavos llega a ±15,9 cuentas o
+±1,4°: de sobra para lo que promete la hoja de datos, con el argumento de que un
+error más grande no es algo para corregir por tabla sino un imán mal puesto. El
+banco desmintió el argumento. Con el AGC en 165 de 255 --media escala, la
+distancia correcta-- el segundo armónico mide 108 cuentas, 9,5°, y el error
+completo 24° pico a pico. **El AGC informa la distancia, no el centrado**, así que
+un imán puede estar a la distancia justa y de todos modos torcido; y ahí el error
+es real, es del sensor --plano en la velocidad entre 15 y 37 vueltas por segundo,
+en los dos sentidos-- y una tabla lo corrige. Con `int8` la tabla representaba el
+diez por ciento y recortaba el resto.
 
 64 entradas representan sin problema hasta el octavo armónico (ocho puntos por
 ciclo) y la interpolación lineal se hace cargo del resto. La unidad de 1/8 de
@@ -392,18 +403,21 @@ corrección.
 
 ```c
 // Corrección en cuentas, redondeada. La tabla está en octavos de cuenta.
-static int8_t lut_lookup(int16_t counts)
+static int16_t lut_lookup(int16_t counts)
 {
     uint8_t i    = (uint8_t)(counts >> 6) & 0x3F;
     uint8_t frac = (uint8_t)counts & 0x3F;
-    int16_t a = (int16_t)g_lut[i];
-    int16_t b = (int16_t)g_lut[(i + 1) & 0x3F];
-    int16_t eighths = (int16_t)((a * (64 - frac) + b * frac) >> 6);
+    int32_t a = (int32_t)g_lut[i];
+    int32_t b = (int32_t)g_lut[(i + 1) & 0x3F];
+
+    // int32 en el medio: con entradas de hasta 4095 octavos la suma llega a
+    // 262080, que no entra en 16 bits.
+    int32_t eighths = (a * (int32_t)(64 - frac) + b * (int32_t)frac) >> 6;
 
     // Redondeo al medio hacia arriba. Con corrimiento aritmético `(e + 4) >> 3`
     // sirve para los dos signos; el `e < 0 ? -4 : 4` que uno escribe de reflejo
     // redondea mal los negativos chicos (-3/8 daría -1 en lugar de 0).
-    return (int8_t)((eighths + 4) >> 3);
+    return (int16_t)((eighths + 4) >> 3);
 }
 ```
 
@@ -442,9 +456,9 @@ vista en el código y no escondida en una memoria.
 
 ### Protocolo: ningún comando nuevo
 
-Cargar 64 bytes no necesitó tocar el protocolo. Alcanzan dos parámetros:
+Cargar la tabla no necesitó tocar el protocolo. Alcanzan dos parámetros:
 
-- **`lutw` (u16)**: una entrada, empaquetada como `(índice << 8) | valor`. El
+- **`lutw` (u32)**: una entrada, empaquetada como `(índice << 16) | valor`. El
   índice viaja adentro del valor para que dos escrituras seguidas nunca sean
   iguales por casualidad: el sketch aplica la escritura al notar que el parámetro
   cambió, y con índice y valor separados una tabla con dos entradas iguales
@@ -477,6 +491,8 @@ Más dos parámetros de operación:
 | Huecos de telemetría desenrollados como saltos | vueltas fantasma en el desenrollado | reconstruir con `tick`, no con el índice |
 | La tendencia se come el primer armónico | `A_1` chico y con barra de error grande | ≥20 vueltas por ventana de ajuste |
 | Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `cal` en 0 y en 1: es el chequeo, y es barato |
+| Medir con el eje todavía girando por inercia | el sentido informado es el de la medición anterior | esperar a que el eje pare de verdad y verificarlo; ver `Bench.spin()` |
+| Una calibración compilada que quedó de otro banco | el dispositivo arranca con `cal = 1` y una tabla ajena | `escribir_header()` no se llama solo; borrar `Calibracion.h` cuando deje de corresponder |
 
 ## 9. Dónde está cada cosa
 

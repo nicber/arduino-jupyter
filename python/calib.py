@@ -35,6 +35,15 @@ GRADOS_POR_CUENTA = 360.0 / CUENTAS
 LUT_SIZE = 64
 OCTAVOS = 8
 
+# Techo de una entrada, en octavos de cuenta: ±511 cuentas, ±45 grados. Antes las
+# entradas eran int8 y el techo eran ±15,9 cuentas, con el argumento de que un
+# error más grande era un imán mal puesto y no algo para corregir por tabla. El
+# banco dijo otra cosa: con el AGC en media escala --la distancia correcta-- el
+# segundo armónico medía 105 cuentas, 9,3 grados. El AGC informa la distancia y
+# no el centrado, así que un imán puede estar a la distancia justa y de todos
+# modos torcido.
+LUT_MAX = 4095
+
 # Compuerta G2 del plan: qué armónico se acepta como error del sensor.
 #
 #   - Por debajo de un tercio de cuenta no vale la pena: el sensor cuantiza a una
@@ -472,18 +481,18 @@ class Calibracion:
         error = error - error.mean()
 
         exacto = np.round(error * OCTAVOS)
-        octavos = np.clip(exacto, -127, 127).astype(int)
+        octavos = np.clip(exacto, -LUT_MAX, LUT_MAX).astype(int)
 
         if not permitir_recorte and not np.array_equal(exacto, octavos):
             pico = np.abs(error).max()
             raise ValueError(
                 f'el error medido no entra en la tabla: {pico:.1f} cuentas de pico '
-                f'({pico*GRADOS_POR_CUENTA:.2f} grados) contra los {127/OCTAVOS:.1f} '
-                f'cuentas ({127/OCTAVOS*GRADOS_POR_CUENTA:.2f} grados) que una entrada '
-                f'int8 puede representar.\n'
-                f'Un error de este tamaño no se corrige con una tabla: revisar el '
-                f'montaje del imán --el registro AGC contra un extremo es la señal-- '
-                f'y volver a medir. Ver la compuerta G0 en Docs/CALIBRACION_AS5600.md.\n'
+                f'({pico*GRADOS_POR_CUENTA:.1f} grados) contra las {LUT_MAX/OCTAVOS:.0f} '
+                f'cuentas ({LUT_MAX/OCTAVOS*GRADOS_POR_CUENTA:.0f} grados) que una entrada '
+                f'de la tabla puede representar.\n'
+                f'Cuarenta y cinco grados de error no son un sensor mal calibrado, son un '
+                f'sensor que no esta midiendo: revisar el montaje del iman y volver a '
+                f'medir. Ver la compuerta G0 en Docs/CALIBRACION_AS5600.md.\n'
                 f'permitir_recorte=True si de todas formas se quiere la tabla recortada.')
 
         arms = {k: (float(arm.A[k-1]), float(arm.phi[k-1]))
@@ -505,11 +514,16 @@ class Calibracion:
         Fletcher y no una suma pelada porque una suma no distingue una tabla de
         otra con dos entradas intercambiadas, y una entrada en el índice
         equivocado es justo el error que se comete acá.
+
+        Se recorre byte por byte, primero el bajo y después el alto de cada
+        entrada, que es lo que hace el sketch: así esto no depende del orden de
+        bytes del AVR.
         """
         a = b = 0
         for v in self.lut:
-            a = (a + (v & 0xFF)) & 0xFF
-            b = (b + a) & 0xFF
+            for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
+                a = (a + byte) & 0xFF
+                b = (b + a) & 0xFF
         return (b << 8) | a
 
     def corregir(self, cuentas):
@@ -568,7 +582,7 @@ class Calibracion:
         """
         filas = []
         for i in range(0, LUT_SIZE, 8):
-            filas.append('    ' + ', '.join(f'{v:4d}' for v in self.lut[i:i+8]) + ',')
+            filas.append('    ' + ', '.join(f'{v:6d}' for v in self.lut[i:i+8]) + ',')
 
         with open(ruta, 'w') as f:
             f.write('// Generado por python/calib.py. No editar a mano.\n')
@@ -579,7 +593,7 @@ class Calibracion:
                                   sorted(self.armonicos.items()))
                 f.write(f'// Ajuste: {picos}\n')
             f.write('//\n// Entradas en octavos de cuenta, indexadas por el ángulo crudo.\n\n')
-            f.write('static const int8_t CAL_LUT[64] PROGMEM =\n{\n')
+            f.write('static const int16_t CAL_LUT[64] PROGMEM =\n{\n')
             f.write('\n'.join(filas))
             f.write('\n};\n')
 
@@ -602,7 +616,7 @@ class Calibracion:
         silencio; una tabla es toda valores.
         """
         for i, v in enumerate(self.lut):
-            dev.set('lutw', (i << 8) | (int(v) & 0xFF))
+            dev.set('lutw', (i << 16) | (int(v) & 0xFFFF))
 
         if verificar:
             leido = int(dev.get('lutsum'))

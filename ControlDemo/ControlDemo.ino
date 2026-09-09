@@ -225,7 +225,18 @@ static uint8_t g_target  = TARGET_POSITION;
 static uint8_t g_mode    = MODE_OPEN;
 static uint8_t g_tickdiv = 10;  // muestras de 5 kHz por período de control: 10 -> 500 Hz
 static uint8_t g_bidir   = 1;   // 1: el puente acciona en los dos sentidos
-static uint8_t g_uinvert = 1;   // 1: un comando positivo hace bajar el ángulo medido
+// 1: un comando positivo hace bajar el ángulo medido. Es una propiedad del
+// cableado --de qué lado están los cables del motor en el puente, y de qué lado
+// mira el imán al sensor-- así que este valor describe un banco y no una verdad
+// general, y cambia cada vez que alguien da vuelta el imán o los cables del
+// motor. `bringup()` lo verifica en cada corrida y dice cuál poner.
+//
+// Y verificarlo exige que el eje esté quieto antes de medir: con el puente
+// abierto el motor no frena, sigue por inercia varios segundos, y midiendo
+// enseguida lo que se mide es el giro anterior. Así este parámetro pareció
+// roto -- dos veredictos opuestos en la misma tarde-- hasta que se lo midió con
+// el eje realmente parado. Ver Bench.spin().
+static uint8_t g_uinvert = 0;
 
 static uint16_t g_pwmtop = PWM_TOP_DEFAULT;   // TOP del Timer1: f = 8 MHz / pwmtop
 
@@ -234,13 +245,16 @@ static uint16_t g_pwmtop = PWM_TOP_DEFAULT;   // TOP del Timer1: f = 8 MHz / pwm
 static uint8_t  g_cal    = 0;
 static uint8_t  g_sfilt  = 3;   // filtro lento del AS5600: 3 es 2x, el más rápido
 
-// Una entrada de la tabla por escritura, empaquetada como (índice << 8) | valor.
+// Una entrada de la tabla por escritura, empaquetada como (índice << 16) | valor.
 // El índice viaja adentro del mismo valor para que dos escrituras seguidas nunca
 // sean iguales por casualidad: el sketch aplica la escritura al ver que este
-// parámetro cambió, y con índice y valor separados una tabla con dos entradas
-// iguales seguidas perdería la segunda. 0xFFFF es "nada que hacer", porque el
-// índice 255 no existe; de ahí sale el valor de arranque.
-static uint16_t g_lutw   = 0xFFFF;
+// parámetro cambió, y con índice y valor en parámetros separados una tabla con
+// dos entradas iguales seguidas perdería la segunda. 0xFFFFFFFF es "nada que
+// hacer", porque ese índice no existe; de ahí sale el valor de arranque.
+//
+// Son 32 bits y no 16 porque el valor pasó a ser int16: el índice ya no entra en
+// el byte alto.
+static uint32_t g_lutw   = 0xFFFFFFFFUL;
 static uint16_t g_lutsum = 0;   // suma de Fletcher de la tabla; la computadora la verifica
 
 static uint16_t g_y_raw = 0;    // cuenta cruda del sensor, 0..4095, sin corregir
@@ -312,12 +326,24 @@ static volatile uint8_t  g_divider    = 10;
 // Quién la calcula y de dónde sale es asunto de la computadora.
 static const uint8_t LUT_SIZE = 64;
 
-// Entradas en octavos de cuenta. Un int8 llega entonces a ±15,9 cuentas, que son
-// ±1,4 grados: de sobra para lo que corrige una tabla, y la resolución de un
-// octavo de cuenta existe porque el error entero es de unas pocas cuentas. En
-// cuentas enteras la tabla tendría tres o cuatro valores distintos y sería un
-// escalón, no una corrección.
-static int8_t g_lut[LUT_SIZE];
+// Entradas en octavos de cuenta. La resolución de un octavo existe porque el
+// error puede ser de unas pocas cuentas: en cuentas enteras la tabla tendría tres
+// o cuatro valores distintos y sería un escalón, no una corrección.
+//
+// El tipo es int16 y no int8, que era lo primero que hubo acá. Un int8 en octavos
+// llega a ±15,9 cuentas --±1,4 grados-- que es de sobra para lo que promete la
+// hoja de datos, y la idea era que un error más grande que eso fuera un imán mal
+// puesto y no algo para corregir por tabla. El banco dijo otra cosa: con el AGC
+// en 114 de 255 --media escala, la distancia correcta-- el segundo armónico mide
+// 105 cuentas, 9,3 grados. El AGC informa la distancia, no el centrado, así que
+// un imán puede estar a la distancia justa y de todos modos torcido, y ahí el
+// error es real y grande. Un int8 no podía representarlo y la tabla recortaba el
+// noventa por ciento.
+//
+// El costo son 64 bytes más de SRAM, de los 1400 que quedaban.
+static const int16_t LUT_MAX = 4095;   // octavos: ±511 cuentas, ±45 grados
+
+static int16_t g_lut[LUT_SIZE];
 
 // La tabla NO se guarda en la placa. El dispositivo arranca siempre sin
 // calibrar, y quien tiene la tabla es la computadora, que la empuja al conectarse
@@ -347,6 +373,9 @@ static int8_t g_lut[LUT_SIZE];
 // sola lectura. Fletcher y no una suma pelada porque una suma no distingue una
 // tabla de otra con dos entradas intercambiadas, y una entrada en el índice
 // equivocado es exactamente el error que se comete acá.
+// Se recorre byte por byte, primero el bajo y después el alto de cada entrada,
+// para que la computadora pueda reproducirla sin saber nada del orden de bytes
+// del AVR.
 static uint16_t lut_checksum(void)
 {
     uint8_t a = 0;
@@ -354,7 +383,11 @@ static uint16_t lut_checksum(void)
 
     for (uint8_t i = 0; i < LUT_SIZE; i++)
     {
-        a += (uint8_t)g_lut[i];
+        uint16_t v = (uint16_t)g_lut[i];
+
+        a += (uint8_t)v;
+        b += a;
+        a += (uint8_t)(v >> 8);
         b += a;
     }
 
@@ -365,22 +398,23 @@ static uint16_t lut_checksum(void)
 // dos entradas que lo rodean. 64 entradas son 64 cuentas --5,6 grados-- de
 // separación, ocho puntos por ciclo del octavo armónico; la interpolación se
 // hace cargo del resto.
-static int8_t lut_lookup(int16_t counts)
+static int16_t lut_lookup(int16_t counts)
 {
     uint8_t i    = (uint8_t)(counts >> 6) & (LUT_SIZE - 1);
     uint8_t frac = (uint8_t)counts & 0x3F;
 
-    int16_t a = (int16_t)g_lut[i];
-    int16_t b = (int16_t)g_lut[(uint8_t)(i + 1) & (LUT_SIZE - 1)];
+    int32_t a = (int32_t)g_lut[i];
+    int32_t b = (int32_t)g_lut[(uint8_t)(i + 1) & (LUT_SIZE - 1)];
 
-    // Como mucho 127*64 = 8128, así que la suma entra en un int16 con lugar de
-    // sobra.
-    int16_t eighths = (int16_t)((a * (int16_t)(64 - frac) + b * (int16_t)frac) >> 6);
+    // Un int32 en el medio y no un int16: con entradas de hasta ±4095 octavos la
+    // suma llega a 4095*64 = 262080, que no entra en 16 bits. Son unas decenas de
+    // ciclos más, una vez por período de control.
+    int32_t eighths = (a * (int32_t)(64 - frac) + b * (int32_t)frac) >> 6;
 
     // Redondeo al medio hacia arriba. Con corrimiento aritmético `(e + 4) >> 3`
     // sirve para los dos signos; el `e < 0 ? -4 : 4` que uno escribe de reflejo
     // redondea mal los negativos chicos --3/8 daría -1 en lugar de 0--.
-    return (int8_t)((eighths + 4) >> 3);
+    return (int16_t)((eighths + 4) >> 3);
 }
 
 // Escribe los bits SF del CONF del sensor.
@@ -457,7 +491,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "pwmtop",  CTRL_U16, &g_pwmtop,   0           },
     { "cal",     CTRL_U8,  &g_cal,      0           },
     { "sfilt",   CTRL_U8,  &g_sfilt,    0           },
-    { "lutw",    CTRL_U16, &g_lutw,     0           },
+    { "lutw",    CTRL_U32, &g_lutw,     0           },
     { "lutsum",  CTRL_U16, &g_lutsum,   0           },
     { "y",       CTRL_I16, &g_y,        0           },
     { "y_uw",    CTRL_I32, &g_y_uw,     0           },
@@ -974,17 +1008,23 @@ static void refresh_tuning(void)
     // ver que el parámetro cambió es lo que permite cargar la tabla sin
     // agregarle un comando al protocolo: son 64 `set` comunes, cada uno con la
     // misma respuesta verificada que cualquier otro. Ver g_lutw.
-    static uint16_t lutw_applied = 0xFFFF;
+    static uint32_t lutw_applied = 0xFFFFFFFFUL;
 
     if (g_lutw != lutw_applied)
     {
         lutw_applied = g_lutw;
 
-        uint8_t index = (uint8_t)(g_lutw >> 8);
+        uint16_t index = (uint16_t)(g_lutw >> 16);
+        int16_t  value = (int16_t)(uint16_t)g_lutw;
 
         if (index < LUT_SIZE)
         {
-            g_lut[index] = (int8_t)(uint8_t)g_lutw;
+            // Acotar acá y no confiar: una entrada fuera de rango desbordaría la
+            // interpolación, y el enlace acepta cualquier entero que le manden.
+            if (value >  LUT_MAX) value =  LUT_MAX;
+            if (value < -LUT_MAX) value = -LUT_MAX;
+
+            g_lut[index] = value;
         }
     }
 
@@ -1019,8 +1059,15 @@ static void refresh_tuning(void)
 static void refresh_magnet_status(void)
 {
     static uint32_t last_ms = 0;
+    static bool     completo = false;
 
-    if (CtrlLink::streaming() || (millis() - last_ms) < 500)
+    // Los tres registros se leen por turnos --ver abajo--, así que el diagnóstico
+    // entero tarda tres refrescos en llenarse. A 500 ms eso son un segundo y
+    // medio de arranque en los que `agc` todavía vale cero, y quien pregunte
+    // enseguida --`bringup()` lo hace-- lee un cero y lo informa como un imán
+    // contra el borde. Así que la primera vuelta va rápido y recién después se
+    // afloja al ritmo de algo que se mira entre corridas.
+    if (CtrlLink::streaming() || (millis() - last_ms) < (completo ? 500u : 50u))
     {
         return;
     }
@@ -1078,6 +1125,11 @@ static void refresh_magnet_status(void)
     }
 
     turno = (turno + 1) % 3;
+
+    if (turno == 0)
+    {
+        completo = true;
+    }
 }
 
 // Los contadores de salud describen la ventana de emisión, así que se ponen en
@@ -1128,7 +1180,7 @@ void setup()
     // un dispositivo sin calibrar tiene que decir que no está calibrado, no
     // corregir con lo que haya quedado.
 #ifdef TIENE_CALIBRACION
-    memcpy_P(g_lut, CAL_LUT, LUT_SIZE);
+    memcpy_P(g_lut, CAL_LUT, sizeof(g_lut));
     g_cal = 1;
 #endif
 
