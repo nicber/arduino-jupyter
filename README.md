@@ -29,7 +29,7 @@ Lo que se puede hacer, y es lo que recorre el notebook:
 - cerrar el mismo PID sobre la **corriente**, que es una planta mucho más rápida;
 - cambiar la **frecuencia del lazo** y ver qué les pasa a las mismas ganancias.
 
-El lazo corre a 1 kHz con aritmética entera de punta a punta —ni una instrucción
+El lazo corre a 500 Hz con aritmética entera de punta a punta —ni una instrucción
 de punto flotante—, muestrea el sensor a 5 kHz con período rígido, y emite
 telemetría a 1 Mbaud sin perder filas. Los detalles de cómo y por qué están en
 [`PROTOCOL.md`](PROTOCOL.md).
@@ -190,7 +190,7 @@ Los parámetros son atributos, siempre en unidades reales:
 | `target` | `POSITION` o `CURRENT`: sobre qué magnitud cierra el lazo |
 | `ref`, `refrate` | referencia y pendiente de rampa, en unidades del `target` |
 | `uff` | comando de lazo abierto / prealimentación |
-| `tickdiv` | divisor del muestreador de 5 kHz: 5 → 1 kHz, 50 → 100 Hz |
+| `tickdiv` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
 | `bidir` | 1 si el puente acciona en los dos sentidos; 0 lo recorta en cero |
 | `uinvert` | 1 si un comando positivo hace *bajar* el ángulo medido |
 | `pwmtop` | TOP del Timer1: la frecuencia del PWM, `f = 16 MHz / (2·pwmtop)` |
@@ -290,6 +290,16 @@ PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Compilar y grabar a mano, si hiciera falta:
 
 ```
-arduino-cli compile -b arduino:avr:uno --libraries ./libraries ControlDemo
+arduino-cli compile -b arduino:avr:uno --libraries ./libraries \
+  --build-property compiler.c.extra_flags=-O2 \
+  --build-property compiler.cpp.extra_flags=-O2 \
+  --build-property compiler.c.elf.extra_flags=-O2 \
+  ControlDemo
 arduino-cli upload  -b arduino:avr:uno --libraries ./libraries -p <puerto> ControlDemo
 ```
+
+Las tres `--build-property` son las que compilan con optimización plena. El core
+de AVR trae `-Os` —optimizar por tamaño—, y este sketch quiere ciclos y no bytes;
+`sync_board()` las pasa solas, así que sólo hacen falta al compilar a mano. El
+porqué de `-O2` y no `-O3` está comentado arriba de `BUILD_PROPERTIES`, en
+`python/bench.py`.

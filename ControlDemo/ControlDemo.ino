@@ -9,7 +9,7 @@
 //
 // El Timer2 muestrea el AS5600 a 5 kHz; cada `tickdiv` muestras se ejecuta la
 // ley de control, así que la frecuencia del lazo es 5000/tickdiv Hz y por
-// omisión vale 1 kHz. De esa manera el muestreo mantiene un período rígido aun
+// omisión vale 500 Hz. De esa manera el muestreo mantiene un período rígido aun
 // cuando el cálculo de control fluctúe. `maxlate` informa cuánta fluctuación
 // hubo y `missed` cuenta los períodos de control que se saltearon del todo.
 //
@@ -29,9 +29,10 @@
 // compensarlo; ver PROTOCOL.md. Los comandos son raros y diminutos, así que eso
 // no cuesta nada.
 //
-// La tabla de canales por omisión son 41 bytes por fila, o el 41 % del enlace a
-// 1 kHz. Es más que el "bastante por debajo de la mitad" que le gusta a este
-// protocolo; conviene subir `dec` para corridas largas, o sacar un canal.
+// La tabla de canales por omisión son 41 bytes por fila, o el 21 % del enlace a
+// 500 Hz, que es el "bastante por debajo de la mitad" que le gusta a este
+// protocolo. Bajar `tickdiv` a 5 devuelve el lazo a 1 kHz y lleva la fila al
+// 41 %, que ya es demasiado: ahí conviene subir `dec` o sacar un canal.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
@@ -222,7 +223,7 @@ static int16_t g_offset  = 0;   // cero del sensor de ángulo, en cuentas
 static int16_t g_izero   = SENSE_ZERO;  // cero del sensor de corriente, en LSBs del ADC
 static uint8_t g_target  = TARGET_POSITION;
 static uint8_t g_mode    = MODE_OPEN;
-static uint8_t g_tickdiv = 5;   // muestras de 5 kHz por período de control: 5 -> 1 kHz
+static uint8_t g_tickdiv = 10;  // muestras de 5 kHz por período de control: 10 -> 500 Hz
 static uint8_t g_bidir   = 1;   // 1: el puente acciona en los dos sentidos
 static uint8_t g_uinvert = 1;   // 1: un comando positivo hace bajar el ángulo medido
 
@@ -268,7 +269,7 @@ static volatile bool     g_tick       = false;
 static volatile uint32_t g_tick_us    = 0;
 static volatile uint16_t g_missed_isr = 0;
 static volatile int16_t  g_adc        = 0;   // última conversión completada de A0
-static volatile uint8_t  g_divider    = 5;
+static volatile uint8_t  g_divider    = 10;
 
 // --------------------------------------------------------------------- tablas
 
@@ -354,11 +355,12 @@ static void startSampleTimer(void)
 // encendido sin cambiar las pérdidas por transición, y eso es lo que devuelve el
 // par.
 //
-// 1 kHz sale exacto (TOP = 8000) y cae justo sobre el período del lazo, así que
-// los dos quedan enganchados en fase en lugar de batir: el muestreador de 5 kHz
-// toma siempre las mismas cinco fases de la ondulación, lo que da un sesgo fijo en
-// `i` en lugar de una oscilación lenta. Con un puente MOSFET --un TB6612FNG, un
-// DRV8833-- nada de esto haría falta y `dev.pwm(20000)` sería lo correcto.
+// 1 kHz sale exacto (TOP = 8000) y entran dos períodos suyos en cada período del
+// lazo, así que los dos quedan enganchados en fase en lugar de batir: el
+// muestreador de 5 kHz toma siempre las mismas cinco fases de la ondulación, lo
+// que da un sesgo fijo en `i` en lugar de una oscilación lenta. Con un puente
+// MOSFET --un TB6612FNG, un DRV8833-- nada de esto haría falta y
+// `dev.pwm(20000)` sería lo correcto.
 //
 // Se arranca con la salida de comparación desconectada, que es el puente abierto:
 // la conecta pwm_write() cuando hay algo que accionar.

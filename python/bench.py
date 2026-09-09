@@ -37,6 +37,33 @@ SKETCH    = _HERE / 'ControlDemo'
 LIBRARIES = _HERE / 'libraries'
 BUILD_DIR = _HERE / 'build'
 
+# El core de AVR compila con `-Os` --optimizar por tamaño--, que es lo razonable
+# para un sketch cualquiera y no es lo que quiere éste: acá el paso de control
+# corre dentro de un período de 2 ms compartido con el muestreador de 5 kHz, y
+# los ciclos valen más que los bytes. `-O2` es optimización plena: `-Os` es
+# justamente `-O2` menos todo lo que agrande el código --el inlining amplio, la
+# alineación, el reordenamiento de bloques--, y eso es lo que se recupera acá.
+#
+# Las banderas van como `extra_flags` y no reemplazando `compiler.*.flags`
+# porque el recipe las pega después de las propias del core, y la última `-O`
+# de la línea es la que manda. Así se hereda todo lo demás --`-flto`, las
+# banderas de aviso, el estándar del lenguaje-- en lugar de copiarlo a mano y
+# que se pudra en la próxima versión del core.
+#
+# `-O2` y no `-O3`: medido sobre este sketch, `-Os` da 17018 bytes de flash,
+# `-O2` da 18986 (58 % del UNO) y `-O3` da 28676 (88 %). Lo que `-O3` agrega es
+# inlining y desenrollado agresivos, que en un AVR de 32 kB se pagan con casi
+# todo el espacio que queda para que el sketch crezca, y sobre un lazo que ya
+# entra holgado en su período no compran nada que se pueda medir.
+#
+# El enlace también lleva `-O2`: con `-flto` el grueso de la generación de
+# código pasa en el enlazado, y dejarlo en `-Os` ahí desharía lo anterior.
+BUILD_PROPERTIES = [
+    'compiler.c.extra_flags=-O2',
+    'compiler.cpp.extra_flags=-O2',
+    'compiler.c.elf.extra_flags=-O2',
+]
+
 # `mode` elige el controlador, `target` elige la realimentación sobre la que
 # cierra.
 MODE_OPEN, MODE_PID, MODE_RAMP = 0, 1, 2
@@ -240,9 +267,10 @@ class Bench(CtrlLink):
                f'{missed} perdidos, {df.attrs["drops"]} descartados')
 
         # El margen es un aviso, no un veredicto: mientras no se pierda ningun
-        # periodo el lazo esta llegando, y con seis canales a 1 kHz el retardo
-        # ronda el 60 % del periodo por el solo costo de emitir la fila. Lo que
-        # si es una falla es no tener margen alguno.
+        # periodo el lazo esta llegando, y con seis canales a 500 Hz el retardo
+        # ronda el 30 % del periodo por el solo costo de emitir la fila --emitir
+        # cuesta lo mismo que a 1 kHz, y el periodo es el doble. Lo que si es una
+        # falla es no tener margen alguno.
         late   = df.attrs['maxlate']
         margin = late / df.attrs['dt_us']
         report('margen de tiempo',
@@ -421,8 +449,13 @@ def _sources_hash():
 
     Por contenido y no por marca de tiempo: un checkout de git reescribe las
     mtime sin cambiar una línea, y si no dispararía una recompilación al pedo.
+
+    Las banderas de compilación entran en la huella junto con las fuentes: un
+    `build/` que quedó de una corrida con otra optimización tiene las mismas
+    fuentes y un binario que ya no es el que corresponde.
     """
     digest = hashlib.sha256()
+    digest.update(repr(BUILD_PROPERTIES).encode())
     files = sorted(list(SKETCH.glob('*.ino')) +
                    [p for p in LIBRARIES.rglob('*') if p.suffix in ('.h', '.cpp', '.c')])
     for path in files:
@@ -510,10 +543,15 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
     notes = []
 
     if force_compile or not hex_file.exists() or state.get('sources') != sources:
+        build_flags = []
+        for prop in BUILD_PROPERTIES:
+            build_flags += ['--build-property', prop]
+
         output = _run(['arduino-cli', 'compile', '--fqbn', FQBN,
                        '--libraries', str(LIBRARIES),
-                       '--build-path', str(BUILD_DIR),
-                       str(SKETCH)], 'compilar')
+                       '--build-path', str(BUILD_DIR)] +
+                      build_flags +
+                      [str(SKETCH)], 'compilar')
         notes.append('compilado')
         state['sources'] = sources
         _save_state(state)

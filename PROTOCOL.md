@@ -91,7 +91,7 @@ en lugar de confiar en él: un *comando* deformado se rechaza a los gritos, pero
 un *valor* deformado se aceptaría en silencio.
 
 **Flujo continuo, no captura en buffer.** Un ATmega328P tiene 2 KB de SRAM, así
-que una captura en buffer entra unas 175 muestras: 175 ms a 1 kHz, mucho menos
+que una captura en buffer entra unas 175 muestras: 350 ms a 500 Hz, mucho menos
 que un transitorio hasta el establecimiento. El flujo continuo no tiene límite de
 duración; lo que queda acotado es la frecuencia de muestreo, y a 1 Mbaud ese
 tope está muy por encima de cualquier lazo que pueda correr un UNO.
@@ -115,8 +115,8 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `ControlDemo` corre 4 canales int16 a 1 kHz, que son 21 kB/s, o el 21 %
-de un enlace de 1 Mbaud.
+sketch `ControlDemo` corre seis canales a 500 Hz —tres int32 y tres int16, 41
+bytes por fila—, que son 20,5 kB/s, o el 21 % de un enlace de 1 Mbaud.
 
 ## Protocolo de línea
 
@@ -293,13 +293,17 @@ python3 -m venv .venv
 - `python/ctrllink.py` — el protocolo, lado computadora
 - `python/test_ctrllink.py` — pruebas del lado computadora contra una simulación
   del dispositivo fiel byte a byte
-- `ControlDemo/` — lazo de posición con AS5600 a 1 kHz, muestreado a 5 kHz
+- `ControlDemo/` — lazo de posición con AS5600 a 500 Hz, muestreado a 5 kHz
 - `notebooks/control_demo.ipynb` — demostración completa: salud del enlace,
   escalones en lazo abierto y cerrado, un barrido de ganancia, cambios en la
   frecuencia del lazo
 
 ```
-arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries ControlDemo
+arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
+  --build-property compiler.c.extra_flags=-O2 \
+  --build-property compiler.cpp.extra_flags=-O2 \
+  --build-property compiler.c.elf.extra_flags=-O2 \
+  ControlDemo
 arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> ControlDemo
 ```
 
