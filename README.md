@@ -235,12 +235,18 @@ Arduino. Corre igual sin la placa: si no encuentra el banco cae en uno simulado 
 lo dice. El método está en `Docs/CALIBRACION_AS5600.md`.
 
 **La tabla no vive en la placa.** El dispositivo arranca siempre sin calibrar y la
-dueña de la tabla es la computadora, que la empuja al conectarse:
+dueña de la tabla es la computadora, que la empuja al conectarse. En el notebook
+eso ya está hecho: cada celda arranca con `sync_board_cal()`, que es
+`sync_board()` más la calibración de este banco.
 
 ```python
-import calib
-calib.asegurar(dev, 'calibracion.json')     # la carga y la aplica si no está puesta
+dev = sync_board_cal()          # compila, graba, reconecta y calibra
+dev = sync_board()              # lo mismo sin calibrar, para medir el sensor crudo
 ```
+
+Cargar la tabla son 64 escrituras de parámetro: medido en este banco, 1,2 s por
+celda sobre los 1,9 s que ya cuesta resetear la placa. Debajo de todo está
+`calib.asegurar(dev, ruta)`, que la aplica sólo si no está puesta.
 
 No es una limitación de memoria. Una calibración es una propiedad de *este banco*
 --este imán, en este eje-- y no del programa: en un archivo se lee, se compara y

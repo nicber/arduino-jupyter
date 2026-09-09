@@ -28,7 +28,8 @@ import serial
 
 from ctrllink import CtrlLink, CtrlLinkError, find_port
 
-__all__ = ['sync_board', 'Bench', 'CtrlLinkError',
+__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError',
+           'CALIBRACION',
            'MODE_OPEN', 'MODE_PID', 'MODE_RAMP', 'POSITION', 'CURRENT']
 
 FQBN      = 'arduino:avr:uno'
@@ -36,6 +37,11 @@ _HERE     = Path(__file__).resolve().parent.parent
 SKETCH    = _HERE / 'ControlDemo'
 LIBRARIES = _HERE / 'libraries'
 BUILD_DIR = _HERE / 'build'
+
+# La calibración del sensor de este banco. No entra en el repositorio --es un dato
+# del banco y no del proyecto-- y la ruta se resuelve desde este archivo, así que
+# no depende de desde dónde se corra el notebook. Ver sync_board_cal().
+CALIBRACION = _HERE / 'notebooks' / 'calibracion.json'
 
 # El core de AVR compila con `-Os` --optimizar por tamaño--, que es lo razonable
 # para un sketch cualquiera y no es lo que quiere éste: acá el paso de control
@@ -658,3 +664,46 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
 
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
     return _link
+
+
+def sync_board_cal(*args, calibracion=None, **kw):
+    """`sync_board()` y, encima, la calibración del sensor de este banco.
+
+    Es lo que conviene llamar al principio de cada celda. `sync_board()` resetea
+    la placa, y la placa arranca siempre **sin calibrar** --a propósito: una tabla
+    vieja aplicándose en silencio es peor que ninguna--, así que sin este paso
+    cada celda mediría con el error de ángulo crudo del sensor. En este banco eso
+    son unos veinticinco grados pico a pico.
+
+    Cargar la tabla son 64 escrituras de parámetro, del orden de un segundo, y se
+    pagan una vez por celda. Si no hay archivo de calibración lo dice y sigue: el
+    lazo anda igual, sólo que sobre un ángulo torcido.
+
+    `calibracion` es la ruta del archivo; por omisión el de este repositorio, que
+    se resuelve desde acá y no desde el directorio de trabajo, así que da igual
+    desde dónde se corra el notebook.
+    """
+    dev = sync_board(*args, **kw)
+
+    ruta = Path(calibracion) if calibracion else CALIBRACION
+    verbose = kw.get('verbose', True)
+
+    if not ruta.exists():
+        if verbose:
+            print(f'  sin calibracion ({ruta.name} no existe): el angulo va crudo. '
+                  f'Correr notebooks/calibracion.ipynb para medirla.')
+        return dev
+
+    # El import va acá adentro y no arriba: calib trae numpy y el ajuste por
+    # mínimos cuadrados, y nada de eso hace falta para hablar con la placa.
+    import calib
+
+    cal = calib.asegurar(dev, ruta)
+
+    if verbose:
+        pico = max(abs(v) for v in cal.lut) / calib.OCTAVOS
+        print(f'  calibracion "{cal.banco}" del {cal.creada[:10]}: '
+              f'{len(cal.armonicos)} armonicos, corrige hasta '
+              f'{pico * calib.GRADOS_POR_CUENTA:.1f} grados')
+
+    return dev
