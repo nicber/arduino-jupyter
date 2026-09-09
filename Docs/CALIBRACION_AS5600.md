@@ -416,28 +416,51 @@ Costo: dos lecturas de tabla, dos multiplicaciones de 8×8 y un par de
 corrimientos, del orden de 40 ciclos. Se paga una vez por período de control
 (500 Hz), o sea 0,13 % del período. Nada.
 
-### Persistencia y protocolo
+### Persistencia: la tabla no vive en la placa
 
-La tabla vive en EEPROM (el ATmega328P tiene 1 KB, hoy sin usar) con encabezado
-mágico y CRC16, y se carga a SRAM en `setup()`. Una tabla con CRC malo se ignora
-y `cal` arranca en 0: una EEPROM virgen o corrupta tiene que dar un sensor sin
-corregir, nunca uno corregido con basura.
+La primera versión de este plan la guardaba en la EEPROM, que en un ATmega328P es
+1 KB sin usar. Está implementada de otra manera, y el motivo vale la pena:
 
-Del lado del enlace, tres agregados que respetan lo que el protocolo ya hace:
+**La dueña de la tabla es la computadora.** El dispositivo arranca siempre sin
+calibrar y la tabla se empuja al conectarse, desde un archivo JSON que vive en el
+banco. Porque:
 
-| Comando | Respuesta |
-|---|---|
-| `lut` | ocho líneas `# l <i> <16 hex>` con la tabla entera |
-| `lut <i> <16 hex>` | `# v lut <i> <16 hex>` — el eco, para verificar y no confiar |
-| `lut save` / `lut clear` | `# ok` |
+- Una calibración es una propiedad de *este banco* --este imán, en este eje, con
+  este sensor-- y no del programa. En un archivo se lee, se compara, se revisa y
+  entra en el repositorio; en la EEPROM es estado invisible que sobrevive a la
+  reprogramación y que nadie recuerda haber puesto.
+- Un dispositivo que arranca sin corregir no puede mentirle a nadie. El caso feo
+  de la EEPROM no es la tabla que falta: es la tabla vieja, de otro montaje,
+  aplicándose en silencio.
+- Y para el aula, que es donde esto se usa: dos bancos son dos archivos, no dos
+  placas con memoria distinta.
 
-Ocho entradas por línea son 16 caracteres hexadecimales, en línea con el resto
-del protocolo. Escribir la tabla entera son ocho comandos, unos 100 ms con el
-espaciado de bytes que ya hace la computadora. El eco no es cortesía: el protocolo
-ya distingue entre un *comando* deformado, que se rechaza a los gritos, y un
-*valor* deformado, que se aceptaría en silencio; una tabla es toda valores.
+Para un tablero que se enciende solo y nadie conecta a una computadora,
+`calib.escribir_header()` genera `ControlDemo/Calibracion.h` y el sketch lo toma
+con `__has_include`. Ahí la calibración sí queda adentro de la placa, pero a la
+vista en el código y no escondida en una memoria.
 
-Y dos parámetros:
+### Protocolo: ningún comando nuevo
+
+Cargar 64 bytes no necesitó tocar el protocolo. Alcanzan dos parámetros:
+
+- **`lutw` (u16)**: una entrada, empaquetada como `(índice << 8) | valor`. El
+  índice viaja adentro del valor para que dos escrituras seguidas nunca sean
+  iguales por casualidad: el sketch aplica la escritura al notar que el parámetro
+  cambió, y con índice y valor separados una tabla con dos entradas iguales
+  seguidas perdería la segunda. `refresh_tuning()` --que ya corría después de
+  cualquier escritura-- hace el resto.
+- **`lutsum` (u16)**: la suma de Fletcher de lo que la placa tiene. La
+  computadora calcula la suya y compara: **64 escrituras se verifican con una
+  sola lectura**.
+
+Fletcher y no una suma pelada porque una suma no distingue una tabla de otra con
+dos entradas intercambiadas, y una entrada en el índice equivocado es exactamente
+el error que se comete acá. Verificar no es cortesía: el protocolo ya distingue
+entre un *comando* deformado, que se rechaza a los gritos, y un *valor* deformado,
+que se aceptaría en silencio; una tabla es toda valores.
+
+Más dos parámetros de operación:
 
 - **`cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
   puede apagar no se puede medir.
@@ -455,17 +478,31 @@ Y dos parámetros:
 | La tendencia se come el primer armónico | `A_1` chico y con barra de error grande | ≥20 vueltas por ventana de ajuste |
 | Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `cal` en 0 y en 1: es el chequeo, y es barato |
 
-## 9. Orden de trabajo
+## 9. Dónde está cada cosa
+
+Este plan está implementado. El reparto:
+
+| | |
+|---|---|
+| `ControlDemo/ControlDemo.ino` | la tabla, `lut_lookup()`, `cal`, `sfilt`, el canal `y_raw` |
+| `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
+| `python/calib.py` | ajuste, compuertas, tabla, archivo, header |
+| `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
+| `python/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
+| `notebooks/calibracion.ipynb` | los experimentos en orden de clase |
+
+## 10. Orden de trabajo
 
 1. Firmware de medición: `sfilt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
 2. E0, E1 — higiene y piso de ruido. Compuerta G0.
 3. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
 4. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.
 5. E7 — ajuste mecánico y remedición. Compuerta G4.
-6. Firmware de corrección: tabla, EEPROM, comandos `lut`, parámetro `cal` (§7).
+6. Firmware de corrección: tabla, `lutw`, `lutsum`, `cal` (§7).
 7. E8, E9 — validación y efecto sobre el lazo. Compuerta G5.
 
-Los pasos 1 a 5 no escriben una línea de la etapa de calibración. Es a propósito:
+Los pasos 1 a 5 no miden con una línea de la etapa de calibración prendida. Es a
+propósito:
 la mitad de las veces que este plan se ejecuta, la respuesta correcta aparece en
 el paso 2 o en el 5, y es un tornillo.
 
