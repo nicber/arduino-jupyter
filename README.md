@@ -119,6 +119,35 @@ desaparece y el ajuste vuelve a parecerse al del libro.
 
 No hace falta el IDE de Arduino: el notebook compila y graba solo.
 
+### Clones del UNO
+
+Sirve cualquier placa con un ATmega328P a 16 MHz, y también los clones que no
+son exactamente eso. Nada de lo que sigue hay que configurar: el notebook se da
+cuenta solo. Está acá porque cuando algo falla conviene saber qué se estaba
+compensando.
+
+**El bootloader.** Un UNO escucha a 115200 y muchos clones baratos traen el
+bootloader viejo del Nano, que escucha a 57600. Elegir mal no da un error legible
+sino diez líneas de «not in sync». `sync_board()` prueba los dos, se queda con el
+que anduvo y lo recuerda por puerto; el primer intento cuesta unos segundos una
+sola vez. Un tipo de placa que no esté en la lista se agrega en `UPLOAD_FQBNS`,
+en `bench.py`.
+
+**El reloj.** Hay clones armados sobre un LGT8F328P, que no lleva cristal: usa un
+RC interno de 32 MHz y arranca dividido por 8, o sea a 4 MHz. Todo este proyecto
+está calculado para 16 MHz --el puerto serie a 1 Mbaud, el muestreador de 5 kHz,
+el PWM del puente--, así que a 4 MHz no anda nada, y el síntoma es el peor
+posible: el puerto serie también emite cuatro veces lento, con lo que la placa no
+puede ni avisar lo que le pasa y el monitor se llena de basura. Los sketches
+corrigen el divisor al arrancar, y sólo si la placa arrancó dividida; ver
+`libraries/BoardStart/`. `bringup()` lo verifica midiendo la frecuencia real del
+lazo contra el reloj de la computadora.
+
+**El ADC.** El del LGT8F328P es de 12 bits y el del ATmega328P de 10, así que
+informa cuatro veces más cuentas por la misma tensión. Sin sensor de corriente da
+igual; con uno, los amperes salen multiplicados por cuatro y hay que dividir
+`SENSE_MV_PER_A` por cuatro. `bringup()` lo dice cuando lo ve.
+
 ---
 
 ## Puesta en marcha
@@ -284,12 +313,15 @@ control tanto como a la medición.
 | `sync_board()` no encuentra `arduino-cli` | está en el `PATH`? En Windows hay que reabrir la terminal después de instalarlo: el `PATH` se lee una sola vez al arrancar |
 | «no se pudo abrir el puerto» | algo más lo tiene tomado: el monitor serie del IDE, o un kernel de una sesión anterior. Un puerto serie es exclusivo |
 | «no se encontro ningun puerto serie USB» | placa desenchufada, o cable de sólo alimentación |
+| el monitor serie muestra basura, o `sync_board()` no encuentra el sketch que acaba de grabar | la placa no está corriendo a 16 MHz. Los sketches lo corrigen solos al arrancar; si el sketch grabado es de antes de eso, recompilar |
+| `bringup` marca falla en `bus i2c` con **cero muestras** y un desborde por período | el bus quedó tomado por el sensor, que se quedó a medio hablar cuando la grabación reseteó la placa. Los sketches lo destraban al arrancar; si vuelve a pasar, cortar y dar alimentación |
 | `bringup` marca falla en `sensor` | el AS5600 no contesta en el bus: SDA (A4), SCL (A5), alimentación, pull-ups |
 | `bringup` marca falla en `iman` | el sensor contesta pero el imán está ausente, muy lejos o muy cerca; el mensaje dice cuál |
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa en media escala: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
 | `bringup` marca falla en `polaridad` | el comando y el sensor tienen signos opuestos: el lazo de posición realimenta en positivo y se escapa. Dar vuelta `uinvert`, o los dos cables del motor |
-| `bringup` marca falla en `sentido` | el motor gira para el mismo lado con las dos polaridades: `IN1` (6) e `IN2` (7) intercambiados, o uno sin conectar |
+| `bringup` marca falla en `sentido` | el motor gira para el mismo lado con las dos polaridades: `IN1` (6) e `IN2` (7) intercambiados, o uno sin conectar. Si con el comando negativo no se mueve nada, el puente es de un solo cuadrante y va `dev.bidir = 0` |
+| `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el puente no lo sigue». Con el imán mal montado el ángulo es ruido y `bringup` no puede distinguirlos. La causa más común es la alimentación de potencia del puente |
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
@@ -335,10 +367,12 @@ los pines 9 y 10.
 ControlDemo/             el lazo de control: ley, parámetros y telemetría
 AS5600_Bringup/          verificación del sensor, con volcado de configuración
 AS5600_Loop5k/           prueba de muestreo a 5 kHz
+Puente_Bringup/          verificación del accionamiento, sin usar el sensor
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/ControlMath/   punto fijo y filtros enteros
 libraries/AS5600Async/   lectura asincrónica del AS5600
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
+libraries/BoardStart/    el reloj y el destrabe del bus, antes de todo lo demás
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y unidades de este equipo
 python/calib.py          calibración del AS5600: medición, decisión y tabla
