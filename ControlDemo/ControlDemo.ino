@@ -45,6 +45,7 @@
 
 #include <AS5600.h>
 #include <NI2CBus.h>
+#include <BoardStart.h>
 #include <CtrlLink.h>
 #include <FixedPoint.h>
 #include <FirstOrderFilter.h>
@@ -1164,6 +1165,14 @@ static void reset_health_on_capture(void)
 
 void setup()
 {
+    // El reloj antes que nada: si la placa no corre a 16 MHz, el UART de acá
+    // abajo emite al ritmo equivocado y ni el mensaje de error llega. Y el bus
+    // enseguida después: grabar la placa la resetea, y un reset en medio de una
+    // lectura deja al AS5600 sujetando SDA, con lo que el muestreador arranca
+    // trabado para siempre. Ver BoardStart.h.
+    boardClockBegin();
+    i2cBusRecover();
+
     // ENA primero: mientras el puente esté abierto las entradas de sentido no
     // gobiernan nada, así que ése es el orden en el que ningún estado intermedio
     // acciona el motor. Las dos en bajo es el estado del que parte drive().

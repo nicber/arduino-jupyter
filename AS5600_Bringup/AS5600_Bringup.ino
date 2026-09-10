@@ -18,6 +18,7 @@
 // 5 Hz.
 
 #include <Wire.h>
+#include <BoardStart.h>
 
 // Poner en 0 si el AS5600 se alimenta con 3,3 V: el rango del AGC se reduce a la
 // mitad.
@@ -306,16 +307,30 @@ static void printTelemetry() {
 // ------------------------------------------------------------------- Arduino
 
 void setup() {
+  // Antes del Serial: a 4 MHz este println saldria a 28800 y el monitor
+  // mostraria basura en vez del diagnostico. Ver BoardStart.h.
+  boardClockBegin();
+
   Serial.begin(115200);
   while (!Serial) {
     ;  // inofensivo en el UNO, necesario en placas con USB nativo
   }
+
+  // Si el reset que trajo hasta aca cayo en medio de una lectura, el sensor
+  // quedo esperando pulsos de reloj y sujetando SDA, y Wire se colgaria en la
+  // primera transferencia sin decir nada. Ver BoardStart.h.
+  uint8_t pulsos = i2cBusRecover();
 
   Wire.begin();
   Wire.setClock(400000);  // el AS5600 soporta modo rapido
 
   Serial.println();
   Serial.println(F("Puesta en marcha del AS5600"));
+  if (pulsos) {
+    Serial.print(F("El bus estaba tomado; se libero con "));
+    Serial.print(pulsos);
+    Serial.println(F(" pulso(s) de reloj."));
+  }
   Serial.print(F("Direccion I2C 0x"));
   Serial.println(AS5600_ADDR, HEX);
   Serial.print(F("Alimentacion supuesta: "));

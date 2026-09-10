@@ -33,6 +33,22 @@ __all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError',
            'MODE_OPEN', 'MODE_PID', 'MODE_RAMP', 'POSITION', 'CURRENT']
 
 FQBN      = 'arduino:avr:uno'
+
+# Con qué perfil *cargar*. Compilar es siempre lo mismo --el binario es el mismo
+# ATmega328P a 16 MHz en todos los casos--, pero el bootloader que lo recibe no:
+# un UNO escucha a 115200 y muchos clones baratos traen el bootloader viejo del
+# Nano, que escucha a 57600. Elegir mal no da un error legible sino diez líneas
+# de «not in sync», que es de las cosas que más tiempo le hacen perder a alguien
+# que recién empieza.
+#
+# Así que se prueban en orden y se recuerda cuál anduvo, por puerto, en
+# `sync-state.json`. El primer intento cuesta unos segundos una sola vez; a
+# partir de ahí la placa conocida va derecho al perfil que ya le funcionó.
+UPLOAD_FQBNS = [
+    ('arduino:avr:uno',                    'UNO'),
+    ('arduino:avr:nano:cpu=atmega328old',  'clon con bootloader viejo'),
+]
+
 _HERE     = Path(__file__).resolve().parent.parent
 SKETCH    = _HERE / 'ControlDemo'
 LIBRARIES = _HERE / 'libraries'
@@ -402,9 +418,26 @@ class Bench(CtrlLink):
 
         if not sensed:
             rest_ma = 0.0
-            report('cero de i', None,
-                   f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): no '
-                   f'parece haber nada conectado en A0')
+
+            # Una lectura por encima del fondo de escala no es un sensor mal
+            # puesto: es un conversor que no tiene los bits que este código le
+            # supone. El LGT8F328P --el clon que también arranca con el reloj
+            # dividido; ver BoardStart.h-- trae un ADC de 12 bits en lugar de los
+            # 10 del ATmega328P, así que informa cuatro veces más cuentas por la
+            # misma tensión. Sin nada conectado en A0 eso no cambia nada, pero con
+            # un sensor de corriente los amperes saldrían cuatro veces grandes, y
+            # eso es de las cosas que uno prefiere leer antes que descubrir.
+            if adc > _ADC_FULL:
+                report('cero de i', None,
+                       f'la entrada informa {adc:.0f} cuentas y un ADC de 10 bits '
+                       f'llega a {_ADC_FULL}: o no hay nada conectado en A0 --la '
+                       f'entrada al aire termina contra un riel-- o esta placa '
+                       f'tiene el ADC de 12 bits del LGT8F328P, y entonces la '
+                       f'escala de corriente sale multiplicada por 4')
+            else:
+                report('cero de i', None,
+                       f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): '
+                       f'no parece haber nada conectado en A0')
         else:
             # Lo que hay que mirar es el margen, no el valor: desde el reposo hasta
             # el tope de escala es todo lo que una corriente puede crecer antes de
@@ -477,9 +510,28 @@ class Bench(CtrlLink):
                 print(f'  y ahora con u = {-u:+} ...')
                 rev, _ = self.spin(-u)
                 reverses = fwd * rev < 0 and abs(rev) > 0.05
+
+                # Las dos maneras de no invertir se arreglan en lugares distintos
+                # y se distinguen en los datos, así que conviene no meterlas en el
+                # mismo consejo. Si el eje gira para el mismo lado con las dos
+                # polaridades, el puente sí acciona en los dos sentidos y lo que
+                # está mal es qué entrada va a qué pin. Si con el comando negativo
+                # no se mueve nada, el puente no tiene el segundo cuadrante: no hay
+                # nada que arreglar en el cableado, hay que decírselo al lazo para
+                # que recorte en cero y el anti-windup se entere.
+                if reverses:
+                    pista = ''
+                elif abs(rev) <= 0.05:
+                    pista = ('  -- con el comando negativo no se movio: si el puente '
+                             'es de un solo cuadrante, poner dev.bidir = 0; si no, '
+                             'revisar IN2 (7)')
+                else:
+                    pista = ('  -- giro para el mismo lado con las dos polaridades: '
+                             'revisar IN1 (6) e IN2 (7)')
+
                 report('sentido', reverses,
                        f'{fwd:+.2f} vueltas con u = {u:+}, {rev:+.2f} con u = {-u:+}'
-                       + ('' if reverses else '  -- revisar IN1 (6) e IN2 (7)'))
+                       + pista)
 
                 # 8. Y la polaridad, que es distinta de que el puente invierta: un
                 #    comando positivo tiene que hacer *subir* el angulo medido. Si
@@ -566,6 +618,46 @@ def _save_state(state):
     (BUILD_DIR / 'sync-state.json').write_text(json.dumps(state, indent=1))
 
 
+def _upload(port, state, say):
+    """Carga el binario, averiguando sola con qué bootloader habla esta placa.
+
+    Devuelve el FQBN que anduvo, y lo deja anotado en el estado para la próxima
+    vez: probar de nuevo cuesta segundos y el resultado no cambia mientras sea la
+    misma placa en el mismo puerto. Si la anotación quedó vieja --se cambió la
+    placa de puerto, o el puerto de placa-- el intento falla y se sigue con los
+    otros perfiles, así que la memoria acelera pero no decide.
+    """
+    recordado = state.get('bootloader', {}).get(port)
+    orden = ([f for f in UPLOAD_FQBNS if f[0] == recordado] +
+             [f for f in UPLOAD_FQBNS if f[0] != recordado])
+
+    fallas = []
+    for fqbn, nombre in orden:
+        if fallas:
+            say(f'  no era {dict(UPLOAD_FQBNS)[fallas[-1][0]]}; probando '
+                f'{nombre} ...')
+        try:
+            _run(['arduino-cli', 'upload', '--fqbn', fqbn, '-p', port,
+                  '--input-dir', str(BUILD_DIR), str(SKETCH)], 'cargar')
+        except RuntimeError as exc:
+            fallas.append((fqbn, exc))
+            continue
+
+        state.setdefault('bootloader', {})[port] = fqbn
+        _save_state(state)
+        return fqbn
+
+    detalle = '\n\n'.join(f'--- como {dict(UPLOAD_FQBNS)[f]}:\n{e}'
+                          for f, e in fallas)
+    raise RuntimeError(
+        f'no se pudo cargar el sketch en {port} con ninguno de los bootloaders '
+        f'conocidos ({", ".join(n for _, n in UPLOAD_FQBNS)}).\n'
+        f'«not in sync» en todos suele ser la placa tomada por otro programa --el '
+        f'monitor serie del IDE, un kernel viejo-- o un cable de solo '
+        f'alimentacion. Si la placa es de un tipo que no esta en la lista, '
+        f'agregarlo a UPLOAD_FQBNS en bench.py.\n\n{detalle}')
+
+
 def _wait_for_port(hint=None, timeout=2.0):
     """find_port(), pero tolerante con una placa que todavía se está reenumerando.
 
@@ -638,9 +730,9 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         if _link is not None:
             _link.close()
             _link = None
-        _run(['arduino-cli', 'upload', '--fqbn', FQBN, '-p', port,
-              '--input-dir', str(BUILD_DIR), str(SKETCH)], 'cargar')
-        notes.append('cargado')
+        perfil = _upload(port, state, say)
+        notes.append('cargado' if perfil == UPLOAD_FQBNS[0][0] else
+                     f'cargado como {dict(UPLOAD_FQBNS)[perfil]}')
         uploaded[port] = binary
         state['uploaded'] = uploaded
         _save_state(state)
