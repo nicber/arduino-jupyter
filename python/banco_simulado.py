@@ -158,14 +158,23 @@ class BancoSimulado:
 
     # ------------------------------------------------------------ el motor
 
-    @staticmethod
-    def _velocidad_final(u):
+    def _recorte(self, u):
+        """El comando tal como lo recorta la placa: u_min..255.
+
+        `bidir` es lo único que lo mueve, y mueve todo lo demás con él: un puente
+        declarado de un solo cuadrante recorta en cero, así que un `uff` negativo
+        no hace nada. Es la misma cuenta que g_u_min en el sketch, y está acá para
+        que la celda que muestra el caso unidireccional no necesite la placa.
+        """
+        return min(255.0, max(0.0 if not self.bidir else -255.0, float(u)))
+
+    def _velocidad_final(self, u):
         """Vueltas por segundo en régimen para un comando `u`.
 
         Con una zona muerta abajo: un puente Darlington contra 5 V no arranca con
         cualquier cosa, y un notebook que pida uff=40 tiene que ver que no gira.
         """
-        u = float(u)
+        u = self._recorte(u)
         muerto = 60.0
         if abs(u) <= muerto:
             return 0.0
@@ -246,10 +255,10 @@ class BancoSimulado:
         que reconstruirlo, y sin esto el gráfico de un escalón muestra el comando
         plano en su valor de arranque.
         """
-        u = np.full(len(t), float(self.uff))
+        u = np.full(len(t), self._recorte(self.uff))
         for retardo, nombre, valor in sorted(eventos, key=lambda e: float(e[0])):
             if nombre == 'uff':
-                u[t >= float(retardo)] = float(valor)
+                u[t >= float(retardo)] = self._recorte(valor)
         return u
 
     def _error_sensor(self, theta, w):

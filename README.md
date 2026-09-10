@@ -40,10 +40,13 @@ telemetría a 1 Mbaud sin perder filas. Los detalles de cómo y por qué están 
 
 ### Hardware
 
-El recorrido completo del montaje --las cuatro configuraciones por las que crece
-el banco, los diagramas de cableado y qué se puede medir con cada una-- está en
+El recorrido completo del montaje --las configuraciones por las que crece el
+banco, los diagramas de cableado y qué se puede medir con cada una-- está en
 [`notebooks/hardware.ipynb`](notebooks/hardware.ipynb), que es además el que se
-muestra en clase y el que arranca una práctica de identificación.
+muestra en clase y el que arranca una práctica de identificación. Su sección 2.2
+es el caso de **un solo cuadrante** --un puente cableado para un lado, o un
+transistor y un diodo--, que es el de muchos bancos: qué cambia, qué hay que
+verificar a mano, y por qué la identificación sale completa igual.
 
 | Señal | Pin del UNO | |
 |---|---|---|
