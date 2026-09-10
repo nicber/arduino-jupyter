@@ -308,7 +308,8 @@ control tanto como a la medición.
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa en media escala: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
 | `bringup` marca falla en `polaridad` | el comando y el sensor tienen signos opuestos: el lazo de posición realimenta en positivo y se escapa. Dar vuelta `uinvert`, o los dos cables del motor |
-| `bringup` marca falla en `sentido` | el motor gira para el mismo lado con las dos polaridades: `IN1` (6) e `IN2` (7) intercambiados, o uno sin conectar |
+| `bringup` marca falla en `sentido` | el motor gira para el mismo lado con las dos polaridades: `IN1` (6) e `IN2` (7) intercambiados, o uno sin conectar. Si con el comando negativo no se mueve nada, el puente es de un solo cuadrante y va `dev.bidir = 0` |
+| `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el puente no lo sigue». Con el imán mal montado el ángulo es ruido y `bringup` no puede distinguirlos. La causa más común es la alimentación de potencia del puente |
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
@@ -354,6 +355,7 @@ los pines 9 y 10.
 ControlDemo/             el lazo de control: ley, parámetros y telemetría
 AS5600_Bringup/          verificación del sensor, con volcado de configuración
 AS5600_Loop5k/           prueba de muestreo a 5 kHz
+Puente_Bringup/          verificación del accionamiento, sin usar el sensor
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/ControlMath/   punto fijo y filtros enteros
 libraries/AS5600Async/   lectura asincrónica del AS5600
