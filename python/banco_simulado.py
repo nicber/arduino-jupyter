@@ -1,15 +1,22 @@
 """Un banco de mentira, para poder dar la clase sin la placa.
 
 Expone lo mismo que `Bench` --los parámetros como atributos, `capture()`,
-`bringup()`-- pero las capturas salen de un modelo en lugar de un motor. El
-notebook de calibración no se entera: corre el mismo código en los dos casos, y
-lo único que cambia es de dónde vienen las filas.
+`bringup()`, las conversiones a unidades reales-- pero las capturas salen de un
+modelo en lugar de un motor. Los notebooks de calibración y de hardware no se
+enteran: corren el mismo código en los dos casos, y lo único que cambia es de
+dónde vienen las filas.
+
+Lo que el modelo no tiene es lazo cerrado: `mode` no hace nada acá. Una celda que
+cierre el lazo tiene que preguntar por `dev.simulado` y decir que necesita la
+placa, en lugar de graficar un lazo que nadie cerró.
 
 Es de mentira y lo dice. El modelo tiene adentro un error de sensor que alguien
 eligió, así que "descubrirlo" no prueba nada sobre ningún AS5600; lo que prueba
 es que el procedimiento encuentra lo que hay que encontrar, que es exactamente lo
 que uno quiere mostrar en un pizarrón. Cuando el banco está, se usa el banco.
 """
+from collections import namedtuple
+
 import numpy as np
 import pandas as pd
 
@@ -28,9 +35,28 @@ ERROR_SENSOR = {1: (6.0, 0.7), 2: (2.5, -2.0)}
 # de la otra. Un notebook que la calibre como si fuera el sensor está mal.
 RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 
+# El reloj del UNO, para que la frecuencia del PWM se convierta igual que allá.
+F_CPU = 16_000_000
+
+# Las escalas que el dispositivo de verdad declara en su tabla de canales, que es
+# de donde `Bench` saca las conversiones a unidades reales. Acá están fijas porque
+# el banco simulado es siempre el mismo banco; los mA por cuenta son los del
+# sketch con la referencia interna y un ACS712 de 185 mV/A.
+_Canal = namedtuple('_Canal', 'name scale unit')
+
+CANALES = {
+    'ref':   _Canal('ref',   1.0,               'tgt'),
+    'y_raw': _Canal('y_raw', GRADOS_POR_CUENTA, 'deg'),
+    'y_uw':  _Canal('y_uw',  GRADOS_POR_CUENTA, 'deg'),
+    'y_uwf': _Canal('y_uwf', GRADOS_POR_CUENTA, 'deg'),
+    'e':     _Canal('e',     1.0,               'tgt'),
+    'u':     _Canal('u',     1.0,               'pwm'),
+    'i':     _Canal('i',     1000.0 * (1093.0 / 1024.0) / 185.0, 'mA'),
+}
+
 
 class BancoSimulado:
-    """Todo lo que el notebook de calibración le pide a un banco."""
+    """Todo lo que los notebooks le piden a un banco, menos el lazo cerrado."""
 
     def __init__(self, ruido=0.5, semilla=0, sfilt=3):
         self._rng = np.random.default_rng(semilla)
@@ -47,6 +73,17 @@ class BancoSimulado:
 
         self.lut = [0] * 64
         self._lutw = 0xFFFFFFFF
+
+        # Los del cableado, que el notebook de hardware lee y escribe igual que
+        # en la placa. No cambian el modelo --el motor de mentira gira siempre
+        # para el mismo lado--: están para que una celda no se caiga, y no para
+        # simular un puente mal conectado.
+        self.target = 0
+        self.bidir = 1
+        self.uinvert = 0
+        self.izero = 0
+        self.pwmtop = 8000
+        self.alpha_y = self.alpha_i = self.alpha_e = 1.0
 
         self.dt = self.tickdiv / 5000.0
         self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
@@ -90,6 +127,34 @@ class BancoSimulado:
 
     def smooth(self, which, tau):
         pass
+
+    # ----------------------------------------------- unidades de este banco
+
+    # Las mismas conversiones que Bench, sobre las escalas de arriba. Están
+    # duplicadas a propósito, igual que _lut_lookup(): lo que se muestra en clase
+    # tiene que correr sin la placa, y hacer que este archivo importe el del
+    # enlace serie lo ataría a pyserial para nada.
+
+    def channel(self, name):
+        try:
+            return CANALES[name]
+        except KeyError:
+            raise KeyError(f'no hay ningun canal llamado {name!r}') from None
+
+    def deg(self, degrees):
+        return degrees / self.channel('y_uw').scale
+
+    def ma(self, milliamps):
+        return milliamps / self.channel('i').scale
+
+    def rev_per_s(self, revs):
+        return self.deg(revs * 360.0) * self.dt
+
+    def as_deg(self, values):
+        return values * self.channel('y_uw').scale
+
+    def as_ma(self, values):
+        return values * self.channel('i').scale
 
     # ------------------------------------------------------------ el motor
 
@@ -138,6 +203,54 @@ class BancoSimulado:
             w[i] = actual
 
         return w
+
+    def pwm(self, hz):
+        """Fija la frecuencia del PWM del puente y devuelve la que quedó."""
+        self.pwmtop = min(65535, max(255, round(F_CPU / (2 * hz))))
+        return self.pwm_hz
+
+    @property
+    def pwm_hz(self):
+        return F_CPU / (2 * self.pwmtop)
+
+    def zero_current(self, seconds=0.3):
+        """El cero de la corriente, que en el modelo ya está en cero.
+
+        Existe para que la celda que la llama corra igual, y devuelve lo mismo
+        que allá: el `izero` que quedó. En el banco de verdad esto mide un offset
+        que no se puede conocer de otra manera; acá no hay nada que medir.
+        """
+        return self.izero
+
+    def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
+        """Vueltas con signo y pico de corriente, con `u` sobre el puente.
+
+        `espera` y `quieto` se aceptan para que la firma sea la del banco de
+        verdad, donde hay que esperar a que el eje pare antes de medir un sentido.
+        Acá el modelo arranca cada captura desde el régimen del comando que tiene
+        puesto, así que no hay inercia que esperar.
+        """
+        antes = self.uff
+        self.uff = u
+        df = self.capture(seconds, warn=False)
+        self.uff = antes
+        self.rest()
+        vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
+        return vueltas, df['i'].abs().max()
+
+    def _comando(self, t, eventos):
+        """El `uff` a lo largo de la captura: lo que sale al puente en cada fila.
+
+        Sale de los mismos eventos que la velocidad. En la placa `u` es un canal
+        que se emite fila por fila, así que un escalón se ve en los datos; acá hay
+        que reconstruirlo, y sin esto el gráfico de un escalón muestra el comando
+        plano en su valor de arranque.
+        """
+        u = np.full(len(t), float(self.uff))
+        for retardo, nombre, valor in sorted(eventos, key=lambda e: float(e[0])):
+            if nombre == 'uff':
+                u[t >= float(retardo)] = float(valor)
+        return u
 
     def _error_sensor(self, theta, w):
         """El error de ángulo en cuentas: el del sensor, más el del motor."""
@@ -192,7 +305,7 @@ class BancoSimulado:
             # tarde que el banco de verdad no se le parece.
             'y_uw': -corregido * GRADOS_POR_CUENTA,
             'y_uwf': -corregido * GRADOS_POR_CUENTA,
-            'u': np.full(len(t), float(self.uff)),
+            'u': self._comando(t, events),
             'i': np.abs(w) * 20.0,
             'ref': refs,
         })

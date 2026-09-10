@@ -40,6 +40,11 @@ telemetría a 1 Mbaud sin perder filas. Los detalles de cómo y por qué están 
 
 ### Hardware
 
+El recorrido completo del montaje --las cuatro configuraciones por las que crece
+el banco, los diagramas de cableado y qué se puede medir con cada una-- está en
+[`notebooks/hardware.ipynb`](notebooks/hardware.ipynb), que es además el que se
+muestra en clase y el que arranca una práctica de identificación.
+
 | Señal | Pin del UNO | |
 |---|---|---|
 | AS5600 SDA | A4 | |
@@ -166,6 +171,10 @@ aguanta el ritmo.
 ```
 ./.venv/bin/jupyter lab notebooks/control_demo.ipynb
 ```
+
+Para el recorrido del hardware, `notebooks/hardware.ipynb`. Ése corre igual sin la
+placa: si no encuentra el banco cae en uno simulado y lo dice, así que sirve para
+mostrarlo en clase con el cable desenchufado.
 
 Elegir el kernel *Arduino Control (.venv)* y correr las celdas en orden. La
 primera compila y graba `ControlDemo` sola; la placa se encuentra sin nombrar
@@ -333,7 +342,7 @@ python/calib.py          calibración del AS5600: medición, decisión y tabla
 python/banco_simulado.py un banco de mentira, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware
-notebooks/               los notebooks: demostración y calibración
+notebooks/               los notebooks: hardware, demostración y calibración
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
 ```
