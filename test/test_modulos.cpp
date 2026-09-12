@@ -1,15 +1,14 @@
 // Comprobaciones de escritorio para los módulos que son aritmética pura: la tabla
-// de calibración, el seguimiento de ángulo, la medición de corriente y el PID.
+// de calibración, el seguimiento de ángulo y la medición de corriente.
 //
 // Que se puedan probar acá es la mitad del punto de haberlos separado. Ninguno
 // toca un registro ni pregunta nada a nadie: reciben números por update() o por
-// step() y devuelven números, así que un error de signo o de redondeo se encuentra
+// corrected() y devuelven números, así que un error de signo o de redondeo se encuentra
 // en un segundo en lugar de en un banco con un motor girando.
 //
 //   g++ -std=c++11 -O2 -Wall -Wextra \
-//       -I ../libraries/ControlMath/src -I ../libraries/Calibracion/src \
+//       -I ../libraries/Calibracion/src \
 //       -I ../libraries/AngleSensor/src -I ../libraries/Sense/src \
-//       -I ../libraries/Control/src \
 //       test_modulos.cpp -o test_modulos && ./test_modulos
 //
 // Se mantiene compilando bajo C++11, que es con lo que compila el core del AVR.
@@ -18,12 +17,9 @@
 #include <cstdint>
 #include <cmath>
 
-#include "FixedPoint.h"
-#include "FirstOrderFilter.h"
 #include "AngleLut.h"
 #include "AngleTracker.h"
 #include "CurrentSense.h"
-#include "Pid.h"
 
 static int fails = 0;
 
@@ -140,33 +136,26 @@ int main()
     // --------------------------------------------------------- ángulo desenrollado
 
     Tracker ang;
-    ang.set_alpha(Tracker::Alpha::from_int(1));    // filtro apagado
 
     check_eq(Tracker::wrapped_error(10, 4090), 16,
              "el camino corto cruza el cero en lugar de dar la vuelta");
     check_eq(Tracker::wrapped_error(4090, 10), -16, "y lo mismo para el otro lado");
 
-    ang.offset = 0;
-    ang.update(0);
-    ang.rezero();
-
     // Tres vueltas enteras hacia adelante, de a 100 cuentas: el desenrollado tiene
-    // que sumar 3 * 4096 sin un solo salto.
-    for (int k = 1; k <= 3 * 4096 / 100; k++) { ang.update((Tracker::Counts)((4096 - (k * 100) % 4096) % 4096)); }
+    // que sumar 3 * 4096 sin un solo salto, y con el mismo signo que la cuenta. El
+    // signo no se da vuelta en la placa: se elige en la computadora.
+    for (int k = 1; k <= 3 * 4096 / 100; k++) { ang.update((Tracker::Counts)((k * 100) % 4096)); }
     check(ang.y_uw > 3 * 4096 - 200 && ang.y_uw <= 3 * 4096,
-          "tres vueltas desenrolladas dan tres vueltas");
+          "tres vueltas desenrolladas dan tres vueltas, hacia arriba");
 
-    // Tomar la posicion actual como cero no puede dejar la salida filtrada
-    // arrastrando el valor viejo.
-    ang.set_alpha(Tracker::Alpha::from_float(0.1f));
-    for (int k = 0; k < 50; k++) { ang.update(2000); }
-    ang.rezero();
-    check_eq(ang.y_uwf, 0, "rezero() deja tambien el filtro en cero");
+    Tracker atras;
+    for (int k = 1; k <= 4096 / 100; k++) { atras.update((Tracker::Counts)((4096 - (k * 100) % 4096) % 4096)); }
+    check(atras.y_uw < -4096 + 200 && atras.y_uw >= -4096,
+          "y una vuelta para el otro lado da una vuelta negativa");
 
     // --------------------------------------------------------------- corriente
 
     CurrentSense cur(2048);
-    cur.set_alpha(CurrentSense::Alpha::from_int(1));    // filtro apagado
 
     cur.update(2048);
     check_eq(cur.i, 0, "la cuenta del cero da corriente cero");
@@ -174,67 +163,8 @@ int main()
     cur.update(2148);
     check_eq(cur.i, 100, "cien cuentas por encima del cero dan cien");
 
-    cur.invert = 1;
-    cur.update(2148);
-    check_eq(cur.i, -100, "y con el sensor invertido, menos cien");
-
-    // El camino de vuelta tiene que deshacer exactamente la composicion de ida,
-    // que es justo donde un signo se espeja.
-    check_eq(cur.raw_for(-100), 2148, "raw_for() deshace update() con invert puesto");
-    cur.invert = 0;
-    check_eq(cur.raw_for(100), 2148, "y tambien sin invert");
-
-    // ------------------------------------------------------------------- el PID
-
-    Pid pid;
-    pid.kp = Pid::Kp::from_float(1.0f).raw();
-    pid.ki = 0;
-    pid.kd = 0;
-    pid.set_alpha(Pid::Alpha::from_int(1));
-    pid.refresh(255);
-
-    check(pid.configure(1, 0, 0), "la primera configuracion reinicia");
-    check(!pid.configure(1, 0, 0), "y repetirla no");
-
-    check_eq(pid.step(10, -255, 255, 0), 10, "kp = 1 devuelve el error");
-    check_eq(pid.step(1000, -255, 255, 0), 255, "y recorta en el techo del actuador");
-    check_eq(pid.step(-1000, 0, 255, 0), 0,
-             "con un puente de un solo cuadrante el piso es cero");
-
-    // El defecto que este modulo existe para hacer imposible: cambiar la magnitud
-    // realimentada sin cambiar el controlador tiene que olvidar el integrador.
-    pid.ki = Pid::Ki::from_float(0.01f).raw();
-    pid.refresh(255);
-    pid.configure(1, 0, 0);
-    for (int k = 0; k < 200; k++) { pid.step(100, -255, 255, 0); }
-    check(pid.integral() != 0, "el integrador se carga con el error sostenido");
-
-    check(pid.configure(1, 1, 0),
-          "cambiar target sin cambiar mode tambien reinicia");
-    check_eq(pid.integral(), 0, "y deja el integrador en cero");
-
-    // La cota del integrador tiene que seguir a ki: con ki = 1 el termino integral
-    // satura el actuador con una suma de 255, asi que ahi tiene que quedarse.
-    //
-    // Con kp en cero a proposito. Con kp = 1 y un error de 1000 el actuador satura
-    // por el termino proporcional desde el primer periodo, asi que la integracion
-    // condicional no carga nunca y esto no mediria la cota sino el anti-windup.
-    pid.kp = 0;
-    pid.ki = Pid::Ki::from_float(1.0f).raw();
-    pid.refresh(255);
-    pid.configure(2, 0, 0);
-    for (int k = 0; k < 2000; k++) { pid.step(1000, -255, 255, 0); }
-    check_eq(pid.integral(), 255, "la cota del integrador sigue a ki");
-
-    // Y con ki chico manda el limite del propio tipo, no ki: la acumulacion tiene
-    // que quedar en rango le importe o no a la ganancia.
-    pid.ki = Pid::Ki::from_float(1e-6f).raw();
-    pid.refresh(255);
-    pid.configure(3, 0, 0);
-    check(pid.integral() == 0, "y reconfigurar vuelve a dejarlo en cero");
-    for (int k = 0; k < 3000; k++) { pid.step(30000, -255, 255, 0); }
-    check(pid.integral() == 3000L * 30000L,
-          "con ki chico la suma crece libre sin desbordar");
+    cur.update(1948);
+    check_eq(cur.i, -100, "y cien por debajo, menos cien");
 
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;

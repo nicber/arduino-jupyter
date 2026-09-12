@@ -1,82 +1,12 @@
 {
   "params": [
     {
-      "nombre": "pid_kp",
-      "tipo": "CTRL_I32",
-      "frac": "Pid::Kp::FRAC"
-    },
-    {
-      "nombre": "pid_ki",
-      "tipo": "CTRL_I32",
-      "frac": "Pid::Ki::FRAC"
-    },
-    {
-      "nombre": "pid_kd",
-      "tipo": "CTRL_I32",
-      "frac": "Pid::Kd::FRAC"
-    },
-    {
-      "nombre": "pid_alpha",
-      "tipo": "CTRL_I32",
-      "frac": "Pid::Alpha::FRAC"
-    },
-    {
-      "nombre": "ctl_ref",
-      "tipo": "CTRL_I32",
-      "frac": "Setpoint::FRAC"
-    },
-    {
-      "nombre": "ctl_rate",
-      "tipo": "CTRL_I32",
-      "frac": "Setpoint::FRAC"
-    },
-    {
       "nombre": "ctl_uff",
       "tipo": "CTRL_I16",
       "frac": "0"
     },
     {
-      "nombre": "ctl_mode",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "ctl_target",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "mot_top",
-      "tipo": "CTRL_U16",
-      "frac": "0"
-    },
-    {
-      "nombre": "mot_bidir",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "mot_invert",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "ang_offset",
-      "tipo": "CTRL_I16",
-      "frac": "0"
-    },
-    {
-      "nombre": "ang_alpha",
-      "tipo": "CTRL_I32",
-      "frac": "Angle::Alpha::FRAC"
-    },
-    {
       "nombre": "ang_cal",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "ang_sfilt",
       "tipo": "CTRL_U8",
       "frac": "0"
     },
@@ -88,16 +18,6 @@
     {
       "nombre": "ang_lutsum",
       "tipo": "CTRL_U16",
-      "frac": "0"
-    },
-    {
-      "nombre": "ang_y",
-      "tipo": "CTRL_I16",
-      "frac": "0"
-    },
-    {
-      "nombre": "ang_y_uw",
-      "tipo": "CTRL_I32",
       "frac": "0"
     },
     {
@@ -136,36 +56,6 @@
       "frac": "0"
     },
     {
-      "nombre": "cur_invert",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
-      "nombre": "cur_alpha",
-      "tipo": "CTRL_I32",
-      "frac": "CurrentSense::Alpha::FRAC"
-    },
-    {
-      "nombre": "cur_ma_lsb",
-      "tipo": "CTRL_U16",
-      "frac": "8"
-    },
-    {
-      "nombre": "board_adcfs",
-      "tipo": "CTRL_U16",
-      "frac": "0"
-    },
-    {
-      "nombre": "board_bgadc",
-      "tipo": "CTRL_U16",
-      "frac": "0"
-    },
-    {
-      "nombre": "board_bus",
-      "tipo": "CTRL_U8",
-      "frac": "0"
-    },
-    {
       "nombre": "loop_div",
       "tipo": "CTRL_U8",
       "frac": "0"
@@ -183,12 +73,6 @@
   ],
   "chans": [
     {
-      "nombre": "ref",
-      "tipo": "CTRL_I32",
-      "escala": "1.0f / (1 << Setpoint::FRAC)",
-      "unidad": "tgt"
-    },
-    {
       "nombre": "y_raw",
       "tipo": "CTRL_U16",
       "escala": "COUNTS_TO_DEG",
@@ -199,18 +83,6 @@
       "tipo": "CTRL_I32",
       "escala": "COUNTS_TO_DEG",
       "unidad": "deg"
-    },
-    {
-      "nombre": "y_uwf",
-      "tipo": "CTRL_I32",
-      "escala": "COUNTS_TO_DEG",
-      "unidad": "deg"
-    },
-    {
-      "nombre": "e",
-      "tipo": "CTRL_I16",
-      "escala": "1.0f",
-      "unidad": "tgt"
     },
     {
       "nombre": "u",
