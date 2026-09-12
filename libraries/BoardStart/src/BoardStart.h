@@ -108,10 +108,11 @@ inline uint16_t boardAdcFullScale()
     if (saturado > 1023) {
         return 4096;
     }
-    if (saturado >= 1000) {
-        return 1024;                        // saturó donde satura un UNO
-    }
-    return boardResetClkpr() ? 4096 : 1024; // la sonda no dijo nada
+    // Saturar en 1023 es lo que hace un UNO, pero también sería lo que haría una
+    // placa de 12 bits cuya sonda midiera algo por debajo de la referencia. No se
+    // adivina: el CLKPR de arranque ya distingue las dos placas del banco, y acá
+    // contesta bien en los dos casos.
+    return boardResetClkpr() ? 4096 : 1024;
 }
 
 // El bandgap medido contra AVcc, en cuentas. Es la mitad de la calibración de la
@@ -124,12 +125,18 @@ inline uint16_t boardAdcFullScale()
 // chico: el bandgap está especificado entre 1,0 y 1,2 V, o sea +/-10 % de chip a
 // chip, y va derecho a los miliamperes que se informan.
 //
-// En el clon el número hay que mirarlo con más desconfianza todavía. Los bits
-// REFS del ADMUX son los del ATmega, y el LGT8F328P tiene su propio juego de
-// referencias internas, así que puede estar midiendo contra otra cosa: acá dio
-// 1027 cuentas de 4096, que con AVcc de 5 V darían 1254 mV y no los 1100 del
-// bandgap del ATmega. Mientras el canal de corriente no se use, el número es un
-// dato y no un problema; si se usa, hay que cerrarlo con un tester.
+// En el clon el número NO significa eso, y conviene decirlo con todas las letras
+// en lugar de dejar una cuenta que parece una calibración. Los bits REFS del
+// ADMUX son los del ATmega y el LGT8F328P tiene su propio juego de referencias
+// internas --1,024, 2,048 y 4,096 V--, así que esto mide una contra otra y no un
+// bandgap contra AVcc. Medido en este banco: 1027 cuentas de 4096, o sea 0,2507,
+// que es 1,024/4,096 con cuatro decimales de acuerdo. El valor además depende de
+// con qué referencia venía trabajando el ADC: el mismo código, en un sketch que
+// arranca de otra manera, da 2585. Es un dato curioso y no una calibración.
+//
+// La referencia del clon se resuelve con el core lgt8fx, que la declara por
+// nombre (INTERNAL1V024, INTERNAL2V048, INTERNAL4V096) en lugar de dejarla
+// adivinar. Ver el comentario de ADC_REF_MV en ControlDemo.ino.
 inline uint16_t boardAdcBandgap()
 {
     return boardAdcOnce(_BV(REFS0) | 0x0E);

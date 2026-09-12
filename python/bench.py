@@ -358,14 +358,24 @@ class Bench(CtrlLink):
                    '2 bits para contar en 12')
 
             # La referencia interna, que es la ganancia del canal de corriente.
-            # Falta una tensión conocida para cerrar la cuenta, y no la hay
-            # adentro del chip: AVcc se mide una vez con un tester.
-            if bg:
+            # En el ATmega la medición se interpreta: es el bandgap contra AVcc,
+            # y con AVcc medido una vez con un tester queda el número que va en
+            # ADC_REF_MV. En el clon no se interpreta, y decirlo es mejor que
+            # ofrecer una cuenta que parece una calibración y no lo es: los bits
+            # REFS del ADMUX son los del ATmega y ese chip tiene los suyos.
+            if bg and fondo <= 1024:
                 report('referencia', None,
                        f'bandgap {bg} cuentas de {fondo}: la referencia interna '
                        f'vale AVcc*{bg}/{fondo}, o sea {5000 * bg / fondo:.0f} mV '
                        f'si AVcc fuera 5000 mV. Medir AVcc y poner el resultado '
                        f'en ADC_REF_MV de ControlDemo.ino')
+            elif bg:
+                report('referencia', None,
+                       f'{bg} cuentas de {fondo} contra una referencia que este '
+                       f'core no sabe cual es: los bits REFS son los del ATmega y '
+                       f'el clon tiene los suyos. No usar esto para calibrar el '
+                       f'canal de corriente; para eso hace falta el core lgt8fx, '
+                       f'que declara las referencias por nombre')
 
         # 3. Los cables del bus, medidos por la placa antes de encender el TWI.
         #    Va antes que el sensor a propósito: si el sensor no contesta, esta
