@@ -54,17 +54,18 @@ RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 # El rozamiento es Coulomb con un arranque más alto que el deslizamiento, más un
 # viscoso. Los números se eligieron para parecerse a lo medido en el banco: zona
 # muerta entre 7 y 10 %, ganancia de ~17 (rad/s)/% abajo y ~3 arriba, bajadas
-# unas 1,8 veces más lentas que las subidas, y decenas a una centena y media de mA.
+# unas 1,8 veces más lentas que las subidas, y una corriente de decenas de mA que
+# con el eje trabado no llega a un cuarto de ampere.
 MOTOR = dict(
     Vs=5.0,         # V, la fuente
     Vd=0.7,         # V, el diodo de rueda libre
-    R=6.0,          # ohm
-    L=1.2e-3,       # H
+    R=24.0,         # ohm
+    L=4.8e-3,       # H
     Ke=0.006,       # V/(rad/s), y N·m/A
-    J=3.0e-6,       # kg·m², con el disco
-    Tc=1.2e-4,      # N·m, Coulomb girando
-    Ts=2.5e-4,      # N·m, lo que hace falta para despegar
-    B=1.1e-6,       # N·m/(rad/s)
+    J=7.5e-7,       # kg·m², con el disco
+    Tc=3.0e-5,      # N·m, Coulomb girando
+    Ts=6.25e-5,     # N·m, lo que hace falta para despegar
+    B=2.75e-7,      # N·m/(rad/s)
 )
 PWM_T = 1e-3        # s, 1 kHz
 
