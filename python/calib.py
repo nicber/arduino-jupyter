@@ -159,32 +159,32 @@ def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0, sfilt=3):
     una sola captura da la amplitud de cada armónico en todo un rango de
     velocidades. Eso es lo que después separa el sensor del motor.
     """
-    dev.mode = 0
-    dev.offset = 0
-    dev.cal = 0
-    dev.sfilt = sfilt
-    dev.uff = uff
+    dev.ctl_mode = 0
+    dev.ang_offset = 0
+    dev.ang_cal = 0
+    dev.ang_filt = sfilt
+    dev.ctl_uff = uff
 
     try:
-        return dev.capture(duracion, events=[(arranque, 'uff', 0)])
+        return dev.capture(duracion, events=[(arranque, 'ctl_uff', 0)])
     finally:
-        dev.uff = 0
+        dev.ctl_uff = 0
 
 
 def regimen(dev, uff, duracion=20.0, sfilt=3, cal=0):
     """Captura a comando constante. La contraparte "en régimen" de desaceleracion()."""
-    dev.mode = 0
-    dev.offset = 0
-    dev.cal = cal
-    dev.sfilt = sfilt
-    dev.uff = uff
+    dev.ctl_mode = 0
+    dev.ang_offset = 0
+    dev.ang_cal = cal
+    dev.ang_filt = sfilt
+    dev.ctl_uff = uff
 
     try:
         # Un par de segundos para que la velocidad se establezca antes de medir.
         time.sleep(2.0)
         return dev.capture(duracion)
     finally:
-        dev.uff = 0
+        dev.ctl_uff = 0
 
 
 # ------------------------------------------------------------------- ajuste
@@ -616,16 +616,16 @@ class Calibracion:
         silencio; una tabla es toda valores.
         """
         for i, v in enumerate(self.lut):
-            dev.set('lutw', (i << 16) | (int(v) & 0xFFFF))
+            dev.set('ang_lutw', (i << 16) | (int(v) & 0xFFFF))
 
         if verificar:
-            leido = int(dev.get('lutsum'))
+            leido = int(dev.get('ang_lutsum'))
             propio = self.checksum()
             if leido != propio:
                 raise RuntimeError(f'la tabla no llegó entera: el dispositivo dice '
                                    f'{leido:#06x} y esta tabla es {propio:#06x}')
 
-        dev.cal = 1
+        dev.ang_cal = 1
         return self
 
     @classmethod
@@ -635,12 +635,12 @@ class Calibracion:
         No devuelve la tabla: el dispositivo no la sabe leer de vuelta a propósito.
         Sirve para preguntar "¿es ésta la que está?" contra una que ya se tiene.
         """
-        return int(dev.get('lutsum'))
+        return int(dev.get('ang_lutsum'))
 
 
 def esta_puesta(dev, cal):
     """Si el dispositivo tiene puesta esta tabla exacta y la corrección prendida."""
-    return int(dev.get('lutsum')) == cal.checksum() and int(dev.get('cal')) == 1
+    return int(dev.get('ang_lutsum')) == cal.checksum() and int(dev.get('ang_cal')) == 1
 
 
 def asegurar(dev, ruta='calibracion.json'):

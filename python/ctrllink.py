@@ -9,9 +9,13 @@ lado.
     from ctrllink import CtrlLink
 
     dev = CtrlLink()                    # o CtrlLink('COM3'), o '/dev/ttyACM0'
-    dev.kp, dev.ki = 2.5, 0.1
-    df = dev.step('ref', 1024, pre=0.1, post=0.9)
-    df.plot(x='t', y=['ref', 'y'])
+    dev.pid_kp, dev.pid_ki = 2.5, 0.1
+    df = dev.step('ctl_ref', 1024, pre=0.1, post=0.9)
+    df.plot(x='t', y=['ref', 'y_uw'])
+
+Los nombres de ese ejemplo son los del sketch de este proyecto y no del protocolo:
+los parámetros salen de la tabla del dispositivo, así que cada sketch trae los
+suyos. `dev.params` los lista.
 
 Las filas de telemetría son hexadecimal de ancho fijo, así que una captura se
 decodifica en una sola llamada a numpy en lugar de interpretarse línea por línea;
@@ -60,31 +64,44 @@ _TERMINATORS = ('# ok', '# err', '# data')
 # que lo recibió y objetó. Sólo vale la pena reintentar éstos.
 _GARBLED = ('comando desconocido', 'comando demasiado largo', 'necesita')
 
-# Parámetros de salud, si el sketch los declara. Ninguno es parte del protocolo:
-# los nombres son una convención, y un dispositivo que no expone ninguno
-# simplemente no informa nada. Son totales acumulados y no lecturas instantáneas,
-# así que una captura los pone en cero primero y lo que vuelve describe esa
-# captura y nada más.
+# Contadores de salud del lazo. Son los únicos que este módulo conoce, y lo son
+# porque no dependen de ningún hardware: cualquier dispositivo que hable este
+# protocolo tiene un período de control que puede no llegar a cumplir.
+#
+# Cada entrada es (clave, parámetro): el nombre corto con el que queda en
+# `df.attrs` y el parámetro del dispositivo del que sale. Son dos cosas distintas
+# a propósito. El vocabulario del notebook es estable y el del dispositivo no: los
+# parámetros llevan prefijo de módulo, y un sketch distinto puede llamarlos de otra
+# manera sin que cambie el nombre por el que se los mira desde un gráfico.
 #
 #   missed   períodos de control que el lazo nunca atendió
 #   maxlate  peor retardo entre el disparo de un tick y el momento en que el lazo
 #            lo levanta, en us
-#   sovr     muestras del sensor que el bus no llegó a seguir
-#   serr     transferencias del sensor que fallaron
-_HEALTH = ('missed', 'maxlate', 'sovr', 'serr')
+#
+# Son totales acumulados y no lecturas instantáneas, así que una captura los pone
+# en cero primero y lo que vuelve describe esa captura y nada más. Un dispositivo
+# que no declare alguno simplemente no lo informa: la lista se cruza contra la
+# tabla de parámetros.
+_HEALTH = (('missed', 'lop_missed'),
+           ('maxlate', 'lop_late'))
 
-# Parámetros de estado. Se leen después de una captura como los de salud, pero
-# NO se ponen en cero antes: no son cuentas acumuladas sino el estado del equipo
-# en este momento, y ponerlos en cero sería inventar una lectura.
+# Todo lo demás que se pueda querer saber de una captura depende del equipo, y
+# este módulo no sabe qué equipo hay del otro lado. Un sensor que no contesta, un
+# imán mal montado, un bus que no sigue: nada de eso es del protocolo, así que no
+# vive acá.
 #
-#   spres    el sensor contesta en el bus (0 = no está)
-#   mstat    registro STATUS del AS5600: imán detectado, muy débil, muy fuerte
-#   agc      registro AGC: contra un extremo es un imán mal montado
-#   mag      registro MAGNITUDE: módulo del vector de campo
+# Quien sí lo sepa se lo pasa a __init__ como `diagnostico`, un colaborador con
+# cuatro métodos, todos opcionales:
 #
-# Un sketch que no declare alguno simplemente no lo informa; la lista se cruza
-# contra la tabla de parámetros del dispositivo.
-_STATUS = ('spres', 'mstat', 'agc', 'mag')
+#   parametros_de_salud()  -> ((clave, parametro), ...)  cuentas, se ponen en cero
+#   parametros_de_estado() -> ((clave, parametro), ...)  lecturas de ahora, no
+#   notas_primero(df)      -> [texto, ...]   antes de las genéricas
+#   notas_despues(df)      -> [texto, ...]   después
+#
+# Que las notas se partan en dos no es una comodidad: el orden importa. Si el
+# sensor no está, todo lo demás que se mida es consecuencia de eso y no un problema
+# por derecho propio, así que esa nota tiene que ir primera. Ver
+# bench.DiagnosticoDeBanco.
 
 # Fracción del período de control a partir de la cual vale la pena mencionar un
 # retardo de atención, aunque todavía no se haya perdido nada.
@@ -244,15 +261,27 @@ class CtrlLink:
     _depth = 0       # operaciones anidadas: sólo la de más afuera limpia
     _broken = False  # una operación se cortó por el medio y dejó el enlace sucio
 
-    def __init__(self, port=None, baud=1_000_000, reset_wait=1.8, timeout=1.0):
+    # Quien sepa qué equipo hay del otro lado, o None. Atributo de clase por la
+    # misma razón que los dos de arriba, y además porque sin él una property que
+    # lo consulte falla con AttributeError y el intérprete cae en __getattr__:
+    # el error que sale entonces nombra la property y no la causa.
+    _diag = None
+
+    def __init__(self, port=None, baud=1_000_000, reset_wait=1.8, timeout=1.0,
+                 diagnostico=None):
         """Abre el puerto, resetea la placa y descubre el dispositivo.
 
         `reset_wait` es cuánto se le da al bootloader; con 0 no se resetea nada y
         el enlace se engancha a un sketch que ya está corriendo.
+
+        `diagnostico` es quien sepa qué equipo hay del otro lado, para que este
+        módulo no tenga que saberlo. Sin él, una captura informa lo del lazo y nada
+        más, que es exactamente lo que el protocolo permite saber.
         """
         if port is None:
             port = find_port()
 
+        self._diag = diagnostico
         self.ser = serial.Serial(port, baud, timeout=timeout)
 
         try:
@@ -574,20 +603,31 @@ class CtrlLink:
                 return int(field[6:]) * 1e-6
         raise CtrlLinkError('el dispositivo no informo su periodo de control')
 
+    def _del_diagnostico(self, metodo):
+        """Lo que el colaborador conteste a `metodo`, o nada si no hay colaborador.
+
+        Todos sus métodos son opcionales, así que un objeto que sólo sepa nombrar
+        parámetros no tiene que además saber redactar notas.
+        """
+        fn = getattr(self._diag, metodo, None) if self._diag is not None else None
+        return fn() if fn is not None else ()
+
     @property
     def _health(self) -> tuple:
-        """Los contadores de salud que este sketch en particular exponga.
+        """Los contadores acumulados que este dispositivo exponga, como (clave, param).
 
         Se deduce de la tabla de parámetros en lugar de guardarse en caché, así
         que acompaña a un dispositivo que se haya conectado a mano y no a través
         de __init__.
         """
-        return tuple(name for name in _HEALTH if name in self._params)
+        pairs = tuple(_HEALTH) + tuple(self._del_diagnostico('parametros_de_salud'))
+        return tuple((k, p) for k, p in pairs if p in self._params)
 
     @property
     def _state(self) -> tuple:
-        """Los parámetros de estado que este sketch exponga. Ver _STATUS."""
-        return tuple(name for name in _STATUS if name in self._params)
+        """Las lecturas de ahora que exponga, como (clave, param). No se ponen en cero."""
+        pairs = tuple(self._del_diagnostico('parametros_de_estado'))
+        return tuple((k, p) for k, p in pairs if p in self._params)
 
     @property
     def params(self) -> dict:
@@ -706,8 +746,8 @@ class CtrlLink:
     def _capture(self, duration, events, poll, warn):
         pending = sorted(events, key=lambda e: e[0])
 
-        for name in self._health:
-            self.set(name, 0)
+        for _clave, param in self._health:
+            self.set(param, 0)
 
         self.ser.reset_input_buffer()
         header = self.cmd('start')
@@ -782,8 +822,8 @@ class CtrlLink:
         # Se leen una vez que el flujo paró, no durante: un `get` en medio de una
         # captura cuesta milisegundos de tráfico de comandos, que es justamente lo
         # que se está midiendo.
-        df.attrs.update({name: self.get(name)
-                         for name in self._health + self._state})
+        df.attrs.update({clave: self.get(param)
+                         for clave, param in self._health + self._state})
         df.attrs['health'] = self._health_notes(df)
 
         if warn:
@@ -797,7 +837,8 @@ class CtrlLink:
 
         Vacío si el sketch no expone ninguno.
         """
-        return {name: self.get(name) for name in self._health + self._state}
+        return {clave: self.get(param)
+                for clave, param in self._health + self._state}
 
     def _health_notes(self, df):
         """Quejas en castellano llano sobre una captura, la peor primero.
@@ -806,20 +847,14 @@ class CtrlLink:
         parecerlo: un período perdido es una muestra que el controlador nunca
         calculó, y una fila descartada es una que calculó y nunca envió. Ninguna de
         las dos deja marca en los datos mismos.
+
+        Y todo lo que hay acá es del protocolo y del lazo, no del equipo. Lo que
+        dependa del hardware lo redacta el colaborador, y va antes o después de esto
+        según importe más o menos que un período perdido.
         """
-        notes = []
+        notes = list(self._notas_del_diagnostico('notas_primero', df))
         dt_us = df.attrs['dt_us']
         rate = 1e6 / dt_us if dt_us else 0
-
-        # Primero, porque si el sensor no está todo lo demás que se mida es
-        # consecuencia de eso y no un problema por derecho propio.
-        absent = df.attrs.get('spres') == 0
-        if absent:
-            notes.append(
-                'el AS5600 no contesta en el bus I2C: revisar SDA (A4), '
-                'SCL (A5), la alimentacion y los pull-ups. El lazo sigue '
-                'corriendo, pero el angulo queda congelado y todo lo que se '
-                'mida de posicion no significa nada.')
 
         missed = df.attrs.get('missed') or 0
         if missed:
@@ -854,22 +889,12 @@ class CtrlLink:
             notes.append(f'{gaps} hueco(s) en la secuencia de ticks: faltan filas '
                          f'en la serie temporal.')
 
-        sovr = df.attrs.get('sovr') or 0
-        if sovr:
-            notes.append(
-                f'{sovr} desborde(s) del sensor: una transferencia de I2C no habia '
-                f'terminado cuando vencia la muestra siguiente, asi que esa muestra '
-                f'repite la anterior.')
+        return notes + list(self._notas_del_diagnostico('notas_despues', df))
 
-        # Con el sensor ausente las fallas son las del sondeo espaciado, que ya
-        # quedaron explicadas arriba; contarlas de nuevo sólo agrega ruido. Con
-        # el sensor presente, en cambio, son intermitencias y ésas sí importan.
-        serr = df.attrs.get('serr') or 0
-        if serr and not absent:
-            notes.append(f'fallaron {serr} transferencia(s) del sensor -- revisar '
-                         f'el cableado y los pull-ups del bus.')
-
-        return notes
+    def _notas_del_diagnostico(self, metodo, df):
+        """Las notas que aporte el colaborador, o ninguna si no hay."""
+        fn = getattr(self._diag, metodo, None) if self._diag is not None else None
+        return fn(df) if fn is not None else ()
 
     def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True):
         """Captura una respuesta al escalón, con `t = 0` en el escalón mismo.
@@ -880,11 +905,11 @@ class CtrlLink:
         try:
             df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
         except BaseException:
-            # El escalón ya salió: interrumpir la captura no lo deshace, y dejar
-            # una referencia en pie contra un motor no es un estado en el que
-            # convenga abandonar el equipo. El enlace ya quedó limpio para este
-            # punto, así que restituir es un comando común; si aun así no se
-            # puede, la excepción que viene saliendo es la noticia importante.
+            # El escalón ya salió: interrumpir la captura no lo deshace, y dejar un
+            # parámetro movido en un dispositivo que sigue corriendo no es un estado
+            # en el que convenga abandonarlo. El enlace ya quedó limpio para este
+            # punto, así que restituir es un comando común; si aun así no se puede,
+            # la excepción que viene saliendo es la noticia importante.
             if back is not None:
                 try:
                     self.set(name, back)

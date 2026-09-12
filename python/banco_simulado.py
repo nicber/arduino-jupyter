@@ -62,14 +62,14 @@ class BancoSimulado:
         self._rng = np.random.default_rng(semilla)
         self.ruido = ruido
 
-        self.mode = 0
-        self.offset = 0
-        self.uff = 0
-        self.ref = 0
-        self.cal = 0
-        self.sfilt = sfilt
-        self.tickdiv = 10
-        self.kp = self.ki = self.kd = 0.0
+        self.ctl_mode = 0
+        self.ang_offset = 0
+        self.ctl_uff = 0
+        self.ctl_ref = 0
+        self.ang_cal = 0
+        self.ang_filt = sfilt
+        self.lop_div = 10
+        self.pid_kp = self.pid_ki = self.pid_kd = 0.0
 
         self.lut = [0] * 64
         self._lutw = 0xFFFFFFFF
@@ -78,22 +78,22 @@ class BancoSimulado:
         # en la placa. No cambian el modelo --el motor de mentira gira siempre
         # para el mismo lado--: están para que una celda no se caiga, y no para
         # simular un puente mal conectado.
-        self.target = 0
-        self.bidir = 1
-        self.uinvert = 0
-        self.iinvert = 0
-        self.izero = 0
-        self.pwmtop = 8000
-        self.alpha_y = self.alpha_i = self.alpha_e = 1.0
+        self.ctl_target = 0
+        self.mot_bidir = 1
+        self.mot_invert = 0
+        self.cur_invert = 0
+        self.cur_zero = 0
+        self.mot_top = 8000
+        self.ang_alpha = self.cur_alpha = self.pid_alpha = 1.0
 
-        self.dt = self.tickdiv / 5000.0
+        self.dt = self.lop_div / 5000.0
         self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
         self.simulado = True
 
     # ------------------------------------------------------ los parámetros
 
     def set(self, name, value, tries=3):
-        if name == 'lutw':
+        if name == 'ang_lutw':
             value = int(value) & 0xFFFFFFFF
             if value != self._lutw:
                 self._lutw = value
@@ -107,7 +107,7 @@ class BancoSimulado:
         return value
 
     def get(self, name):
-        if name == 'lutsum':
+        if name == 'ang_lutsum':
             a = b = 0
             for v in self.lut:
                 for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
@@ -117,14 +117,14 @@ class BancoSimulado:
         return getattr(self, name)
 
     def rest(self):
-        self.mode = 0
-        self.uff = 0
+        self.ctl_mode = 0
+        self.ctl_uff = 0
 
     def zero(self):
-        self.offset = 0
+        self.ang_offset = 0
 
     def gains(self, kp=0.0, ki=0.0, kd=0.0):
-        self.kp, self.ki, self.kd = kp, ki, kd
+        self.pid_kp, self.pid_ki, self.pid_kd = kp, ki, kd
 
     def smooth(self, which, tau):
         pass
@@ -167,7 +167,7 @@ class BancoSimulado:
         no hace nada. Es la misma cuenta que g_u_min en el sketch, y está acá para
         que la celda que muestra el caso unidireccional no necesite la placa.
         """
-        return min(255.0, max(0.0 if not self.bidir else -255.0, float(u)))
+        return min(255.0, max(0.0 if not self.mot_bidir else -255.0, float(u)))
 
     def _velocidad_final(self, u):
         """Vueltas por segundo en régimen para un comando `u`.
@@ -183,7 +183,7 @@ class BancoSimulado:
 
     def _perfil(self, t, eventos):
         """La velocidad instantánea a lo largo de la captura, en vueltas por segundo."""
-        objetivo = self._velocidad_final(self.uff)
+        objetivo = self._velocidad_final(self.ctl_uff)
 
         # La captura arranca con el eje ya a régimen, no desde parado: `regimen()`
         # espera un par de segundos antes de medir y `desaceleracion()` lleva el
@@ -197,7 +197,7 @@ class BancoSimulado:
         dt = t[1] - t[0] if len(t) > 1 else 0.002
 
         cambios = sorted((float(d), float(v)) for d, nombre, v in eventos
-                         if nombre == 'uff')
+                         if nombre == 'ctl_uff')
         siguiente = 0
 
         for i, ti in enumerate(t):
@@ -216,12 +216,12 @@ class BancoSimulado:
 
     def pwm(self, hz):
         """Fija la frecuencia del PWM del puente y devuelve la que quedó."""
-        self.pwmtop = min(65535, max(255, round(F_CPU / (2 * hz))))
+        self.mot_top = min(65535, max(255, round(F_CPU / (2 * hz))))
         return self.pwm_hz
 
     @property
     def pwm_hz(self):
-        return F_CPU / (2 * self.pwmtop)
+        return F_CPU / (2 * self.mot_top)
 
     def zero_current(self, seconds=0.3):
         """El cero de la corriente, que en el modelo ya está en cero.
@@ -230,7 +230,7 @@ class BancoSimulado:
         que allá: el `izero` que quedó. En el banco de verdad esto mide un offset
         que no se puede conocer de otra manera; acá no hay nada que medir.
         """
-        return self.izero
+        return self.cur_zero
 
     def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
         """Un `Giro`, igual que en el banco de verdad: ver `Bench.spin()`.
@@ -246,10 +246,10 @@ class BancoSimulado:
         """
         from bench import Giro
 
-        antes = self.uff
-        self.uff = u
+        antes = self.ctl_uff
+        self.ctl_uff = u
         df = self.capture(seconds, warn=False)
-        self.uff = antes
+        self.ctl_uff = antes
         self.rest()
         vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
         i = df['i']
@@ -263,9 +263,9 @@ class BancoSimulado:
         que reconstruirlo, y sin esto el gráfico de un escalón muestra el comando
         plano en su valor de arranque.
         """
-        u = np.full(len(t), self._recorte(self.uff))
+        u = np.full(len(t), self._recorte(self.ctl_uff))
         for retardo, nombre, valor in sorted(eventos, key=lambda e: float(e[0])):
-            if nombre == 'uff':
+            if nombre == 'ctl_uff':
                 u[t >= float(retardo)] = self._recorte(valor)
         return u
 
@@ -308,11 +308,11 @@ class BancoSimulado:
         theta = np.cumsum(w) * CUENTAS * self.dt
         medido = theta + self._error_sensor(theta, w)
         medido = medido + self._rng.normal(0, self.ruido, len(t))
-        refs = np.full(len(t), float(self.ref))
+        refs = np.full(len(t), float(self.ctl_ref))
 
         crudo = np.mod(np.rint(medido), CUENTAS).astype(np.int64)
 
-        corregido = medido - (self._lut_lookup(crudo) if self.cal else 0)
+        corregido = medido - (self._lut_lookup(crudo) if self.ang_cal else 0)
 
         df = pd.DataFrame({
             't': t,
@@ -327,8 +327,8 @@ class BancoSimulado:
             'ref': refs,
         })
 
-        df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.tickdiv,
-                        dec=self.tickdiv, dt_us=self.dt*1e6, marks=[], notes=[],
+        df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.lop_div,
+                        dec=self.lop_div, dt_us=self.dt*1e6, marks=[], notes=[],
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
                         spres=1, mstat=0x20, agc=128, mag=1800,
                         wall=float(duration), rows=len(t), drops=0,
@@ -368,8 +368,8 @@ class BancoSimulado:
             print(f'  [   ok]  {etiqueta:<18}  {detalle}')
         print('\n  NADA DE ESTO ES REAL: es el banco simulado.')
 
-        return Cableado(bidir=int(self.bidir), uinvert=int(self.uinvert),
-                        iinvert=int(self.iinvert))
+        return Cableado(bidir=int(self.mot_bidir), uinvert=int(self.mot_invert),
+                        iinvert=int(self.cur_invert))
 
 
 def conseguir_banco(forzar_simulado=False, **kw):

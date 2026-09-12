@@ -8,7 +8,7 @@ notebook contenga un controlador y un experimento y nada más.
     dev = sync_board()
     dev.gains(kp=0.002, ki=0.05)
     dev.ref = dev.deg(45)
-    df = dev.step('ref', dev.deg(90))
+    df = dev.step('ctl_ref', dev.deg(90))
 
 `sync_board()` compila si cambió algún archivo fuente, carga si cambió el binario,
 y reabre el enlace, lo que resetea la placa. Todas las celdas lo llaman, así que
@@ -194,6 +194,16 @@ class Cableado:
 
     _GUARDADOS = ('bidir', 'uinvert', 'iinvert')
 
+    # Cómo se llama cada uno en la placa. Los nombres de acá son los del banco
+    # --los que se leen en un archivo y en un mensaje-- y los de allá llevan
+    # prefijo de módulo. Separarlos es lo que permite que un `cableado.json` escrito
+    # antes del cambio de nombres siga sirviendo.
+    _PARAMETROS = {
+        'bidir':   'mot_bidir',
+        'uinvert': 'mot_invert',
+        'iinvert': 'cur_invert',
+    }
+
     def __bool__(self):
         return self.ok
 
@@ -205,8 +215,9 @@ class Cableado:
         resto del cableado sigue siendo aplicable y decirlo es tarea de bringup().
         """
         for nombre in self._GUARDADOS:
-            if nombre in dev._params:
-                setattr(dev, nombre, getattr(self, nombre))
+            param = self._PARAMETROS[nombre]
+            if param in dev._params:
+                setattr(dev, param, getattr(self, nombre))
         return dev
 
     def guardar(self, ruta=None):
@@ -237,28 +248,122 @@ class Cableado:
                 f'iinvert = {self.iinvert}')
 
 
-# -------------------------------------------------------------- el dispositivo
+# ------------------------------------------------------- el diagnóstico del banco
 
-class Bench(CtrlLink):
-    """Un CtrlLink que sabe qué significan los números de este equipo.
+class DiagnosticoDeBanco:
+    """Lo que hay que saber de este equipo para creerle una captura.
 
-    Los parámetros de la placa están todos en sus propias unidades: cuentas, LSBs
-    del ADC, ganancias por muestra. Éstos los convierten a las unidades en las que
-    se diseña un experimento.
+    Existe porque `ctrllink` no tiene que saber qué hay del otro lado del cable. El
+    protocolo habla de períodos perdidos y de filas descartadas; que además haya un
+    AS5600 en un bus I2C, con un imán que puede estar torcido, es de este banco. El
+    enlace lo recibe como colaborador y le pregunta; ver el comentario de
+    `diagnostico` en ctrllink.py.
+
+    Es de sólo leer: trabaja sobre lo que la captura ya trajo en `df.attrs` y no le
+    pide nada a la placa. Eso lo hace barato de llamar y trivial de probar.
     """
 
-    def _read_channels(self):
+    # Cuentas acumuladas: una captura las pone en cero antes y lo que vuelve
+    # describe esa captura. (clave con la que quedan en df.attrs, parámetro).
+    _SALUD = (('sovr', 'ang_ovr'),
+              ('serr', 'ang_err'))
+
+    # Lecturas de ahora. No se ponen en cero: hacerlo sería inventar una lectura.
+    _ESTADO = (('spres', 'ang_present'),
+               ('mstat', 'ang_status'),
+               ('agc',   'ang_agc'),
+               ('mag',   'ang_mag'))
+
+    def parametros_de_salud(self):
+        return self._SALUD
+
+    def parametros_de_estado(self):
+        return self._ESTADO
+
+    def notas_primero(self, df):
+        """Va antes que las del lazo: si el sensor no está, lo demás es consecuencia."""
+        if df.attrs.get('spres') != 0:
+            return []
+
+        return ['el AS5600 no contesta en el bus I2C: revisar SDA (A4), '
+                'SCL (A5), la alimentacion y los pull-ups. El lazo sigue '
+                'corriendo, pero el angulo queda congelado y todo lo que se '
+                'mida de posicion no significa nada.']
+
+    def notas_despues(self, df):
+        """Lo del sensor que importa menos que un período perdido."""
+        notas = []
+
+        sovr = df.attrs.get('sovr') or 0
+        if sovr:
+            notas.append(
+                f'{sovr} desborde(s) del sensor: una transferencia de I2C no habia '
+                f'terminado cuando vencia la muestra siguiente, asi que esa muestra '
+                f'repite la anterior.')
+
+        # Con el sensor ausente las fallas son las del sondeo espaciado, que ya
+        # quedaron explicadas en notas_primero(); contarlas de nuevo sólo agrega
+        # ruido. Con el sensor presente, en cambio, son intermitencias y ésas sí
+        # importan. Por eso las dos notas tienen que vivir juntas: una condiciona a
+        # la otra, y partirlas entre dos módulos rompía ese acoplamiento.
+        serr = df.attrs.get('serr') or 0
+        if serr and df.attrs.get('spres') != 0:
+            notas.append(f'fallaron {serr} transferencia(s) del sensor -- revisar '
+                         f'el cableado y los pull-ups del bus.')
+
+        return notas
+
+
+# -------------------------------------------------------------- el dispositivo
+
+class Bench:
+    """Un banco: un enlace CtrlLink más lo que significan los números de este equipo.
+
+    Tiene un enlace en lugar de ser uno. La diferencia importa: lo que este objeto
+    sabe --que el ángulo se mide en cuentas de un AS5600, que la corriente pasa por
+    un ACS712, que el actuador es un puente de un modelo que no tolera modular
+    rápido-- no tiene por qué poder meterse adentro del protocolo, y cuando podía,
+    se metió: las quejas sobre una captura nombraban el sensor y sus pines desde
+    ctrllink.py. Con el enlace guardado en un atributo esa fuga deja de ser posible
+    en lugar de quedar prohibida por costumbre.
+
+    Todo lo que el enlace sabe hacer sigue estando acá, delegado: `capture`, `step`,
+    `set`, `get`, `close`, y cada parámetro de la placa como atributo. Los
+    parámetros están en las unidades de la placa --cuentas, LSBs del ADC, ganancias
+    por muestra-- y los métodos de esta clase los convierten a las unidades en las
+    que se diseña un experimento.
+    """
+
+    # Los atributos que son de este objeto y no del enlace. Todo lo demás se
+    # delega, así que agregar uno acá es la manera de que no se vaya al enlace.
+    _PROPIOS = frozenset({'link', 'channels'})
+
+    def __init__(self, port=None, **kw):
+        # object.__setattr__ porque __setattr__ consulta el enlace, que todavía no
+        # existe.
+        link = CtrlLink(port, diagnostico=DiagnosticoDeBanco(), **kw)
+        object.__setattr__(self, 'link', link)
+        object.__setattr__(self, 'channels', self._canales(link))
+
+    @staticmethod
+    def _canales(link):
         """Los canales de la placa, con la escala de `i` corregida por placa.
 
-        La escala que viaja en la tabla de canales es una constante compilada, y
-        la referencia del ADC no lo es: el bandgap del ATmega anda por 1093 mV y
-        la referencia interna del clon vale 1024. La placa no puede corregir su
-        propia tabla --vive en flash-- pero sí calcula la escala al arrancar y la
-        publica en `imalsb`, en mA por cuenta. Acá se la cree a ella y no a la
-        tabla. Ver el comentario de ADC_REF_MV_LGT8F en ControlDemo.ino.
+        La escala que viaja en la tabla de canales es una constante compilada, y la
+        referencia del ADC no lo es: el bandgap del ATmega anda por 1093 mV y la
+        referencia interna del clon vale 1024. La placa no puede corregir su propia
+        tabla --vive en flash-- pero sí calcula la escala al arrancar y la publica en
+        `cur_malsb`, en mA por cuenta. Acá se la cree a ella y no a la tabla. Ver el
+        comentario de ADC_REF_MV_LGT8F en ControlDemo.ino.
+
+        OJO que esto corrige `self.channels`, que es lo que usan deg(), ma(),
+        as_deg() y as_ma(). Las columnas de un DataFrame capturado se escalan con lo
+        que viene en el encabezado del flujo, o sea con la constante compilada: en el
+        UNO las dos coinciden y en el clon no. Arreglarlo cambiaría los números de
+        una captura, así que no se hace de paso.
         """
-        chans = super()._read_channels()
-        ma = self.params.get('imalsb') and self.get('imalsb')
+        chans = list(link.channels)
+        ma = link.params.get('cur_malsb') and link.get('cur_malsb')
 
         if ma:
             for columna in chans:
@@ -266,6 +371,36 @@ class Bench(CtrlLink):
                     columna.scale = ma
 
         return chans
+
+    # ----------------------------------------------------------- delegación
+    #
+    # Lo que no sea de este objeto es del enlace, y eso incluye cada parámetro de
+    # la placa: `dev.pid_kp = 0.5` termina en un `set` como antes.
+
+    def __getattr__(self, name):
+        link = self.__dict__.get('link')
+        if link is None:
+            raise AttributeError(name)
+        return getattr(link, name)
+
+    def __setattr__(self, name, value):
+        link = self.__dict__.get('link')
+
+        if link is not None and name not in self._PROPIOS and name in link._params:
+            link.set(name, value)
+        else:
+            object.__setattr__(self, name, value)
+
+    def __dir__(self):
+        return sorted(set(super().__dir__()) | set(dir(self.link)))
+
+    # Los dunder del protocolo de contexto se buscan en el tipo y no pasan por
+    # __getattr__, así que hay que escribirlos.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def channel(self, name):
         for column in self.channels:
@@ -311,7 +446,13 @@ class Bench(CtrlLink):
         propia placa, fijarlas directamente con `dev.kp`.
         """
         dt = self.dt
-        self.kp, self.ki, self.kd = kp, ki * dt, kd / dt
+        self.pid_kp, self.pid_ki, self.pid_kd = kp, ki * dt, kd / dt
+
+    # Los tres filtros que el sketch expone, y de qué módulo es cada uno. No se
+    # arma el nombre con una f-string porque los tres polos viven en módulos
+    # distintos y cada prefijo es el de su dueño; un diccionario lo dice y una
+    # interpolación lo esconde.
+    _FILTROS = {'y': 'ang_alpha', 'i': 'cur_alpha', 'e': 'pid_alpha'}
 
     def smooth(self, which, tau):
         """Fija un filtro por constante de tiempo en segundos; tau = 0 lo apaga.
@@ -320,8 +461,15 @@ class Bench(CtrlLink):
         término derivativo). La placa guarda el polo en sí, alpha, porque es por
         lo que multiplica el filtro.
         """
+        try:
+            param = self._FILTROS[which]
+        except KeyError:
+            raise CtrlLinkError(
+                f'no hay ningun filtro {which!r}; son '
+                f'{", ".join(sorted(self._FILTROS))}') from None
+
         dt = self.dt
-        self.set(f'alpha_{which}', dt / (tau + dt) if tau > 0 else 1.0)
+        self.set(param, dt / (tau + dt) if tau > 0 else 1.0)
 
     def pwm(self, hz):
         """Fija la frecuencia del PWM del puente, en Hz, y devuelve la que quedó.
@@ -337,13 +485,13 @@ class Bench(CtrlLink):
         Con un puente MOSFET conviene subirla bien por encima del rango audible.
         """
         top = min(65535, max(255, round(_F_CPU / (2 * hz))))
-        self.pwmtop = top
+        self.mot_top = top
         return _F_CPU / (2 * top)
 
     @property
     def pwm_hz(self):
         """La frecuencia del PWM del puente, en Hz, tal como quedó en la placa."""
-        return _F_CPU / (2 * self.pwmtop)
+        return _F_CPU / (2 * self.mot_top)
 
     def zero(self):
         """Toma la posición actual del eje como cero.
@@ -351,8 +499,8 @@ class Bench(CtrlLink):
         `y` se lee como `offset - counts` con vuelta, así que bajar `offset` en el
         `y` actual pone `offset` sobre la cuenta actual y `y` en cero.
         """
-        self.offset = (self.offset - self.y) % 4096
-        self.y_uw = 0
+        self.ang_offset = (self.ang_offset - self.ang_y) % 4096
+        self.ang_y_uw = 0
 
     def zero_current(self, seconds=0.3):
         """Toma la corriente que se mida ahora como el cero. Devuelve `izero`.
@@ -375,8 +523,8 @@ class Bench(CtrlLink):
         """
         self.rest()
         df = self.capture(seconds, warn=False)
-        self.izero = round(self.adc_de_i(df['i'].mean()))
-        return self.izero
+        self.cur_zero = round(self.adc_de_i(df['i'].mean()))
+        return self.cur_zero
 
     def adc_de_i(self, ma):
         """Los mA que informa el canal `i` -> la cuenta cruda del ADC que los produjo.
@@ -386,12 +534,12 @@ class Bench(CtrlLink):
         contra un riel, que es una pregunta sobre el ADC y no sobre la corriente.
         """
         cuentas = ma / self.channel('i').scale
-        return self.izero + (-cuentas if self._iinvert else cuentas)
+        return self.cur_zero + (-cuentas if self._iinvert else cuentas)
 
     @property
     def _iinvert(self):
         """`iinvert`, o 0 si la placa tiene grabado un sketch que no lo declara."""
-        return int(self.iinvert) if 'iinvert' in self._params else 0
+        return int(self.cur_invert) if 'cur_invert' in self._params else 0
 
     def rest(self):
         """Lazo abierto, comando en cero. Donde tendría que terminar todo experimento.
@@ -400,8 +548,8 @@ class Bench(CtrlLink):
         abierto y el motor en punto muerto: no frena el eje, sólo deja de
         empujarlo.
         """
-        self.mode = MODE_OPEN
-        self.uff = 0
+        self.ctl_mode = MODE_OPEN
+        self.ctl_uff = 0
 
     def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
         """Lazo abierto con `u` sobre el puente por un instante, y de vuelta a reposo.
@@ -450,7 +598,7 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
                 break
 
         self.zero()
-        self.uff = u
+        self.ctl_uff = u
         df = self.capture(seconds, warn=False)
         self.rest()
 
@@ -533,9 +681,9 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
         #    a simple vista. Importa porque el ADC del clon tiene 12 bits contra
         #    los 10 del UNO: la placa normaliza a 12 y lo dice acá, así que un
         #    canal de corriente cuatro veces grande deja de ser un misterio.
-        if 'adcfs' in self._params:
-            fondo = self.get('adcfs')
-            bg    = self.get('bgadc')
+        if 'brd_adcfs' in self._params:
+            fondo = self.get('brd_adcfs')
+            bg    = self.get('brd_bgadc')
             report('placa', True,
                    'ADC de 12 bits, el del clon LGT8F328P' if fondo >= 4096 else
                    'ADC de 10 bits, el del ATmega328P; las lecturas se corren '
@@ -581,8 +729,8 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
         #    resetear la placa para que vuelva a mirar, y eso es sync_board().
         present = bool(df.attrs.get('spres', 1))
 
-        if 'busdiag' in self._params:
-            diag = self.get('busdiag')
+        if 'brd_bus' in self._params:
+            diag = self.get('brd_bus')
             sda, scl = diag & 0x03, (diag >> 2) & 0x03
             sano = not (diag & _BUS_INVERTIDO) and sda == 0 and scl == 0
 
@@ -654,7 +802,7 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
             # Exigir cero hacía fallar esta línea en un equipo sano, y una
             # verificación que grita en falso enseña a ignorarla. Lo que sí es
             # una falla es que el bus no llegue de manera sostenida.
-            muestras = df.attrs['wall'] * 1e6 / df.attrs['dt_us'] * self.tickdiv
+            muestras = df.attrs['wall'] * 1e6 / df.attrs['dt_us'] * self.lop_div
             tasa = df.attrs['sovr'] / max(muestras, 1)
             report('bus i2c', df.attrs['serr'] == 0 and tasa < 0.005,
                    f'{df.attrs["serr"]} errores de transferencia, '
@@ -730,7 +878,7 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
             # resuelve por debajo del escalon.
             report('calibracion de i',
                    abs(rest_ma) < lsb and 0.1 * lsb < noise < 8 * lsb,
-                   f'izero = {self.izero}, {lsb:.2f} mA por cuenta, quedan '
+                   f'izero = {self.cur_zero}, {lsb:.2f} mA por cuenta, quedan '
                    f'{rest_ma:+.1f} mA en reposo (ruido {noise / lsb:.2f} cuentas)'
                    + ('' if noise > 0.1 * lsb else
                       '  -- sin dither: la senal no llega a un escalon del ADC'))
@@ -789,14 +937,14 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
             else:
                 if ida.vueltas < 0:
                     print(f'  un u positivo baja el angulo: poniendo uinvert = '
-                          f'{0 if self.uinvert else 1} y midiendo de nuevo ...')
-                    self.uinvert = 0 if self.uinvert else 1
+                          f'{0 if self.mot_invert else 1} y midiendo de nuevo ...')
+                    self.mot_invert = 0 if self.mot_invert else 1
                     ida = self.spin(u)
 
                 derecho = ida.vueltas > 0
                 report('polaridad', derecho,
                        f'un u positivo hace {"subir" if derecho else "BAJAR"} el '
-                       f'angulo, con uinvert = {self.uinvert}'
+                       f'angulo, con uinvert = {self.mot_invert}'
                        + ('' if derecho else
                           '  -- dar vuelta uinvert no cambio nada, asi que el '
                           'sentido de este banco esta fijado en cobre y no en '
@@ -813,7 +961,7 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
             vuelta = None
             reverses = False
 
-            if not self.bidir:
+            if not self.mot_bidir:
                 report('sentido', None, 'bidir = 0, el puente esta declarado de un '
                                         'solo cuadrante: no hay segundo sentido que '
                                         'verificar')
@@ -889,14 +1037,14 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
                        f'{ida.corriente:+.0f} mA de pico con u = {u:+}, que no se '
                        f'despegan del ruido del canal ({umbral:.0f} mA): el motor '
                        f'consume muy poco para que el signo signifique algo')
-            elif ida.corriente < 0 and 'iinvert' not in self._params:
+            elif ida.corriente < 0 and 'cur_invert' not in self._params:
                 report('signo de i', False,
                        f'{ida.corriente:+.0f} mA de pico con un u positivo, y este '
                        f'sketch no declara iinvert: regrabar la placa con '
                        f'sync_board(force_upload=True), o dar vuelta el sensor')
             else:
                 if ida.corriente < 0:
-                    self.iinvert = 0 if self._iinvert else 1
+                    self.cur_invert = 0 if self._iinvert else 1
                     print(f'  la corriente sale negativa con un u positivo: '
                           f'poniendo iinvert = {self._iinvert}')
                     ida = ida._replace(corriente=-ida.corriente)
@@ -942,7 +1090,7 @@ Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
         # acá se midió y la placa no recuerda. Se devuelve y se guarda: devolverlo
         # es para quien quiera aplicarlo a mano, y guardarlo es para que
         # `sync_board()` lo aplique sin que nadie tenga que acordarse.
-        cableado = Cableado(bidir=int(self.bidir), uinvert=int(self.uinvert),
+        cableado = Cableado(bidir=int(self.mot_bidir), uinvert=int(self.mot_invert),
                             iinvert=self._iinvert, ok=not bad)
         ruta = cableado.guardar()
         print(f'cableado de este banco: {cableado}\n'

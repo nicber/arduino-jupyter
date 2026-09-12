@@ -175,13 +175,18 @@ check('dt leido del dispositivo', abs(dev.dt - 0.001) < 1e-9, str(dev.dt))
 # --------------------------------------------------------------------- salud
 # Una captura pone en cero los contadores que el dispositivo declara, asi que lo
 # que vuelve describe esa captura y no todo lo ocurrido desde que arranco la placa.
+#
+# Cada contador tiene dos nombres: la clave con la que queda en df.attrs y el
+# parametro del dispositivo del que sale. El primero es el vocabulario del
+# notebook y es estable; el segundo lleva prefijo de modulo y es del sketch.
 uno = FakeUno()
-uno.params['missed']  = ('u16', 0, 77)     # resabio de alguna corrida anterior
-uno.params['maxlate'] = ('u16', 0, 900)
+uno.params['lop_missed'] = ('u16', 0, 77)     # resabio de alguna corrida anterior
+uno.params['lop_late']   = ('u16', 0, 900)
 dev4 = connect(uno)
 
-check('se descubren los contadores de salud',
-      dev4._health == ('missed', 'maxlate', 'sovr', 'serr'), str(dev4._health))
+check('se descubren los contadores del lazo',
+      dev4._health == (('missed', 'lop_missed'), ('maxlate', 'lop_late')),
+      str(dev4._health))
 
 df = dev4.capture(0.15)
 check('los contadores viejos se ponen en cero antes de la corrida', df.attrs['missed'] == 0
@@ -190,7 +195,7 @@ check('una captura limpia no informa nada', df.attrs['health'] == [], str(df.att
 
 # Ahora un dispositivo que pierde periodos, llega tarde y descarta filas mientras
 # emite.
-uno = FakeUno(unhealthy={'missed': 12, 'maxlate': 950, 'serr': 3}, drops=4)
+uno = FakeUno(unhealthy={'lop_missed': 12, 'lop_late': 950}, drops=4)
 dev5 = connect(uno)
 df = dev5.capture(0.15, warn=False)
 
@@ -199,21 +204,48 @@ notes = ' | '.join(df.attrs['health'])
 check('se explican los periodos perdidos', 'perdieron' in notes and '12' in notes, notes)
 check('se explica la atencion tardia', '950 us' in notes, notes)
 check('se explican las filas descartadas', 'descartaron' in notes, notes)
-check('se explican los errores del sensor', 'transferencia(s) del sensor' in notes, notes)
-check('los contadores sanos se quedan callados', 'desborde' not in notes, notes)
 check('health() los lee directamente', dev5.health()['missed'] == 12, str(dev5.health()))
 
 import ctrllink as _cl
 
-# ------------------------------------------------- sensor ausente en el bus
-# `spres` es estado, no una cuenta: dice si el AS5600 contesta *ahora*. Es lo
-# que separa un iman mal montado -- el sensor contesta y se queja del iman -- de
-# un sensor que no esta en el bus.
-check('se descubren los parametros de estado', dev._state == ('spres', 'mstat'),
-      str(dev._state))
+# ------------------------------------------- el enlace no sabe de ningun sensor
+# Lo que sigue es la propiedad que hace que este modulo sirva para otro equipo, y
+# la que se habia perdido: las quejas sobre una captura nombraban el AS5600 y sus
+# pines desde aca adentro.
+#
+# Un dispositivo con todo roto, y un enlace pelado: lo que vuelve tiene que hablar
+# del lazo y de nada mas.
+uno = FakeUno(unhealthy={'lop_missed': 5, 'ang_err': 3, 'ang_ovr': 7,
+                         'ang_present': 0})
+pelado = connect(uno)
+df = pelado.capture(0.15, warn=False)
+notes = ' | '.join(df.attrs['health'])
 
-uno = FakeUno(unhealthy={'spres': 0, 'serr': 2})
-dev6 = connect(uno)
+for palabra in ('AS5600', 'SDA', 'SCL', 'pull-up', 'motor', 'sensor', 'iman',
+                'angulo'):
+    check(f'un enlace pelado no menciona {palabra}', palabra not in notes, notes)
+
+check('y tampoco pide los contadores del sensor', pelado._state == (), str(pelado._state))
+check('pero si informa lo del lazo', 'perdieron' in notes, notes)
+
+# ------------------------------------------------- sensor ausente en el bus
+# Con un colaborador que sepa que hay un AS5600, en cambio, aparece todo eso. El
+# estado dice si el sensor contesta *ahora*, que es lo que separa un iman mal
+# montado -- el sensor contesta y se queja del iman -- de un sensor que no esta.
+from bench import DiagnosticoDeBanco
+
+uno = FakeUno()
+con_diag = connect(uno, diagnostico=DiagnosticoDeBanco())
+check('con colaborador se descubren los contadores del sensor',
+      con_diag._health == (('missed', 'lop_missed'), ('maxlate', 'lop_late'),
+                           ('sovr', 'ang_ovr'), ('serr', 'ang_err')),
+      str(con_diag._health))
+check('y los parametros de estado',
+      con_diag._state == (('spres', 'ang_present'), ('mstat', 'ang_status')),
+      str(con_diag._state))
+
+uno = FakeUno(unhealthy={'ang_present': 0, 'ang_err': 2})
+dev6 = connect(uno, diagnostico=DiagnosticoDeBanco())
 df = dev6.capture(0.15, warn=False)
 notes = ' | '.join(df.attrs['health'])
 check('el sensor ausente se informa', df.attrs['spres'] == 0, str(df.attrs['spres']))
@@ -223,17 +255,18 @@ check('el sondeo al sensor ausente no se cuenta como intermitencia',
       'transferencia(s) del sensor' not in notes, notes)
 
 # Con el sensor presente, en cambio, las fallas sueltas si son intermitencias.
-uno = FakeUno(unhealthy={'serr': 2})
-dev7 = connect(uno)
+uno = FakeUno(unhealthy={'ang_err': 2})
+dev7 = connect(uno, diagnostico=DiagnosticoDeBanco())
 df = dev7.capture(0.15, warn=False)
 notes = ' | '.join(df.attrs['health'])
 check('con el sensor presente las fallas sueltas se informan',
       'transferencia(s) del sensor' in notes, notes)
+check('los contadores sanos se quedan callados', 'desborde' not in notes, notes)
 
 # El estado no se pone en cero antes de una captura: hacerlo seria inventar una
-# lectura, y ademas dejaria `spres` diciendo "ausente" en cada corrida.
+# lectura, y ademas dejaria el sensor diciendo "ausente" en cada corrida.
 check('el estado no se pone en cero antes de la corrida',
-      dev7._uno_raw('spres') == 1, str(dev7._uno_raw('spres')))
+      dev7._uno_raw('ang_present') == 1, str(dev7._uno_raw('ang_present')))
 
 # ---------------------------------------------- fin de captura sin carrera
 # El dispositivo contesta "# end ..." y despues "# ok". Darse por satisfecho con

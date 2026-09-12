@@ -14,13 +14,15 @@ import numpy as np
 PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           'ref': ('i16', 0, 0), 'mode': ('u8', 0, 0),
           'kq': ('i32', 22, 0), 'alpha': ('i32', 16, 65536),
-          # Contadores de salud, tal como los declara ControlDemo. La computadora
-          # los descubre por nombre y los pone en cero antes de cada captura.
-          'missed': ('u16', 0, 0), 'maxlate': ('u16', 0, 0),
-          'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0),
+          # Contadores de salud, con los nombres que les pone ControlDemo. La
+          # computadora los descubre por nombre y los pone en cero antes de cada
+          # captura. Los dos primeros son del lazo y los conoce ctrllink; los otros
+          # dos son del sensor, asi que solo los pide quien sepa que hay un sensor.
+          'lop_missed': ('u16', 0, 0), 'lop_late': ('u16', 0, 0),
+          'ang_ovr': ('u16', 0, 0), 'ang_err': ('u16', 0, 0),
           # Estado, no cuentas: la computadora los lee despues de una captura
           # pero no los pone en cero antes.
-          'spres': ('u8', 0, 1), 'mstat': ('u8', 0, 0x20)}
+          'ang_present': ('u8', 0, 1), 'ang_status': ('u8', 0, 0x20)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
          ('e', 'i16', 0.0878906, 'deg'), ('u', 'i16', 1.0, 'pwm')]
 WIDTH = {'i16': 4, 'u16': 4, 'u8': 2, 'i32': 8, 'f32': 8}
@@ -229,9 +231,16 @@ class FakeSerial:
         self.is_open = False
 
 
-def connect(uno):
+def connect(uno, diagnostico=None):
+    """Un CtrlLink enganchado a un dispositivo de mentira.
+
+    `diagnostico` es el colaborador que sepa qué equipo hay del otro lado. Sin él
+    el enlace informa lo del lazo y nada más, que es justamente lo que hay que
+    poder verificar: que ctrllink no sabe nada de ningún sensor.
+    """
     import ctrllink
     dev = ctrllink.CtrlLink.__new__(ctrllink.CtrlLink)
+    dev._diag = diagnostico
     dev.ser = FakeSerial(uno)
     dev.info = dev.sync()
     dev._params = dev._read_params()

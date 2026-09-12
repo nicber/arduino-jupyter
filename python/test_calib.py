@@ -233,10 +233,10 @@ class FakeUnoConLut(FakeUno):
         super().__init__(**kw)
         self.lut = [0] * 64
         self.params = dict(self.params)
-        self.params['lutw'] = ('u32', 0, 0xFFFFFFFF)
-        self.params['lutsum'] = ('u16', 0, 0)
-        self.params['cal'] = ('u8', 0, 0)
-        self.params['sfilt'] = ('u8', 0, 3)
+        self.params['ang_lutw'] = ('u32', 0, 0xFFFFFFFF)
+        self.params['ang_lutsum'] = ('u16', 0, 0)
+        self.params['ang_cal'] = ('u8', 0, 0)
+        self.params['ang_filt'] = ('u8', 0, 3)
         self.lutw_aplicado = 0xFFFFFFFF
 
     def command(self, cmd):
@@ -248,7 +248,7 @@ class FakeUnoConLut(FakeUno):
             self.refresh_tuning()
 
     def refresh_tuning(self):
-        lutw = self.params['lutw'][2] & 0xFFFFFFFF
+        lutw = self.params['ang_lutw'][2] & 0xFFFFFFFF
 
         if lutw != self.lutw_aplicado:
             self.lutw_aplicado = lutw
@@ -264,7 +264,7 @@ class FakeUnoConLut(FakeUno):
                 a = (a + byte) & 0xFF
                 b = (b + a) & 0xFF
 
-        self.params['lutsum'] = ('u16', 0, (b << 8) | a)
+        self.params['ang_lutsum'] = ('u16', 0, (b << 8) | a)
 
     def lut_lookup(self, counts):
         i = (counts >> 6) & 63
@@ -276,16 +276,16 @@ class FakeUnoConLut(FakeUno):
 uno = FakeUnoConLut()
 dev = connect(uno)
 
-check('el dispositivo arranca sin calibrar', uno.params['cal'][2] == 0)
+check('el dispositivo arranca sin calibrar', uno.params['ang_cal'][2] == 0)
 check('el dispositivo arranca con la tabla en cero', all(v == 0 for v in uno.lut))
 
 cal.aplicar(dev)
 
 check('la tabla llega entera', uno.lut == cal.lut, f'{uno.lut[:4]} vs {cal.lut[:4]}')
 check('la suma del dispositivo coincide con la de la computadora',
-      uno.params['lutsum'][2] == cal.checksum(),
-      f'{uno.params["lutsum"][2]:#06x} vs {cal.checksum():#06x}')
-check('aplicar deja la correccion prendida', uno.params['cal'][2] == 1)
+      uno.params['ang_lutsum'][2] == cal.checksum(),
+      f'{uno.params["ang_lutsum"][2]:#06x} vs {cal.checksum():#06x}')
+check('aplicar deja la correccion prendida', uno.params['ang_cal'][2] == 1)
 check('esta_puesta lo confirma', calib.esta_puesta(dev, cal))
 
 # Y las dos implementaciones de la interpolación tienen que coincidir cuenta por
