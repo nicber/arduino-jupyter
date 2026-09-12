@@ -9,9 +9,9 @@ lado.
     from ctrllink import CtrlLink
 
     dev = CtrlLink()                    # o CtrlLink('COM3'), o '/dev/ttyACM0'
-    dev.pid_kp, dev.pid_ki = 2.5, 0.1
-    df = dev.step('ctl_ref', 1024, pre=0.1, post=0.9)
-    df.plot(x='t', y=['ref', 'y_uw'])
+    dev.ctl_uff = 100
+    df = dev.step('ctl_uff', 200, pre=0.3, post=1.2)
+    df.plot(x='t', y=['u', 'y_uw'])
 
 Los nombres de ese ejemplo son los del sketch de este proyecto y no del protocolo:
 los parámetros salen de la tabla del dispositivo, así que cada sketch trae los
