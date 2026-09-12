@@ -128,13 +128,33 @@ static const float    SENSE_MV_PER_A  = 185.0f;
 // La referencia del ADC, que es la única perilla de ganancia que tiene el AVR de
 // este lado, y es una elección entre techo y resolución.
 //
-// Manda el techo, así que por omisión va la referencia alta. La entrada no puede
-// pasar de la referencia sin recortar, y un ACS712 es un sensor bipolar: reposa en
-// la mitad de su alimentación --2,5 V con 5 V-- para poder bajar cuando la
-// corriente cambia de sentido. Contra la referencia interna de 1,1 V ese sensor
-// satura en reposo, o sea que no mide nada y encima se ve igual que una entrada al
-// aire. Con la alta reposa en media escala, que es exactamente donde tiene que
-// estar para medir los dos sentidos.
+// Por omisión va la referencia alta, que es Vcc, y no sólo por el techo. Un ACS712
+// es un sensor bipolar y ratiométrico: reposa en la mitad de su alimentación
+// --2,5 V con 5 V-- para poder bajar cuando la corriente cambia de sentido. Medir
+// esa salida contra Vcc es medirla contra la misma tensión que la produce, así que
+// el reposo cae en media escala por construcción, valga Vcc 4,8 o 5,1 y sea cual
+// sea la placa. No hay un cero por placa que averiguar: son 2048 cuentas y listo,
+// que es lo que dice SENSE_ZERO acá abajo.
+//
+// Contra la referencia interna de 1,1 V, en cambio, ese mismo sensor satura en
+// reposo: no mide nada, y desde el ADC se ve igual que una entrada al aire.
+//
+// Vcc es REFS=01 en las dos placas del banco. En el ATmega es AVcc, y en el
+// LGT8F328P es lo que el core lgt8fx llama DEFAULT, que también vale 1. Las otras
+// tres que ese core declara por nombre --INTERNAL1V024 = 3, INTERNAL2V048 = 2,
+// INTERNAL4V096 = 4-- no cambian esto, y la de 4,096 ni siquiera entra en los dos
+// bits de REFS.
+//
+// Y elegirla en el clon no es escribir REFS: ver startAdcReference().
+//
+// OJO que en este banco el reposo NO cae en media escala: cae en 3071 cuentas de
+// 4096, o sea tres cuartos, que contra Vcc de 5 V son 3,75 V y no los 2,5 que
+// tendría que dar un ACS712 quieto. El número es estable y repetible --no es ruido
+// ni una entrada al aire-- así que hay algo de ese sensor que todavía no está
+// entendido: con qué se lo alimenta, qué corriente lo atraviesa en reposo, o si la
+// plaqueta trae algo más que el chip. Mientras eso no se aclare, el margen queda
+// torcido: un cuarto de escala para un sentido de la corriente y tres para el
+// otro. Medir la salida del sensor con un tester es lo que lo contesta.
 //
 // Lo que se paga es resolución: un LSB pasa de 1,07 mV a 4,9, y con 185 mV/A eso
 // deja 200 mA en apenas siete u ocho cuentas. Es el precio de poder medir el
@@ -187,20 +207,14 @@ static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER
 // 1,2 V: el número es de esta placa y no del modelo, y son los 1093 mV medidos en
 // el UNO de este banco.
 //
-// En el clon es una referencia trimada de fábrica, y el banco la identificó sin
-// ambigüedad. Con REFS=11 el canal interno del multiplexor satura --entrada y
-// referencia son la misma tensión-- y con REFS=01 da 1025 cuentas de 4096, que es
-// 0,2502. Eso dice que REFS=11 vale 1,024 V y REFS=01 vale 4,096: dos de las tres
-// que el LGT8F declara por nombre, y con cuatro decimales de acuerdo.
+// En el clon la interna es una referencia trimada de fábrica y vale 1,024 V, no
+// los 1,1 del ATmega. Son un 6 % de diferencia, no un factor de cuatro: el factor
+// de cuatro era el ancho del conversor y ya está corregido más arriba.
 //
-// Las dos elecciones difieren, entonces, en las dos placas, y esta constante lleva
-// las dos del clon: con la interna corre contra 1,024 V y no contra los 1,1 del
-// ATmega --un 6 % de diferencia, no un factor de cuatro; el factor de cuatro era
-// el ancho del conversor y ya está corregido más arriba-- y con la alta corre
-// contra 4,096 V y no contra los 5,006 de AVcc, que es un 22 %. Ese 22 % es plata:
-// son los mA que se informan, y dárselos al clon medidos con la regla del UNO
-// dejaría todo el canal alto en la misma proporción.
-static const float    ADC_REF_MV_LGT8F = SENSE_REF_INTERNAL ? 1024.0f : 4096.0f;
+// Esta constante es sólo para esa elección. La alta no la necesita: las dos placas
+// corren a 5 V y la referencia alta es Vcc en las dos, así que ADC_REF_MV sirve
+// para ambas.
+static const float    ADC_REF_MV_LGT8F = 1024.0f;
 
 // `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
 // menos de una cuenta por período sin que la cuantización la anule.
@@ -669,8 +683,52 @@ static void startMotorPwm(void)
 // inmediatamente lanza el siguiente. El costo es un período de muestreo de
 // retardo en `i`; el ahorro son 112 us de bloqueo dentro de un período de control
 // de 1000 us.
+// En el LGT8F328P los bits REFS del ADMUX NO eligen la referencia. La eligen
+// DACON, VCAL y el bit REFS2 de ADCSRD, y REFS queda de resabio porque el core
+// lgt8fx lo escribe igual --`ADMUX = analog_reference << 6`-- después de haber
+// configurado los otros tres. Ver analogReference() en su wiring_analog.c.
+//
+// Un sketch que escriba sólo REFS, como hacía éste, no elige nada en esa placa: la
+// referencia queda en lo que haya quedado de antes. Eso explica por qué la misma
+// lectura del canal interno daba números distintos en corridas distintas, que está
+// anotado en BoardStart.h como una rareza y es en realidad esto.
+//
+// Las dos placas del banco corren el mismo binario y el core es el del ATmega, así
+// que estos registros no existen por nombre y van por dirección. Sólo se los toca
+// cuando la placa es la del ADC de 12 bits: en el UNO 0xA0 y 0xAD no son
+// registros, y no hay por qué escribirles.
+static const uint16_t LGT_DACON  = 0xA0;
+static const uint16_t LGT_ADCSRD = 0xAD;
+static const uint16_t LGT_VCAL   = 0xC8;
+static const uint16_t LGT_VCAL1  = 0xCD;   // el valor de calibración de 1,024 V
+static const uint8_t  LGT_REFS2  = 6;
+
+static void startAdcReference(void)
+{
+    if (g_adcfs < ADC_FULL)
+    {
+        return;                 // un ATmega: los bits REFS alcanzan y son los suyos
+    }
+
+    _SFR_MEM8(LGT_ADCSRD) &= (uint8_t)~_BV(LGT_REFS2);
+
+    if (SENSE_REF_INTERNAL)
+    {
+        // La referencia interna, con VCAL cargado con la calibración de 1,024 V.
+        _SFR_MEM8(LGT_DACON) = (uint8_t)((_SFR_MEM8(LGT_DACON) & 0x0C) | 0x02);
+        _SFR_MEM8(LGT_VCAL)  = _SFR_MEM8(LGT_VCAL1);
+    }
+    else
+    {
+        // DEFAULT del core: Vcc, que es la misma elección que REFS=01 en el UNO.
+        _SFR_MEM8(LGT_DACON) &= 0x0C;
+    }
+}
+
 static void startAdc(void)
 {
+    startAdcReference();
+
     ADMUX  = (SENSE_REF_INTERNAL ? (_BV(REFS1) | _BV(REFS0)) : _BV(REFS0))
            | (SENSE_CHANNEL & 0x07);
     ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0) | _BV(ADSC);
@@ -1275,10 +1333,9 @@ void setup()
     // La escala del canal de corriente, que depende de la referencia y por lo
     // tanto de la placa. Con AVcc las dos miden lo mismo; con la referencia
     // interna no.
-    // Cuál de las dos placas es, y nada más: cada constante ya trae adentro la
-    // referencia que le toca según SENSE_REF_INTERNAL.
     {
-        const float ref = (g_adcfs >= ADC_FULL) ? ADC_REF_MV_LGT8F : ADC_REF_MV;
+        const float ref = (SENSE_REF_INTERNAL && g_adcfs >= ADC_FULL)
+                        ? ADC_REF_MV_LGT8F : ADC_REF_MV;
         g_imalsb = (uint16_t)(256.0f * 1000.0f * (ref / ADC_FULL)
                               / SENSE_MV_PER_A + 0.5f);
     }

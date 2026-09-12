@@ -535,12 +535,14 @@ class Bench(CtrlLink):
                    'ADC de 10 bits, el del ATmega328P; las lecturas se corren '
                    '2 bits para contar en 12')
 
-            # La referencia interna, que es la ganancia del canal de corriente.
-            # En el ATmega la medición se interpreta: es el bandgap contra AVcc,
-            # y con AVcc medido una vez con un tester queda el número que va en
-            # ADC_REF_MV. En el clon no se interpreta, y decirlo es mejor que
-            # ofrecer una cuenta que parece una calibración y no lo es: los bits
-            # REFS del ADMUX son los del ATmega y ese chip tiene los suyos.
+            # La referencia interna, que es la ganancia del canal de corriente
+            # cuando se la elige. El divisor de esta cuenta es Vcc en las dos
+            # placas --REFS=01 es AVcc en el ATmega y DEFAULT en el LGT8F, y los
+            # dos valen 1-- así que la razón significa lo mismo acá y allá. Lo que
+            # cambia es el numerador: en el ATmega el canal interno es el bandgap
+            # de 1,1 V y la cuenta cierra en ADC_REF_MV; en el clon ese canal no es
+            # ese bandgap, así que la misma razón no da ADC_REF_MV y ofrecerla
+            # sería ofrecer una calibración que no lo es.
             if bg and fondo <= 1024:
                 report('referencia', None,
                        f'bandgap {bg} cuentas de {fondo}: la referencia interna '
@@ -549,11 +551,12 @@ class Bench(CtrlLink):
                        f'en ADC_REF_MV de ControlDemo.ino')
             elif bg:
                 report('referencia', None,
-                       f'{bg} cuentas de {fondo} contra una referencia que este '
-                       f'core no sabe cual es: los bits REFS son los del ATmega y '
-                       f'el clon tiene los suyos. No usar esto para calibrar el '
-                       f'canal de corriente; para eso hace falta el core lgt8fx, '
-                       f'que declara las referencias por nombre')
+                       f'{bg} cuentas de {fondo} contra Vcc, que es contra lo que '
+                       f'mide REFS=01 tambien en este chip. Pero el canal interno '
+                       f'del clon no es el bandgap de 1,1 V del ATmega, asi que '
+                       f'esta razon no da ADC_REF_MV: no usarla para calibrar el '
+                       f'canal de corriente. Con la referencia alta no hace falta, '
+                       f'porque es Vcc y el ACS712 reposa en media escala sola')
 
         # 3. Los cables del bus, medidos por la placa antes de encender el TWI.
         #    Va antes que el sensor a propósito: si el sensor no contesta, esta
