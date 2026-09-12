@@ -162,7 +162,7 @@ def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0, sfilt=3):
     dev.ctl_mode = 0
     dev.ang_offset = 0
     dev.ang_cal = 0
-    dev.ang_filt = sfilt
+    dev.ang_sfilt = sfilt
     dev.ctl_uff = uff
 
     try:
@@ -176,7 +176,7 @@ def regimen(dev, uff, duracion=20.0, sfilt=3, cal=0):
     dev.ctl_mode = 0
     dev.ang_offset = 0
     dev.ang_cal = cal
-    dev.ang_filt = sfilt
+    dev.ang_sfilt = sfilt
     dev.ctl_uff = uff
 
     try:

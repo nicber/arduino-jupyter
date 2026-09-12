@@ -275,7 +275,7 @@ clones de UNO y el que suele darse por limitado a velocidades bajas, y aguantó
 1 Mbaud sin perder una sola fila. El retardo de atención es el costo honesto de
 correr la ley de control dentro de `loop()` al lado del manejo del puerto serie;
 el muestreo en sí es rígido, porque lo gobierna el Timer2, así que un cálculo
-tardío aparece como fluctuación en `u`, no en `y`. `lop_late` lo informa, y se
+tardío aparece como fluctuación en `u`, no en `y`. `loop_late` lo informa, y se
 puede escribir, así que conviene ponerlo en cero antes de una corrida para medir
 esa corrida.
 

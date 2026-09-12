@@ -18,8 +18,8 @@ PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           # computadora los descubre por nombre y los pone en cero antes de cada
           # captura. Los dos primeros son del lazo y los conoce ctrllink; los otros
           # dos son del sensor, asi que solo los pide quien sepa que hay un sensor.
-          'lop_missed': ('u16', 0, 0), 'lop_late': ('u16', 0, 0),
-          'ang_ovr': ('u16', 0, 0), 'ang_err': ('u16', 0, 0),
+          'loop_missed': ('u16', 0, 0), 'loop_late': ('u16', 0, 0),
+          'ang_busovr': ('u16', 0, 0), 'ang_buserr': ('u16', 0, 0),
           # Estado, no cuentas: la computadora los lee despues de una captura
           # pero no los pone en cero antes.
           'ang_present': ('u8', 0, 1), 'ang_status': ('u8', 0, 0x20)}

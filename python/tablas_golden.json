@@ -76,7 +76,7 @@
       "frac": "0"
     },
     {
-      "nombre": "ang_filt",
+      "nombre": "ang_sfilt",
       "tipo": "CTRL_U8",
       "frac": "0"
     },
@@ -121,12 +121,12 @@
       "frac": "0"
     },
     {
-      "nombre": "ang_ovr",
+      "nombre": "ang_busovr",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
     {
-      "nombre": "ang_err",
+      "nombre": "ang_buserr",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
@@ -146,37 +146,37 @@
       "frac": "CurrentSense::Alpha::FRAC"
     },
     {
-      "nombre": "cur_malsb",
+      "nombre": "cur_ma_lsb",
       "tipo": "CTRL_U16",
       "frac": "8"
     },
     {
-      "nombre": "brd_adcfs",
+      "nombre": "board_adcfs",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
     {
-      "nombre": "brd_bgadc",
+      "nombre": "board_bgadc",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
     {
-      "nombre": "brd_bus",
+      "nombre": "board_bus",
       "tipo": "CTRL_U8",
       "frac": "0"
     },
     {
-      "nombre": "lop_div",
+      "nombre": "loop_div",
       "tipo": "CTRL_U8",
       "frac": "0"
     },
     {
-      "nombre": "lop_late",
+      "nombre": "loop_late",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
     {
-      "nombre": "lop_missed",
+      "nombre": "loop_missed",
       "tipo": "CTRL_U16",
       "frac": "0"
     }

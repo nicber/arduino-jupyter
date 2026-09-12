@@ -236,7 +236,7 @@ class FakeUnoConLut(FakeUno):
         self.params['ang_lutw'] = ('u32', 0, 0xFFFFFFFF)
         self.params['ang_lutsum'] = ('u16', 0, 0)
         self.params['ang_cal'] = ('u8', 0, 0)
-        self.params['ang_filt'] = ('u8', 0, 3)
+        self.params['ang_sfilt'] = ('u8', 0, 3)
         self.lutw_aplicado = 0xFFFFFFFF
 
     def command(self, cmd):

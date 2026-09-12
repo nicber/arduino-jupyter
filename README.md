@@ -293,7 +293,7 @@ Los parámetros son atributos, siempre en unidades reales:
 | `target` | `POSITION` o `CURRENT`: sobre qué magnitud cierra el lazo |
 | `ref`, `refrate` | referencia y pendiente de rampa, en unidades del `target` |
 | `ctl_uff` | comando de lazo abierto / prealimentación |
-| `lop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
+| `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
 | `bidir` | 1 si el puente acciona en los dos sentidos; 0 lo recorta en cero |
 | `uinvert` | 1 si un comando positivo hace *bajar* el ángulo medido |
 | `iinvert` | 1 si un comando positivo da una corriente *negativa* |
@@ -302,7 +302,7 @@ Los parámetros son atributos, siempre en unidades reales:
 | `ang_offset` | cuenta del sensor de ángulo que se lee como cero |
 | `izero` | LSB del ADC que se lee como corriente cero |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
-| `ang_filt` | filtro lento del AS5600: 0 es 16x (2,2 ms de retardo), 3 es 2x (0,286 ms) |
+| `ang_sfilt` | filtro lento del AS5600: 0 es 16x (2,2 ms de retardo), 3 es 2x (0,286 ms) |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `maxlate`, `missed`, `sovr`, `serr` | contadores de salud del lazo |
 | `spres`, `mstat` | estado del sensor: si contesta en el bus, y qué dice del imán |
@@ -394,7 +394,7 @@ control tanto como a la medición.
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
-| se pierden períodos de control | subir `lop_div`, o sacarle trabajo al paso de control |
+| se pierden períodos de control | subir `loop_div`, o sacarle trabajo al paso de control |
 | se descartan filas de telemetría | subir `dec`, o emitir menos canales |
 
 Toda captura verifica su propia salud y avisa por `stderr` si el lazo perdió
@@ -430,6 +430,31 @@ los pines 9 y 10.
 
 ---
 
+## Encontrar las perillas
+
+No hay ninguna lista de parámetros escrita del lado de Python. La placa declara su
+tabla al conectarse, así que se le pregunta a ella:
+
+```python
+dev                      # en un notebook: la tabla entera, agrupada por subsistema
+print(dev.describe())    # lo mismo como texto
+dev.describe('ang')      # sólo lo del sensor de ángulo
+```
+
+Cada fila trae el valor de ahora, la unidad, y si el parámetro es una **perilla**
+--se fija--, una **lectura** --la placa la publica-- o una **cuenta** --un total que
+se puede poner en cero--. El nombre lleva un prefijo que dice de quién es: `ctl_`
+qué se le pide al lazo, `pid_` la ley de control, `mot_` el puente, `ang_` el sensor
+de ángulo, `cur_` la corriente, `loop_` el reloj y `board_` lo que la placa mide de
+sí misma. Con eso `dev.ang_<TAB>` lista todo lo del sensor.
+
+Las explicaciones viven en `python/catalogo.py` y no en el firmware, porque son
+texto para una persona y el firmware tiene 32 kB. Que no se desactualicen no depende
+de nadie: `test_catalogo.py` compara ese archivo contra la tabla del sketch y falla
+si sobra o falta una entrada.
+
+---
+
 ## Organización
 
 ```
@@ -452,10 +477,12 @@ libraries/BoardStart/    el reloj, el ADC y el bus, antes de todo lo demás
 test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y unidades de este equipo
+python/catalogo.py       qué significa cada parámetro, y cómo mostrarlo
 python/calib.py          calibración del AS5600: medición, decisión y tabla
 python/banco_simulado.py un banco de mentira, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware ni compilar
+                         (test_notebooks.py además corre los notebooks simulados)
 notebooks/               los notebooks: hardware, demostración y calibración
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es

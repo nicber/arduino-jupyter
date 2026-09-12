@@ -24,11 +24,11 @@
 // Lo que queda acá es lo que de verdad es de este sketch y de ningún módulo: qué
 // pines, qué sensor, qué escalas, y el orden en el que las cosas arrancan.
 //
-// El Timer2 muestrea el AS5600 a 5 kHz; cada `lop_div` muestras se ejecuta la ley
-// de control, así que la frecuencia del lazo es 5000/lop_div Hz y por omisión vale
+// El Timer2 muestrea el AS5600 a 5 kHz; cada `loop_div` muestras se ejecuta la ley
+// de control, así que la frecuencia del lazo es 5000/loop_div Hz y por omisión vale
 // 500 Hz. De esa manera el muestreo mantiene un período rígido aun cuando el
-// cálculo de control fluctúe. `lop_late` informa cuánta fluctuación hubo y
-// `lop_missed` cuenta los períodos de control que se saltearon del todo.
+// cálculo de control fluctúe. `loop_late` informa cuánta fluctuación hubo y
+// `loop_missed` cuenta los períodos de control que se saltearon del todo.
 //
 // La ley de control es aritmética entera de punta a punta; ver ControlMath. Y
 // también lo es cada parámetro que lee: cada uno se guarda en la forma de punto
@@ -54,7 +54,7 @@
 //
 // La tabla de canales por omisión son 45 bytes por fila, o el 23 % del enlace a
 // 500 Hz, que es el "bastante por debajo de la mitad" que le gusta a este
-// protocolo. Bajar `lop_div` a 5 devuelve el lazo a 1 kHz y lleva la fila al
+// protocolo. Bajar `loop_div` a 5 devuelve el lazo a 1 kHz y lleva la fila al
 // 45 %, que ya es demasiado: ahí conviene subir `dec` o sacar un canal.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
@@ -185,7 +185,7 @@ static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER
 // Y la referencia interna no vale lo mismo en las dos placas, así que la escala de
 // arriba es la del ATmega y nada más. La tabla de canales viaja en flash con una
 // constante compilada y no se puede corregir al arrancar; lo que sí se calcula al
-// arrancar es `cur_malsb`, y con eso la computadora corrige la escala de `i`.
+// arrancar es `cur_ma_lsb`, y con eso la computadora corrige la escala de `i`.
 //
 // En el ATmega la referencia interna es el bandgap, especificado entre 1,0 y
 // 1,2 V: el número es de esta placa y no del modelo, y son los 1093 mV medidos en
@@ -358,7 +358,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_offset",  CTRL_I16, &g_angle.offset,      0                 },
     { "ang_alpha",   CTRL_I32, &g_alpha_y,           Angle::Alpha::FRAC },
     { "ang_cal",     CTRL_U8,  &g_cal,               0                 },
-    { "ang_filt",    CTRL_U8,  &g_sfilt.want,        0                 },
+    { "ang_sfilt",    CTRL_U8,  &g_sfilt.want,        0                 },
     { "ang_lutw",    CTRL_U32, &g_lutw,              0                 },
     { "ang_lutsum",  CTRL_U16, &g_lutsum,            0                 },
     { "ang_y",       CTRL_I16, &g_angle.y,           0                 },
@@ -367,21 +367,21 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_present", CTRL_U8,  &g_health.present,    0                 },
     { "ang_agc",     CTRL_U8,  &g_health.agc,        0                 },
     { "ang_mag",     CTRL_U16, &g_health.magnitude,  0                 },
-    { "ang_ovr",     CTRL_U16, &g_health.overruns,   0                 },
-    { "ang_err",     CTRL_U16, &g_health.errors,     0                 },
+    { "ang_busovr",     CTRL_U16, &g_health.overruns,   0                 },
+    { "ang_buserr",     CTRL_U16, &g_health.errors,     0                 },
 
     { "cur_zero",    CTRL_I16, &g_current.zero,      0                 },
     { "cur_invert",  CTRL_U8,  &g_current.invert,    0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           CurrentSense::Alpha::FRAC },
-    { "cur_malsb",   CTRL_U16, &g_board.malsb,       8                 },
+    { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
 
-    { "brd_adcfs",   CTRL_U16, &g_board.adcfs,       0                 },
-    { "brd_bgadc",   CTRL_U16, &g_board.bgadc,       0                 },
-    { "brd_bus",     CTRL_U8,  &g_board.bus,         0                 },
+    { "board_adcfs",   CTRL_U16, &g_board.adcfs,       0                 },
+    { "board_bgadc",   CTRL_U16, &g_board.bgadc,       0                 },
+    { "board_bus",     CTRL_U8,  &g_board.bus,         0                 },
 
-    { "lop_div",     CTRL_U8,  &g_clock.divide,      0                 },
-    { "lop_late",    CTRL_U16, &g_clock.late,        0                 },
-    { "lop_missed",  CTRL_U16, &g_clock.missed,      0                 },
+    { "loop_div",     CTRL_U8,  &g_clock.divide,      0                 },
+    { "loop_late",    CTRL_U16, &g_clock.late,        0                 },
+    { "loop_missed",  CTRL_U16, &g_clock.missed,      0                 },
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;

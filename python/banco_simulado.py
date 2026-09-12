@@ -20,6 +20,8 @@ from collections import namedtuple
 import numpy as np
 import pandas as pd
 
+import catalogo
+
 CUENTAS = 4096
 GRADOS_POR_CUENTA = 360.0 / CUENTAS
 
@@ -73,12 +75,16 @@ class BancoSimulado:
         # encontró test_simulado.py.
         self.ctl_rate = 0
         self.ang_cal = 0
-        self.ang_filt = sfilt
-        self.lop_div = 10
+        self.ang_sfilt = sfilt
+        self.loop_div = 10
         self.pid_kp = self.pid_ki = self.pid_kd = 0.0
 
         self.lut = [0] * 64
-        self._lutw = 0xFFFFFFFF
+        # El parámetro por el que se cargan las entradas, y el valor ya aplicado.
+        # Son dos porque una escritura repetida no tiene que volver a aplicarse, que
+        # es lo que hace la placa.
+        self.ang_lutw = 0xFFFFFFFF
+        self._lutw_aplicado = 0xFFFFFFFF
 
         # Los del cableado, que el notebook de hardware lee y escribe igual que
         # en la placa. No cambian el modelo --el motor de mentira gira siempre
@@ -92,7 +98,25 @@ class BancoSimulado:
         self.mot_top = 8000
         self.ang_alpha = self.cur_alpha = self.pid_alpha = 1.0
 
-        self.dt = self.lop_div / 5000.0
+        # Las lecturas que la placa publica. Acá son valores de un banco sano y
+        # fijos, y están para que la tabla que muestra `dev` sea la misma con el
+        # cable enchufado y sin él: una celda que lee `dev.ang_present` no se cae
+        # por correr sin placa, y quien mira la lista ve la misma lista.
+        self.ang_y = self.ang_y_uw = 0
+        self.ang_present = 1
+        self.ang_status = 0x20          # imán detectado, ni débil ni fuerte
+        self.ang_agc = 128              # media escala: la distancia correcta
+        self.ang_mag = 1800
+        self.ang_busovr = self.ang_buserr = 0
+        self.loop_late = 600
+        self.loop_missed = 0
+        self.board_adcfs = 4096
+        self.board_bgadc = 1027
+        self.board_bus = 0
+        self.cur_ma_lsb = CANALES['i'].scale
+        self.dec = 1
+
+        self.dt = self.loop_div / 5000.0
         self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
         self.simulado = True
 
@@ -101,8 +125,10 @@ class BancoSimulado:
     def set(self, name, value, tries=3):
         if name == 'ang_lutw':
             value = int(value) & 0xFFFFFFFF
-            if value != self._lutw:
-                self._lutw = value
+            self.ang_lutw = value
+
+            if value != self._lutw_aplicado:
+                self._lutw_aplicado = value
                 i = value >> 16
                 if i < 64:
                     v = value & 0xFFFF
@@ -151,6 +177,50 @@ class BancoSimulado:
             return CANALES[name]
         except KeyError:
             raise KeyError(f'no hay ningun canal llamado {name!r}') from None
+
+    # ------------------------------------------------------ contarse solo
+    #
+    # Lo mismo que hace el banco de verdad, con el mismo catálogo y la misma vista,
+    # para que la primera celda de un notebook muestre la misma tabla con el cable
+    # enchufado y sin él. Lo único que cambia es que el encabezado avisa que esto es
+    # un modelo.
+    #
+    # Acá los parámetros son atributos comunes, así que la lista sale del catálogo
+    # cruzado contra lo que este objeto realmente tiene, en lugar de una tabla que
+    # declare la placa.
+
+    def _nombres(self, filtro=''):
+        # ang_lutsum no es un atributo: lo calcula get(). Se lo agrega a mano para
+        # que la lista no dependa de cómo esté implementado cada uno.
+        tiene = {n for n in catalogo.nombres_conocidos() if hasattr(self, n)}
+        tiene.add('ang_lutsum')
+        return sorted(n for n in tiene if filtro in n)
+
+    def _para_describir(self, filtro=''):
+        canales = ([(c.name, c.scale, c.unit) for c in CANALES.values()]
+                   if not filtro else ())
+
+        resumen = (f'lazo a {1 / self.dt:.0f} Hz, PWM a {self.pwm_hz:.0f} Hz, '
+                   f'{len(CANALES)} canales de telemetría  '
+                   f'-- NADA DE ESTO ES REAL: es el banco simulado')
+
+        return self.info, resumen, self._nombres(filtro), self._valor_legible, canales
+
+    def _valor_legible(self, nombre):
+        # Por get() y no por getattr(): la suma de la tabla se calcula ahí, y leer
+        # el atributo devolvería un valor viejo o ninguno.
+        valor = self.get(nombre)
+        return f'{valor:.6g}' if isinstance(valor, float) else str(valor)
+
+    def describe(self, filtro=''):
+        """Las perillas y las lecturas, agrupadas, como texto. Ver Bench.describe()."""
+        return catalogo.texto(*self._para_describir(filtro))
+
+    def __repr__(self):
+        return self.describe()
+
+    def _repr_html_(self):
+        return catalogo.html(*self._para_describir())
 
     def deg(self, degrees):
         return degrees / self.channel('y_uw').scale
@@ -339,8 +409,8 @@ class BancoSimulado:
             'ref': refs,
         })
 
-        df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.lop_div,
-                        dec=self.lop_div, dt_us=self.dt*1e6, marks=[], notes=[],
+        df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.loop_div,
+                        dec=self.loop_div, dt_us=self.dt*1e6, marks=[], notes=[],
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
                         spres=1, mstat=0x20, agc=128, mag=1800,
                         wall=float(duration), rows=len(t), drops=0,

@@ -82,8 +82,8 @@ _GARBLED = ('comando desconocido', 'comando demasiado largo', 'necesita')
 # en cero primero y lo que vuelve describe esa captura y nada más. Un dispositivo
 # que no declare alguno simplemente no lo informa: la lista se cruza contra la
 # tabla de parámetros.
-_HEALTH = (('missed', 'lop_missed'),
-           ('maxlate', 'lop_late'))
+_HEALTH = (('missed', 'loop_missed'),
+           ('maxlate', 'loop_late'))
 
 # Todo lo demás que se pueda querer saber de una captura depende del equipo, y
 # este módulo no sabe qué equipo hay del otro lado. Un sensor que no contesta, un

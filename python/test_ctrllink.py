@@ -180,12 +180,12 @@ check('dt leido del dispositivo', abs(dev.dt - 0.001) < 1e-9, str(dev.dt))
 # parametro del dispositivo del que sale. El primero es el vocabulario del
 # notebook y es estable; el segundo lleva prefijo de modulo y es del sketch.
 uno = FakeUno()
-uno.params['lop_missed'] = ('u16', 0, 77)     # resabio de alguna corrida anterior
-uno.params['lop_late']   = ('u16', 0, 900)
+uno.params['loop_missed'] = ('u16', 0, 77)     # resabio de alguna corrida anterior
+uno.params['loop_late']   = ('u16', 0, 900)
 dev4 = connect(uno)
 
 check('se descubren los contadores del lazo',
-      dev4._health == (('missed', 'lop_missed'), ('maxlate', 'lop_late')),
+      dev4._health == (('missed', 'loop_missed'), ('maxlate', 'loop_late')),
       str(dev4._health))
 
 df = dev4.capture(0.15)
@@ -195,7 +195,7 @@ check('una captura limpia no informa nada', df.attrs['health'] == [], str(df.att
 
 # Ahora un dispositivo que pierde periodos, llega tarde y descarta filas mientras
 # emite.
-uno = FakeUno(unhealthy={'lop_missed': 12, 'lop_late': 950}, drops=4)
+uno = FakeUno(unhealthy={'loop_missed': 12, 'loop_late': 950}, drops=4)
 dev5 = connect(uno)
 df = dev5.capture(0.15, warn=False)
 
@@ -215,7 +215,7 @@ import ctrllink as _cl
 #
 # Un dispositivo con todo roto, y un enlace pelado: lo que vuelve tiene que hablar
 # del lazo y de nada mas.
-uno = FakeUno(unhealthy={'lop_missed': 5, 'ang_err': 3, 'ang_ovr': 7,
+uno = FakeUno(unhealthy={'loop_missed': 5, 'ang_buserr': 3, 'ang_busovr': 7,
                          'ang_present': 0})
 pelado = connect(uno)
 df = pelado.capture(0.15, warn=False)
@@ -237,14 +237,14 @@ from bench import DiagnosticoDeBanco
 uno = FakeUno()
 con_diag = connect(uno, diagnostico=DiagnosticoDeBanco())
 check('con colaborador se descubren los contadores del sensor',
-      con_diag._health == (('missed', 'lop_missed'), ('maxlate', 'lop_late'),
-                           ('sovr', 'ang_ovr'), ('serr', 'ang_err')),
+      con_diag._health == (('missed', 'loop_missed'), ('maxlate', 'loop_late'),
+                           ('sovr', 'ang_busovr'), ('serr', 'ang_buserr')),
       str(con_diag._health))
 check('y los parametros de estado',
       con_diag._state == (('spres', 'ang_present'), ('mstat', 'ang_status')),
       str(con_diag._state))
 
-uno = FakeUno(unhealthy={'ang_present': 0, 'ang_err': 2})
+uno = FakeUno(unhealthy={'ang_present': 0, 'ang_buserr': 2})
 dev6 = connect(uno, diagnostico=DiagnosticoDeBanco())
 df = dev6.capture(0.15, warn=False)
 notes = ' | '.join(df.attrs['health'])
@@ -255,7 +255,7 @@ check('el sondeo al sensor ausente no se cuenta como intermitencia',
       'transferencia(s) del sensor' not in notes, notes)
 
 # Con el sensor presente, en cambio, las fallas sueltas si son intermitencias.
-uno = FakeUno(unhealthy={'ang_err': 2})
+uno = FakeUno(unhealthy={'ang_buserr': 2})
 dev7 = connect(uno, diagnostico=DiagnosticoDeBanco())
 df = dev7.capture(0.15, warn=False)
 notes = ' | '.join(df.attrs['health'])

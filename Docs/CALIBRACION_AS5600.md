@@ -164,7 +164,7 @@ experimento con mejor relación entre lo que cuesta y lo que dice.
 Nada de esto es la etapa de calibración todavía. Es lo mínimo para que los datos
 signifiquen algo.
 
-1. **Parámetro `ang_filt` (u8, 0..3)** que escribe los bits `SF` del CONF del AS5600.
+1. **Parámetro `ang_sfilt` (u8, 0..3)** que escribe los bits `SF` del CONF del AS5600.
    Sin esto se mide con 2,2 ms de retardo y la fase de la tabla depende de la
    velocidad. Es un registro volátil, no hay que quemar nada.
 2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, sin `ang_offset`, sin signo
@@ -195,7 +195,7 @@ sacarle una foto al conjunto imán/sensor.
 
 ### E1 — Piso de ruido (5 min)
 
-Eje quieto y sujeto, `ang_filt` en 2x, capturar 10 s. Calcular el desvío estándar de
+Eje quieto y sujeto, `ang_sfilt` en 2x, capturar 10 s. Calcular el desvío estándar de
 `y_raw` en cuentas y su espectro.
 
 Esto fija el umbral de detección de todo lo demás: nada por debajo de unas pocas
@@ -206,7 +206,7 @@ el filtro en 2x, que son 0,49 cuentas.
 
 ```python
 dev.ctl_mode, dev.ang_offset, dev.ang_cal = 0, 0, 0
-dev.ang_filt = 3                      # filtro 2x
+dev.ang_sfilt = 3                      # filtro 2x
 dev.ctl_uff = 200                      # llevarlo a velocidad
 df = dev.capture(25, events=[(3.0, 'uff', 0)])   # y soltarlo
 ```
@@ -239,7 +239,7 @@ para que la fila entre en el enlace.
 
 ### E4 — Retardo y sentido
 
-Repetir un `ctl_uff` de E3 con `ang_filt` en 16x y en 2x, en los dos sentidos. La fase
+Repetir un `ctl_uff` de E3 con `ang_sfilt` en 16x y en 2x, en los dos sentidos. La fase
 ajustada `φ_k` tiene que correrse en `k·ω·τ` y cambiar de signo con el sentido.
 
 Predicción falsable: entre 16x y 2x, `φ_1` se corre 39 cuentas a 5 rev/s. Si el
@@ -486,14 +486,14 @@ Más dos parámetros de operación:
 
 - **`ang_cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
   puede apagar no se puede medir.
-- **`ang_filt` (u8)**: los bits `SF` del CONF, de §4.
+- **`ang_sfilt` (u8)**: los bits `SF` del CONF, de §4.
 
 ## 8. Riesgos, y qué los detecta
 
 | Riesgo | Cómo se manifiesta | Qué lo agarra |
 |---|---|---|
 | Se calibra la mecánica del motor como si fuera el sensor | la tabla mejora una velocidad y empeora otra | G2, la pendiente de `A_k(ω)` |
-| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y poner `ang_filt` en 2x desde el principio |
+| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y poner `ang_sfilt` en 2x desde el principio |
 | El imán está flojo en el eje | la tabla no se repite entre encendidos | G3 |
 | Aliasing: pocas muestras por vuelta | armónicos altos aparecen donde no están | ≥40 muestras/vuelta, verificado en cada captura |
 | Huecos de telemetría desenrollados como saltos | vueltas fantasma en el desenrollado | reconstruir con `tick`, no con el índice |
@@ -508,7 +508,7 @@ Este plan está implementado. El reparto:
 
 | | |
 |---|---|
-| `ControlDemo/ControlDemo.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, `ang_filt`, el canal `y_raw` |
+| `ControlDemo/ControlDemo.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, `ang_sfilt`, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
 | `python/calib.py` | ajuste, compuertas, tabla, archivo, header |
 | `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
@@ -517,7 +517,7 @@ Este plan está implementado. El reparto:
 
 ## 10. Orden de trabajo
 
-1. Firmware de medición: `ang_filt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
+1. Firmware de medición: `ang_sfilt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
 2. E0, E1 — higiene y piso de ruido. Compuerta G0.
 3. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
 4. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.

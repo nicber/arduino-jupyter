@@ -34,6 +34,7 @@ from typing import NamedTuple
 
 import serial
 
+import catalogo
 from ctrllink import CtrlLink, CtrlLinkError, find_port
 
 __all__ = ['sync_board', 'sync_board_cal', 'Bench', 'Cableado', 'Giro',
@@ -98,10 +99,10 @@ BUILD_PROPERTIES = [
     'compiler.c.elf.extra_flags=-O2',
 ]
 
-# `mode` elige el controlador, `target` elige la realimentación sobre la que
-# cierra.
-MODE_OPEN, MODE_PID, MODE_RAMP = 0, 1, 2
-POSITION,  CURRENT             = 0, 1
+# `ctl_mode` elige el controlador, `ctl_target` elige la realimentación sobre la que
+# cierra. Se definen en catalogo.py, que no depende de nada, y se reexportan acá
+# para que `from bench import *` siga trayéndolos.
+from catalogo import MODE_OPEN, MODE_PID, MODE_RAMP, POSITION, CURRENT
 
 # Bits del registro STATUS del AS5600.
 _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
@@ -265,8 +266,8 @@ class DiagnosticoDeBanco:
 
     # Cuentas acumuladas: una captura las pone en cero antes y lo que vuelve
     # describe esa captura. (clave con la que quedan en df.attrs, parámetro).
-    _SALUD = (('sovr', 'ang_ovr'),
-              ('serr', 'ang_err'))
+    _SALUD = (('sovr', 'ang_busovr'),
+              ('serr', 'ang_buserr'))
 
     # Lecturas de ahora. No se ponen en cero: hacerlo sería inventar una lectura.
     _ESTADO = (('spres', 'ang_present'),
@@ -353,7 +354,7 @@ class Bench:
         referencia del ADC no lo es: el bandgap del ATmega anda por 1093 mV y la
         referencia interna del clon vale 1024. La placa no puede corregir su propia
         tabla --vive en flash-- pero sí calcula la escala al arrancar y la publica en
-        `cur_malsb`, en mA por cuenta. Acá se la cree a ella y no a la tabla. Ver el
+        `cur_ma_lsb`, en mA por cuenta. Acá se la cree a ella y no a la tabla. Ver el
         comentario de ADC_REF_MV_LGT8F en ControlDemo.ino.
 
         OJO que esto corrige `self.channels`, que es lo que usan deg(), ma(),
@@ -363,7 +364,7 @@ class Bench:
         una captura, así que no se hace de paso.
         """
         chans = list(link.channels)
-        ma = link.params.get('cur_malsb') and link.get('cur_malsb')
+        ma = link.params.get('cur_ma_lsb') and link.get('cur_ma_lsb')
 
         if ma:
             for columna in chans:
@@ -407,6 +408,56 @@ class Bench:
             if column.name == name:
                 return column
         raise CtrlLinkError(f'no hay ningun canal llamado {name!r}')
+
+    # ------------------------------------------------------ contarse solo
+    #
+    # La placa declara su tabla de parámetros al conectarse, así que la lista de
+    # perillas no está escrita en ninguna parte de este lado: se pregunta. Lo que
+    # sigue la muestra junto con el valor de ahora, la unidad y qué significa, para
+    # que no haya que ir a buscar a otro archivo qué se puede tocar.
+    #
+    # En un notebook alcanza con poner `dev` en una celda.
+
+    def describe(self, filtro=''):
+        """Las perillas y las lecturas de la placa, agrupadas, como texto.
+
+        `filtro` es una subcadena: `dev.describe('ang')` muestra sólo lo del sensor
+        de ángulo.
+        """
+        return catalogo.texto(*self._para_describir(filtro))
+
+    def _para_describir(self, filtro=''):
+        nombres = [n for n in sorted(self._params) if filtro in n]
+        canales = ([(c.name, c.scale, c.unit) for c in self.channels]
+                   if not filtro else ())
+
+        resumen = (f'lazo a {1 / self.dt:.0f} Hz, PWM a {self.pwm_hz:.0f} Hz, '
+                   f'{len(self.channels)} canales de telemetría')
+
+        return self.info, resumen, nombres, self._valor_legible, canales
+
+    def _valor_legible(self, nombre):
+        """El valor de ahora, o un signo de pregunta si la placa no lo contesta.
+
+        Un parámetro que no se pueda leer no puede hacer fallar la descripción
+        entera: lo que uno quiere justo en ese momento es ver la tabla para entender
+        qué está pasando.
+        """
+        try:
+            valor = self.get(nombre)
+        except Exception:
+            return '?'
+
+        return f'{valor:.6g}' if isinstance(valor, float) else str(valor)
+
+    def __repr__(self):
+        try:
+            return self.describe()
+        except Exception as exc:
+            return f'<Bench sin describir: {type(exc).__name__}: {exc}>'
+
+    def _repr_html_(self):
+        return catalogo.html(*self._para_describir())
 
     # ------------------------------------------------------------ referencias
 
@@ -681,9 +732,9 @@ class Bench:
         #    a simple vista. Importa porque el ADC del clon tiene 12 bits contra
         #    los 10 del UNO: la placa normaliza a 12 y lo dice acá, así que un
         #    canal de corriente cuatro veces grande deja de ser un misterio.
-        if 'brd_adcfs' in self._params:
-            fondo = self.get('brd_adcfs')
-            bg    = self.get('brd_bgadc')
+        if 'board_adcfs' in self._params:
+            fondo = self.get('board_adcfs')
+            bg    = self.get('board_bgadc')
             report('placa', True,
                    'ADC de 12 bits, el del clon LGT8F328P' if fondo >= 4096 else
                    'ADC de 10 bits, el del ATmega328P; las lecturas se corren '
@@ -729,8 +780,8 @@ class Bench:
         #    resetear la placa para que vuelva a mirar, y eso es sync_board().
         present = bool(df.attrs.get('spres', 1))
 
-        if 'brd_bus' in self._params:
-            diag = self.get('brd_bus')
+        if 'board_bus' in self._params:
+            diag = self.get('board_bus')
             sda, scl = diag & 0x03, (diag >> 2) & 0x03
             sano = not (diag & _BUS_INVERTIDO) and sda == 0 and scl == 0
 
@@ -802,7 +853,7 @@ class Bench:
             # Exigir cero hacía fallar esta línea en un equipo sano, y una
             # verificación que grita en falso enseña a ignorarla. Lo que sí es
             # una falla es que el bus no llegue de manera sostenida.
-            muestras = df.attrs['wall'] * 1e6 / df.attrs['dt_us'] * self.lop_div
+            muestras = df.attrs['wall'] * 1e6 / df.attrs['dt_us'] * self.loop_div
             tasa = df.attrs['sovr'] / max(muestras, 1)
             report('bus i2c', df.attrs['serr'] == 0 and tasa < 0.005,
                    f'{df.attrs["serr"]} errores de transferencia, '
