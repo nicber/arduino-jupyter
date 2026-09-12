@@ -41,10 +41,13 @@ RETARDO    = 1       # muestras entre el eje y lo que informa el sensor
 
 # La corriente sale de la ecuación eléctrica sobre esa velocidad: lo que la
 # tensión de armadura le gana a la fuerza contraelectromotriz, sobre la
-# resistencia. Un puente Darlington contra 5 V le deja al motor unos 3 V.
+# resistencia. Un puente Darlington contra 5 V le deja al motor unos 3 V. KE es
+# lo bastante chica como para que la corriente de régimen crezca con la
+# velocidad: así el par que el motor entrega en régimen --que es todo
+# rozamiento-- crece con ella, como en un motor de verdad.
 V_MOTOR = 3.0        # V a fondo
 R_MOTOR = 5.0        # ohm
-KE      = 0.037      # V por rad/s
+KE      = 0.025      # V por rad/s
 
 # Las escalas que el dispositivo de verdad declara en su tabla de canales. Los mA
 # por cuenta son los del sketch: 12 bits contra 5006 mV y un ACS712 de 185 mV/A.
