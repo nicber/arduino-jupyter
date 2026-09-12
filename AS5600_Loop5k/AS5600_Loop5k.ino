@@ -16,23 +16,24 @@
 #include <AS5600.h>
 #include <NI2CBus.h>
 #include <BoardStart.h>
+#include <SampleClock.h>
 
 typedef AS5600<NI2CBus> Sensor;
 
-// Timer2, CTC, preescalador 32: 16 MHz / 32 / 100 = exactamente 5,000 kHz.
-// El Timer2 deja en paz a millis() (Timer0) y a Servo (Timer1), pero choca con tone().
-static void startSampleTimer(void)
-{
-    TCCR2A = _BV(WGM21);                // CTC, TOP = OCR2A
-    TCCR2B = _BV(CS21) | _BV(CS20);     // preescalador /32
-    OCR2A = 99;
-    TCNT2 = 0;
-    TIMSK2 = _BV(OCIE2A);
-}
+static const uint16_t SAMPLE_HZ = 5000;
+
+// El mismo reloj que usa ControlDemo, en lugar de otra copia del Timer2 que se le
+// vaya separando. Acá no hay ley de control, así que el divisor es 1: cada muestra
+// es su propio período y nadie pregunta si venció uno.
+//
+// El Timer2 deja en paz a millis() (Timer0) y a Servo (Timer1), pero choca con
+// tone() y con analogWrite() en los pines 3 y 11.
+static SampleClock g_clock(1);
 
 ISR(TIMER2_COMPA_vect)
 {
     Sensor::do_transfer();
+    g_clock.on_isr();
 }
 
 // ------------------------------------------------------------------ telemetría
@@ -138,7 +139,7 @@ void setup()
     Serial.println(F("Lazo de muestreo del AS5600 a 5 kHz"));
 
     Sensor::begin();
-    startSampleTimer();
+    g_clock.begin(SAMPLE_HZ);
 }
 
 void loop()

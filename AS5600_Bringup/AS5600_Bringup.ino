@@ -19,29 +19,35 @@
 
 #include <Wire.h>
 #include <BoardStart.h>
+#include <AS5600Regs.h>
 
 // Poner en 0 si el AS5600 se alimenta con 3,3 V: el rango del AGC se reduce a la
 // mitad.
 #define AS5600_VDD_5V 1
 
-static const uint8_t AS5600_ADDR = 0x36;  // 7 bits, 0110110b
+// El mapa de registros y los bits de STATUS salen de AS5600Regs.h, que es el mismo
+// que usa el driver asincronico del lazo. Estaban declarados aca tambien, y una
+// direccion corregida en un lado y no en el otro no falla al compilar.
+//
+// Este sketch sigue hablando por Wire y bloqueando a proposito: no tiene ningun
+// plazo que cumplir y quiere el camino mas simple posible. Lo que se comparte son
+// los numeros de la hoja de datos, no el transporte.
+static const uint8_t AS5600_ADDR   = as5600::DEVICE_ADDRESS;
 
-// Direcciones de registro (byte alto primero en los registros de 12 bits).
-static const uint8_t REG_ZMCO      = 0x00;
-static const uint8_t REG_ZPOS_H    = 0x01;
-static const uint8_t REG_MPOS_H    = 0x03;
-static const uint8_t REG_MANG_H    = 0x05;
-static const uint8_t REG_CONF_H    = 0x07;
-static const uint8_t REG_RAWANG_H  = 0x0C;
-static const uint8_t REG_ANGLE_H   = 0x0E;
-static const uint8_t REG_STATUS    = 0x0B;
-static const uint8_t REG_AGC       = 0x1A;
-static const uint8_t REG_MAG_H     = 0x1B;
+static const uint8_t REG_ZMCO      = as5600::REG_ZMCO;
+static const uint8_t REG_ZPOS_H    = as5600::REG_ZPOS_H;
+static const uint8_t REG_MPOS_H    = as5600::REG_MPOS_H;
+static const uint8_t REG_MANG_H    = as5600::REG_MANG_H;
+static const uint8_t REG_CONF_H    = as5600::REG_CONF_H;
+static const uint8_t REG_RAWANG_H  = as5600::REG_RAWANGLE_H;
+static const uint8_t REG_ANGLE_H   = as5600::REG_ANGLE_H;
+static const uint8_t REG_STATUS    = as5600::REG_STATUS;
+static const uint8_t REG_AGC       = as5600::REG_AGC;
+static const uint8_t REG_MAG_H     = as5600::REG_MAGNITUDE_H;
 
-// Bits del registro STATUS (Figura 23).
-static const uint8_t STATUS_MH = _BV(3);  // desborde de ganancia mínima del AGC, imán muy fuerte
-static const uint8_t STATUS_ML = _BV(4);  // desborde de ganancia máxima del AGC, imán muy débil
-static const uint8_t STATUS_MD = _BV(5);  // se detectó el imán
+static const uint8_t STATUS_MH = as5600::STATUS_MH;
+static const uint8_t STATUS_ML = as5600::STATUS_ML;
+static const uint8_t STATUS_MD = as5600::STATUS_MD;
 
 // El AGC tiene que quedar cerca del medio de su rango; el entrehierro se ajusta
 // hasta llegar ahí.

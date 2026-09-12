@@ -35,29 +35,27 @@
 #include <stdint.h>
 #include <util/atomic.h>
 
+#include <AS5600Regs.h>
+
 template <class Bus>
 class AS5600
 {
     public:
 
-    static const uint8_t DEVICE_ADDRESS = 0x36;  // 7 bits, 0110110b
-    static const uint8_t REG_CONF_H     = 0x07;
-    static const uint8_t REG_STATUS     = 0x0B;
-    static const uint8_t REG_RAWANGLE_H = 0x0C;
-    static const uint8_t REG_AGC        = 0x1A;
-    static const uint8_t REG_MAGNITUDE_H = 0x1B;
+    // El mapa de registros vive en AS5600Regs.h, porque la puesta en marcha lo
+    // necesita y habla por Wire en lugar de por este driver. Aca se reexporta con
+    // los mismos nombres de siempre, asi que quien use el driver no se entera.
+    static const uint8_t DEVICE_ADDRESS  = as5600::DEVICE_ADDRESS;
+    static const uint8_t REG_CONF_H      = as5600::REG_CONF_H;
+    static const uint8_t REG_STATUS      = as5600::REG_STATUS;
+    static const uint8_t REG_RAWANGLE_H  = as5600::REG_RAWANGLE_H;
+    static const uint8_t REG_AGC         = as5600::REG_AGC;
+    static const uint8_t REG_MAGNITUDE_H = as5600::REG_MAGNITUDE_H;
 
-    // Bits SF del registro CONF (hoja de datos, figura 22): el filtro lento.
-    // Con 16x --el valor de encendido-- el retardo de respuesta al escalón son
-    // 2,2 ms y el ruido de salida 0,015 grados RMS; con 2x son 0,286 ms y 0,043
-    // grados. Para un lazo de control esos 1,9 ms de diferencia son mucho más
-    // caros que el ruido, y para medir el error de ángulo del sensor son
-    // decisivos: a 5 vueltas por segundo, 2,2 ms son 45 cuentas de corrimiento
-    // sobre un error que se espera de unas pocas.
-    static const uint8_t SF_16X = 0;
-    static const uint8_t SF_8X  = 1;
-    static const uint8_t SF_4X  = 2;
-    static const uint8_t SF_2X  = 3;
+    static const uint8_t SF_16X = as5600::SF_16X;
+    static const uint8_t SF_8X  = as5600::SF_8X;
+    static const uint8_t SF_4X  = as5600::SF_4X;
+    static const uint8_t SF_2X  = as5600::SF_2X;
 
     // Lo más largo que pide una lectura de mantenimiento. Dos bytes son el CONF
     // o el MAGNITUDE, y a 400 kHz entran en un período de muestreo de 200 us;
@@ -65,10 +63,9 @@ class AS5600
     // desborde. Quien necesite más registros que lea de a poco.
     static const uint8_t AUX_MAX = 2;
 
-    // Bits del registro STATUS (Figura 23 de la hoja de datos).
-    static const uint8_t STATUS_MH = _BV(3);  // desborde de ganancia mínima del AGC, imán muy fuerte
-    static const uint8_t STATUS_ML = _BV(4);  // desborde de ganancia máxima del AGC, imán muy débil
-    static const uint8_t STATUS_MD = _BV(5);  // se detectó el imán
+    static const uint8_t STATUS_MH = as5600::STATUS_MH;
+    static const uint8_t STATUS_ML = as5600::STATUS_ML;
+    static const uint8_t STATUS_MD = as5600::STATUS_MD;
 
     // Fallas de transferencia seguidas a partir de las cuales se da el sensor
     // por desconectado. Treinta y dos a 5 kHz son 6,4 ms: lo bastante como para

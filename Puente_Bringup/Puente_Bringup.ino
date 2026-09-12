@@ -6,9 +6,11 @@
 // está mal montado el ángulo es ruido y todo parece un motor muerto. Acá la
 // evidencia no sale del banco: la placa lee sus propios pines de vuelta.
 //
-// Primero se verifica a sí misma. Configura el Timer1 igual que ControlDemo y
-// mira el registro PIN --que refleja el estado real del pin aunque sea salida--
-// para confirmar que ENA conmuta y que IN1 e IN2 obedecen. Si eso pasa, lo que
+// Primero se verifica a sí misma. Usa el mismo módulo de puente que ControlDemo
+// --así el temporizador y la escala del ciclo de trabajo son los mismos y no una
+// copia que ya se le fue separando-- y mira el registro PIN, que refleja el estado
+// real del pin aunque sea salida, para confirmar que ENA conmuta y que IN1 e IN2
+// obedecen. Si eso pasa, lo que
 // falta está del puente para afuera: su alimentación, su cableado, o el motor.
 //
 // Después acciona en secuencia lenta, anunciando cada estado por el puerto
@@ -20,25 +22,21 @@
 // OJO, el motor se mueve. Revisar que el eje esté libre antes de grabarlo.
 
 #include <BoardStart.h>
+#include <HBridge.h>
 
 static const uint8_t  PWM_PIN = 9;      // ENA del L298N, OC1A
 static const uint8_t  IN1_PIN = 6;
 static const uint8_t  IN2_PIN = 7;
 static const uint16_t PWM_TOP = 8000;   // 1 kHz phase-correct, como ControlDemo
 
-static void startMotorPwm(void)
-{
-    TCCR1A = _BV(COM1A1) | _BV(WGM11);  // modo 10: phase-correct, TOP = ICR1
-    TCCR1B = _BV(WGM13) | _BV(CS10);    // preescalador /1
-    TCNT1  = 0;
-    ICR1   = PWM_TOP;
-    OCR1A  = 0;
-}
+typedef HBridge<PWM_PIN, IN1_PIN, IN2_PIN> Motor;
 
-static void setDuty(uint8_t u)
-{
-    OCR1A = ((uint32_t)PWM_TOP * u) / 255;
-}
+static Motor g_motor(PWM_TOP);
+
+// Acá se mueven ENA y el par IN1/IN2 por separado, que es justo lo que write() no
+// hace: ese camino decide las dos cosas juntas para que un cambio de sentido no
+// atraviese un estado conduciendo. Un diagnóstico que quiere leer cada pin de
+// vuelta necesita las dos mitades sueltas, y para eso está duty().
 
 // Mira un pin durante unos milisegundos y dice si lo vio en alto, en bajo, o en
 // los dos --que es lo único que hace falta saber--. No devuelve un ciclo de
@@ -100,16 +98,11 @@ void setup()
     Serial.println(F("Puesta en marcha del puente"));
     Serial.println(F("--- los pines, leidos de vuelta por la propia placa ---"));
 
-    pinMode(PWM_PIN, OUTPUT);
-    pinMode(IN1_PIN, OUTPUT);
-    pinMode(IN2_PIN, OUTPUT);
-    digitalWrite(IN1_PIN, LOW);
-    digitalWrite(IN2_PIN, LOW);
-    startMotorPwm();
+    g_motor.begin();
 
-    setDuty(0);
+    g_motor.duty(0);
     informar(F("ENA con u = 0  "), PWM_PIN, F("siempre en bajo"));
-    setDuty(128);
+    g_motor.duty(128);
     Serial.print(F("ENA con u = 128, OCR1A = "));
     Serial.print(OCR1A);
     Serial.print(F(" de "));
@@ -124,9 +117,9 @@ void setup()
     // 125 ns. Al motor le llega el 99,97 % de la tensión y no la nota; a este
     // muestreo, que mira el pin y no el promedio, se le aparece. Lo que sí sería
     // una falla es que a fondo no conmutara *ni* estuviera en alto.
-    setDuty(255);
+    g_motor.duty(255);
     informar(F("ENA con u = 255"), PWM_PIN, F("conmutando o siempre en alto"));
-    setDuty(0);
+    g_motor.duty(0);
 
     digitalWrite(IN1_PIN, HIGH);
     informar(F("IN1 en alto     "), IN1_PIN, F("siempre en alto"));
@@ -168,7 +161,7 @@ void loop()
     {
         digitalWrite(IN1_PIN, pasos[i].in1);
         digitalWrite(IN2_PIN, pasos[i].in2);
-        setDuty(pasos[i].u);
+        g_motor.duty(pasos[i].u);
         Serial.println(pasos[i].texto);
         delay(3000);
     }

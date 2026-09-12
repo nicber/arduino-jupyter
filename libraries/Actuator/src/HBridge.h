@@ -180,23 +180,14 @@ class HBridge
         TCCR1A &= (uint8_t)~_BV(COM1A1);
     }
 
-    private:
-
-    // Timer1, phase-correct con TOP = ICR1 y preescalador 1, de modo que
-    // f = F_CPU / (2 * top). El TOP propio es lo que hace que la frecuencia sea un
-    // parámetro y no un modo fijo; el precio es que analogWrite() deja de servir
-    // sobre este pin, porque da por sentado que el TOP son 255. De ahí duty().
+    // La magnitud sola, sin tocar el sentido.
     //
-    // Arranca con la salida de comparación desconectada, que es el puente abierto:
-    // la conecta duty() cuando hay algo que accionar.
-    void start_timer(void)
-    {
-        TCCR1A = _BV(WGM11);                    // modo 10: phase-correct, TOP = ICR1
-        TCCR1B = _BV(WGM13) | _BV(CS10);        // preescalador /1
-        TCNT1  = 0;
-        ICR1   = top;
-    }
-
+    // El camino normal es write(), que decide las dos cosas juntas y es el único que
+    // garantiza que un cambio de sentido no atraviese un estado conduciendo. Esto
+    // existe para un diagnóstico que necesita las dos mitades por separado: mover
+    // ENA con IN1 e IN2 quietos, o moverlos a ellos con ENA quieto, y leer cada pin
+    // de vuelta. Ver Puente_Bringup.
+    //
     // `magnitude` va de 0 a MAX y el temporizador cuenta hasta `top`, que es otra
     // escala. Se divide por MAX + 1 = 256 en lugar de por 255, que es un
     // corrimiento en vez de una división y deja el ciclo de trabajo a lo sumo un
@@ -216,6 +207,23 @@ class HBridge
                                    : (Top)(((uint32_t)magnitude * top) >> 8);
 
         TCCR1A |= _BV(COM1A1);
+    }
+
+    private:
+
+    // Timer1, phase-correct con TOP = ICR1 y preescalador 1, de modo que
+    // f = F_CPU / (2 * top). El TOP propio es lo que hace que la frecuencia sea un
+    // parámetro y no un modo fijo; el precio es que analogWrite() deja de servir
+    // sobre este pin, porque da por sentado que el TOP son 255. De ahí duty().
+    //
+    // Arranca con la salida de comparación desconectada, que es el puente abierto:
+    // la conecta duty() cuando hay algo que accionar.
+    void start_timer(void)
+    {
+        TCCR1A = _BV(WGM11);                    // modo 10: phase-correct, TOP = ICR1
+        TCCR1B = _BV(WGM13) | _BV(CS10);        // preescalador /1
+        TCNT1  = 0;
+        ICR1   = top;
     }
 
     int8_t m_dir;       // el sentido que está cableado ahora: era un static de drive()
