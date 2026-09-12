@@ -566,7 +566,7 @@ class Bench:
         promedio sobre los 0,4 s enteros diluye eso hasta el ruido, y entonces el
         signo que informa es el del ruido.
 
-Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
+        Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
         en reposo, con el puente abierto. La dispersión de este tirón no sirve,
         porque adentro está la propia corriente que se quiere medir --arranca en el
         pico y cae a nada-- así que crece justo cuando hay más señal. Ver

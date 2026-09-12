@@ -66,6 +66,12 @@ class BancoSimulado:
         self.ang_offset = 0
         self.ctl_uff = 0
         self.ctl_ref = 0
+
+        # La pendiente de rampa, en unidades del objetivo por período de control.
+        # Estaba sin declarar, así que una celda que la fijaba creaba el atributo y
+        # el modelo lo ignoraba: la rampa se veía como una referencia plana. Lo
+        # encontró test_simulado.py.
+        self.ctl_rate = 0
         self.ang_cal = 0
         self.ang_filt = sfilt
         self.lop_div = 10
@@ -115,6 +121,10 @@ class BancoSimulado:
                     b = (b + a) & 0xFF
             return (b << 8) | a
         return getattr(self, name)
+
+    def close(self):
+        """No hay nada que cerrar; está para que una celda con `dev.close()` corra."""
+        self.rest()
 
     def rest(self):
         self.ctl_mode = 0
@@ -308,7 +318,9 @@ class BancoSimulado:
         theta = np.cumsum(w) * CUENTAS * self.dt
         medido = theta + self._error_sensor(theta, w)
         medido = medido + self._rng.normal(0, self.ruido, len(t))
-        refs = np.full(len(t), float(self.ctl_ref))
+        # La referencia avanza `ctl_rate` una vez por período de control, igual que
+        # en la placa, así que en segundos la pendiente es rate/dt.
+        refs = float(self.ctl_ref) + float(self.ctl_rate) * t / self.dt
 
         crudo = np.mod(np.rint(medido), CUENTAS).astype(np.int64)
 
