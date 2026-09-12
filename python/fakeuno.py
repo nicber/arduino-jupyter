@@ -1,4 +1,4 @@
-"""Simulación del dispositivo, fiel byte a byte a lo que ControlDemo pone en el cable.
+"""Simulación del dispositivo, fiel byte a byte a lo que Banco pone en el cable.
 
 Vive aparte de las pruebas que la usan porque ya son dos --el enlace y la
 calibración-- y un archivo de pruebas que importa a otro corre al otro entero.
@@ -9,12 +9,12 @@ sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
 import numpy as np
 
 # nombre -> (tipo de cable, bits fraccionarios, valor crudo almacenado). `kq` y
-# `alpha` se guardan en punto fijo tal como ControlDemo guarda sus ganancias, así
+# `alpha` se guardan en punto fijo tal como Banco guarda sus ganancias, así
 # que la conversión de la computadora se ejercita en lugar de darse por buena.
 PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           'ref': ('i16', 0, 0), 'mode': ('u8', 0, 0),
           'kq': ('i32', 22, 0), 'alpha': ('i32', 16, 65536),
-          # Contadores de salud, tal como los declara ControlDemo. La computadora
+          # Contadores de salud, tal como los declara Banco. La computadora
           # los descubre por nombre y los pone en cero antes de cada captura.
           'missed': ('u16', 0, 0), 'maxlate': ('u16', 0, 0),
           'sovr': ('u16', 0, 0), 'serr': ('u16', 0, 0),
@@ -62,7 +62,7 @@ class FakeUno:
         if head == '':
             return                 # linea vacia: un empujon para resincronizar
         if head == 'id':
-            self.println('# id CtrlLink 1 ControlDemo chans=4 row=21 dt_us=1000')
+            self.println('# id CtrlLink 1 Banco chans=4 row=21 dt_us=1000')
             self.println('# ok')
         elif head == 'params':
             for name, (type_, frac, value) in self.params.items():

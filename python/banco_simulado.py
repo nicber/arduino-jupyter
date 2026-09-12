@@ -1,14 +1,9 @@
 """Un banco de mentira, para poder dar la clase sin la placa.
 
 Expone lo mismo que `Bench` --los parámetros como atributos, `capture()`,
-`bringup()`, las conversiones a unidades reales-- pero las capturas salen de un
-modelo en lugar de un motor. Los notebooks de calibración y de hardware no se
-enteran: corren el mismo código en los dos casos, y lo único que cambia es de
-dónde vienen las filas.
-
-Lo que el modelo no tiene es lazo cerrado: `mode` no hace nada acá. Una celda que
-cierre el lazo tiene que preguntar por `dev.simulado` y decir que necesita la
-placa, en lugar de graficar un lazo que nadie cerró.
+`step()`, `bringup()`-- pero las capturas salen de un modelo en lugar de un
+motor. Los notebooks no se enteran: corren el mismo código en los dos casos, y lo
+único que cambia es de dónde vienen las filas.
 
 Es de mentira y lo dice. El modelo tiene adentro un error de sensor que alguien
 eligió, así que "descubrirlo" no prueba nada sobre ningún AS5600; lo que prueba
@@ -35,60 +30,58 @@ ERROR_SENSOR = {1: (6.0, 0.7), 2: (2.5, -2.0)}
 # de la otra. Un notebook que la calibre como si fuera el sensor está mal.
 RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 
-# El reloj del UNO, para que la frecuencia del PWM se convierta igual que allá.
-F_CPU = 16_000_000
+# El motor de mentira, visto desde el PWM. La velocidad de régimen es lineal con
+# el comando por encima de una zona muerta, y el transitorio es de primer orden:
+# rápido al acelerar, lento al soltar porque frenando sólo actúa el rozamiento.
+U_MUERTO   = 60.0    # cuentas: por debajo no arranca
+W_MAX      = 12.0    # vueltas por segundo a fondo
+TAU_SUBE   = 0.3     # s, acelerando
+TAU_BAJA   = 6.0     # s, soltando
+RETARDO    = 1       # muestras entre el eje y lo que informa el sensor
 
-# Las escalas que el dispositivo de verdad declara en su tabla de canales, que es
-# de donde `Bench` saca las conversiones a unidades reales. Acá están fijas porque
-# el banco simulado es siempre el mismo banco; los mA por cuenta son los del
-# sketch con la referencia interna y un ACS712 de 185 mV/A.
+# La corriente sale de la ecuación eléctrica sobre esa velocidad: lo que la
+# tensión de armadura le gana a la fuerza contraelectromotriz, sobre la
+# resistencia. Un puente Darlington contra 5 V le deja al motor unos 3 V.
+V_MOTOR = 3.0        # V a fondo
+R_MOTOR = 5.0        # ohm
+KE      = 0.037      # V por rad/s
+
+# Las escalas que el dispositivo de verdad declara en su tabla de canales. Los mA
+# por cuenta son los del sketch: 12 bits contra 5006 mV y un ACS712 de 185 mV/A.
+# El UNO cuenta de a cuatro, porque su ADC es de 10 bits corrido dos lugares.
 _Canal = namedtuple('_Canal', 'name scale unit')
 
+MA_POR_CUENTA = 1000.0 * (5006.0 / 4096.0) / 185.0
+
 CANALES = {
-    'ref':   _Canal('ref',   1.0,               'tgt'),
     'y_raw': _Canal('y_raw', GRADOS_POR_CUENTA, 'deg'),
     'y_uw':  _Canal('y_uw',  GRADOS_POR_CUENTA, 'deg'),
-    'y_uwf': _Canal('y_uwf', GRADOS_POR_CUENTA, 'deg'),
-    'e':     _Canal('e',     1.0,               'tgt'),
     'u':     _Canal('u',     1.0,               'pwm'),
-    'i':     _Canal('i',     1000.0 * (1093.0 / 1024.0) / 185.0, 'mA'),
+    'i':     _Canal('i',     MA_POR_CUENTA,     'mA'),
 }
 
 
 class BancoSimulado:
-    """Todo lo que los notebooks le piden a un banco, menos el lazo cerrado."""
+    """Todo lo que los notebooks le piden a un banco."""
 
-    def __init__(self, ruido=0.5, semilla=0, sfilt=3):
+    def __init__(self, ruido=0.5, semilla=0):
         self._rng = np.random.default_rng(semilla)
         self.ruido = ruido
 
-        self.mode = 0
-        self.offset = 0
         self.uff = 0
-        self.ref = 0
         self.cal = 0
-        self.sfilt = sfilt
+        self.izero = 2048
         self.tickdiv = 10
-        self.kp = self.ki = self.kd = 0.0
 
         self.lut = [0] * 64
         self._lutw = 0xFFFFFFFF
 
-        # Los del cableado, que el notebook de hardware lee y escribe igual que
-        # en la placa. No cambian el modelo --el motor de mentira gira siempre
-        # para el mismo lado--: están para que una celda no se caiga, y no para
-        # simular un puente mal conectado.
-        self.target = 0
-        self.bidir = 1
-        self.uinvert = 0
-        self.iinvert = 0
-        self.izero = 0
-        self.pwmtop = 8000
-        self.alpha_y = self.alpha_i = self.alpha_e = 1.0
-
-        self.dt = self.tickdiv / 5000.0
-        self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
+        self.info = 'CtrlLink 1 Banco (SIMULADO) chans=4 dt_us=2000'
         self.simulado = True
+
+    @property
+    def dt(self):
+        return self.tickdiv / 5000.0
 
     # ------------------------------------------------------ los parámetros
 
@@ -116,158 +109,66 @@ class BancoSimulado:
             return (b << 8) | a
         return getattr(self, name)
 
-    def rest(self):
-        self.mode = 0
-        self.uff = 0
-
-    def zero(self):
-        self.offset = 0
-
-    def gains(self, kp=0.0, ki=0.0, kd=0.0):
-        self.kp, self.ki, self.kd = kp, ki, kd
-
-    def smooth(self, which, tau):
-        pass
-
-    # ----------------------------------------------- unidades de este banco
-
-    # Las mismas conversiones que Bench, sobre las escalas de arriba. Están
-    # duplicadas a propósito, igual que _lut_lookup(): lo que se muestra en clase
-    # tiene que correr sin la placa, y hacer que este archivo importe el del
-    # enlace serie lo ataría a pyserial para nada.
-
     def channel(self, name):
         try:
             return CANALES[name]
         except KeyError:
             raise KeyError(f'no hay ningun canal llamado {name!r}') from None
 
-    def deg(self, degrees):
-        return degrees / self.channel('y_uw').scale
+    def rest(self):
+        self.uff = 0
 
-    def ma(self, milliamps):
-        return milliamps / self.channel('i').scale
-
-    def rev_per_s(self, revs):
-        return self.deg(revs * 360.0) * self.dt
-
-    def as_deg(self, values):
-        return values * self.channel('y_uw').scale
-
-    def as_ma(self, values):
-        return values * self.channel('i').scale
+    def zero_current(self, seconds=0.3):
+        """El cero de la corriente, que en el modelo ya está en cero."""
+        return self.izero
 
     # ------------------------------------------------------------ el motor
 
-    def _recorte(self, u):
-        """El comando tal como lo recorta la placa: u_min..255.
-
-        `bidir` es lo único que lo mueve, y mueve todo lo demás con él: un puente
-        declarado de un solo cuadrante recorta en cero, así que un `uff` negativo
-        no hace nada. Es la misma cuenta que g_u_min en el sketch, y está acá para
-        que la celda que muestra el caso unidireccional no necesite la placa.
-        """
-        return min(255.0, max(0.0 if not self.bidir else -255.0, float(u)))
+    @staticmethod
+    def _recorte(u):
+        return min(255.0, max(-255.0, float(u)))
 
     def _velocidad_final(self, u):
-        """Vueltas por segundo en régimen para un comando `u`.
-
-        Con una zona muerta abajo: un puente Darlington contra 5 V no arranca con
-        cualquier cosa, y un notebook que pida uff=40 tiene que ver que no gira.
-        """
+        """Vueltas por segundo en régimen para un comando `u`."""
         u = self._recorte(u)
-        muerto = 60.0
-        if abs(u) <= muerto:
+        if abs(u) <= U_MUERTO:
             return 0.0
-        return np.sign(u) * (abs(u) - muerto) / 255.0 * 12.0
-
-    def _perfil(self, t, eventos):
-        """La velocidad instantánea a lo largo de la captura, en vueltas por segundo."""
-        objetivo = self._velocidad_final(self.uff)
-
-        # La captura arranca con el eje ya a régimen, no desde parado: `regimen()`
-        # espera un par de segundos antes de medir y `desaceleracion()` lleva el
-        # motor a velocidad antes de soltarlo. Arrancar de cero metería el
-        # transitorio de arranque adentro de la ventana de ajuste, y ahí el
-        # polinomio de la tendencia no le llega: el residuo se dispara y las
-        # amplitudes salen cualquier cosa. Es una falla real y se ve --el ajuste
-        # informa su residuo-- pero acá no corresponde tenerla.
-        w = np.zeros_like(t)
-        actual = objetivo
-        dt = t[1] - t[0] if len(t) > 1 else 0.002
-
-        cambios = sorted((float(d), float(v)) for d, nombre, v in eventos
-                         if nombre == 'uff')
-        siguiente = 0
-
-        for i, ti in enumerate(t):
-            while siguiente < len(cambios) and ti >= cambios[siguiente][0]:
-                objetivo = self._velocidad_final(cambios[siguiente][1])
-                siguiente += 1
-
-            # Arrancar cuesta; soltar cuesta más, porque frenando sólo actúa el
-            # rozamiento. Eso es lo que hace que una desaceleración barra la
-            # velocidad despacio y dé muchas vueltas a cada una.
-            tau = 0.3 if abs(objetivo) > abs(actual) else 6.0
-            actual += (objetivo - actual) * dt / tau
-            w[i] = actual
-
-        return w
-
-    def pwm(self, hz):
-        """Fija la frecuencia del PWM del puente y devuelve la que quedó."""
-        self.pwmtop = min(65535, max(255, round(F_CPU / (2 * hz))))
-        return self.pwm_hz
-
-    @property
-    def pwm_hz(self):
-        return F_CPU / (2 * self.pwmtop)
-
-    def zero_current(self, seconds=0.3):
-        """El cero de la corriente, que en el modelo ya está en cero.
-
-        Existe para que la celda que la llama corra igual, y devuelve lo mismo
-        que allá: el `izero` que quedó. En el banco de verdad esto mide un offset
-        que no se puede conocer de otra manera; acá no hay nada que medir.
-        """
-        return self.izero
-
-    def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
-        """Un `Giro`, igual que en el banco de verdad: ver `Bench.spin()`.
-
-        `espera` y `quieto` se aceptan para que la firma sea la del banco de
-        verdad, donde hay que esperar a que el eje pare antes de medir un sentido.
-        Acá el modelo arranca cada captura desde el régimen del comando que tiene
-        puesto, así que no hay inercia que esperar.
-
-        La corriente del modelo es el módulo de la velocidad, así que sale siempre
-        positiva: el banco imaginario tiene un sensor unipolar. No es una decisión
-        sobre el banco de verdad, es que no hay ningún signo que simular.
-        """
-        from bench import Giro
-
-        antes = self.uff
-        self.uff = u
-        df = self.capture(seconds, warn=False)
-        self.uff = antes
-        self.rest()
-        vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
-        i = df['i']
-        return Giro(vueltas, i.iloc[i.abs().to_numpy().argmax()])
+        return np.sign(u) * (abs(u) - U_MUERTO) / (255.0 - U_MUERTO) * W_MAX
 
     def _comando(self, t, eventos):
-        """El `uff` a lo largo de la captura: lo que sale al puente en cada fila.
-
-        Sale de los mismos eventos que la velocidad. En la placa `u` es un canal
-        que se emite fila por fila, así que un escalón se ve en los datos; acá hay
-        que reconstruirlo, y sin esto el gráfico de un escalón muestra el comando
-        plano en su valor de arranque.
-        """
+        """El `uff` a lo largo de la captura: lo que sale al puente en cada fila."""
         u = np.full(len(t), self._recorte(self.uff))
         for retardo, nombre, valor in sorted(eventos, key=lambda e: float(e[0])):
             if nombre == 'uff':
                 u[t >= float(retardo)] = self._recorte(valor)
         return u
+
+    def _perfil(self, t, u):
+        """La velocidad instantánea a lo largo de la captura, en vueltas por segundo.
+
+        La captura arranca con el eje ya a régimen del comando que tiene puesto,
+        no desde parado: es lo que hace `regimen()` esperando un par de segundos
+        antes de medir, y `desaceleracion()` llevando el motor a velocidad antes
+        de soltarlo.
+        """
+        dt = self.dt
+        w = np.zeros_like(t)
+        actual = self._velocidad_final(u[0])
+
+        for k in range(len(t)):
+            objetivo = self._velocidad_final(u[k])
+            tau = TAU_SUBE if abs(objetivo) > abs(actual) else TAU_BAJA
+            actual += (objetivo - actual) * dt / tau
+            w[k] = actual
+
+        return w
+
+    def _corriente(self, u, w):
+        """Miliamperes, como los informa el ADC: en escalones de cuatro cuentas."""
+        v = u / 255.0 * V_MOTOR
+        i = (v - KE * w * 2 * np.pi) / R_MOTOR * 1000.0
+        cuentas = np.rint(i / MA_POR_CUENTA / 4 + self._rng.normal(0, 0.3, len(u))) * 4
+        return cuentas * MA_POR_CUENTA
 
     def _error_sensor(self, theta, w):
         """El error de ángulo en cuentas: el del sensor, más el del motor."""
@@ -300,37 +201,33 @@ class BancoSimulado:
     def capture(self, duration, events=(), poll=0.005, warn=True):
         t = np.arange(0, float(duration), self.dt)
 
-        # Sólo lazo abierto: el notebook de calibración mide con el motor a
-        # comando constante y soltándolo, y un lazo cerrado simulado no agregaría
-        # nada que se pueda mostrar. En el banco de verdad `mode` sigue haciendo
-        # lo suyo.
-        w = self._perfil(t, events)
+        u = self._comando(t, events)
+        w = self._perfil(t, u)
         theta = np.cumsum(w) * CUENTAS * self.dt
+
+        # Lo que informa el sensor llega una muestra después de lo que hizo el
+        # eje, que es lo que hacen el filtro del AS5600 y la cadena de muestreo.
+        if RETARDO:
+            theta = np.concatenate([np.full(RETARDO, theta[0]), theta[:-RETARDO]])
+
         medido = theta + self._error_sensor(theta, w)
         medido = medido + self._rng.normal(0, self.ruido, len(t))
-        refs = np.full(len(t), float(self.ref))
 
         crudo = np.mod(np.rint(medido), CUENTAS).astype(np.int64)
-
         corregido = medido - (self._lut_lookup(crudo) if self.cal else 0)
 
         df = pd.DataFrame({
             't': t,
             'y_raw': crudo * GRADOS_POR_CUENTA,
-            # El firmware informa y = offset - counts, así que y_uw baja cuando el
-            # ángulo sube. Se reproduce el signo para que el notebook no descubra
-            # tarde que el banco de verdad no se le parece.
-            'y_uw': -corregido * GRADOS_POR_CUENTA,
-            'y_uwf': -corregido * GRADOS_POR_CUENTA,
-            'u': self._comando(t, events),
-            'i': np.abs(w) * 20.0,
-            'ref': refs,
+            'y_uw': corregido * GRADOS_POR_CUENTA,
+            'u': u,
+            'i': self._corriente(u, w),
         })
 
         df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.tickdiv,
                         dec=self.tickdiv, dt_us=self.dt*1e6, marks=[], notes=[],
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
-                        spres=1, mstat=0x20, agc=128, mag=1800,
+                        spres=1, mstat=0x20,
                         wall=float(duration), rows=len(t), drops=0,
                         units={'y_raw': 'deg', 'y_uw': 'deg'})
 
@@ -346,30 +243,16 @@ class BancoSimulado:
     # ---------------------------------------------------- puesta en marcha
 
     def bringup(self, motor=True, u=120):
-        """Lo mismo que allá, y devuelve lo mismo: un `Cableado`.
-
-        Devuelve el que tiene puesto, no uno medido: en el modelo no hay cables
-        que puedan estar al revés, así que no hay nada que descubrir. Existe para
-        que la celda que hace `cab = dev.bringup()` corra igual, y por eso
-        tampoco lo guarda: un archivo de cableado escrito por un banco de mentira
-        se le aplicaría después al de verdad.
-        """
-        from bench import Cableado
-
         print(f'puesta en marcha: {self.info}')
         for etiqueta, detalle in [
-                ('lazo de control', '500 Hz reales contra 500 nominales, 0 perdidos'),
+                ('muestreo', '500 Hz reales contra 500 nominales, 0 perdidos'),
                 ('sensor', 'contesta en el bus'),
-                ('iman', 'detectado, AGC 128/255, campo 1800'),
+                ('iman', 'detectado, AGC en rango'),
                 ('bus i2c', '0 errores de transferencia, 0 desbordes'),
-                ('motor', f'gira con u={u}'),
-                ('polaridad', 'un u positivo hace subir el angulo'),
-                ('signo de i', 'el modelo entrega el modulo: sensor unipolar')]:
+                ('motor', f'gira con u={u}')]:
             print(f'  [   ok]  {etiqueta:<18}  {detalle}')
         print('\n  NADA DE ESTO ES REAL: es el banco simulado.')
-
-        return Cableado(bidir=int(self.bidir), uinvert=int(self.uinvert),
-                        iinvert=int(self.iinvert))
+        return True
 
 
 def conseguir_banco(forzar_simulado=False, **kw):

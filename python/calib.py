@@ -31,7 +31,7 @@ CUENTAS = 4096
 GRADOS_POR_CUENTA = 360.0 / CUENTAS
 
 # Entradas de la tabla en el dispositivo, y la unidad en la que se guardan.
-# Tienen que coincidir con LUT_SIZE y con lut_lookup() en ControlDemo.ino.
+# Tienen que coincidir con LUT_SIZE y con lut_lookup() en Banco.ino.
 LUT_SIZE = 64
 OCTAVOS = 8
 
@@ -123,9 +123,6 @@ def serie(df, fuente='y_raw', avisar=True):
                la corrección sirvió no tendría sentido, porque `y_raw` es
                justamente lo que no cambia al prenderla.
 
-    `y_uw` viene con el signo invertido --ControlDemo calcula y = offset - counts--
-    así que se lo da vuelta acá. Eso deja las amplitudes intactas y espeja las
-    fases, que para validar da igual: lo que se compara son amplitudes.
     """
     t = np.asarray(df['t'], dtype=float)
 
@@ -142,7 +139,7 @@ def serie(df, fuente='y_raw', avisar=True):
         # y_uw ya viene desenrollado por el firmware, que lo hace sobre cada
         # muestra de 5 kHz y no sobre la fila de telemetría: no hay huecos que
         # puedan inventar una vuelta.
-        cuentas = -a_cuentas(df['y_uw']).astype(float)
+        cuentas = a_cuentas(df['y_uw']).astype(float)
 
     if aviso and avisar:
         print('# aviso:', aviso)
@@ -150,7 +147,7 @@ def serie(df, fuente='y_raw', avisar=True):
     return t, cuentas
 
 
-def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0, sfilt=3):
+def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0):
     """Lleva el motor a velocidad, lo suelta, y captura la desaceleración.
 
     Es el experimento central del plan. Con `u = 0` no hay corriente de armadura
@@ -159,10 +156,7 @@ def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0, sfilt=3):
     una sola captura da la amplitud de cada armónico en todo un rango de
     velocidades. Eso es lo que después separa el sensor del motor.
     """
-    dev.mode = 0
-    dev.offset = 0
     dev.cal = 0
-    dev.sfilt = sfilt
     dev.uff = uff
 
     try:
@@ -171,12 +165,9 @@ def desaceleracion(dev, uff=200, duracion=25.0, arranque=3.0, sfilt=3):
         dev.uff = 0
 
 
-def regimen(dev, uff, duracion=20.0, sfilt=3, cal=0):
+def regimen(dev, uff, duracion=20.0, cal=0):
     """Captura a comando constante. La contraparte "en régimen" de desaceleracion()."""
-    dev.mode = 0
-    dev.offset = 0
     dev.cal = cal
-    dev.sfilt = sfilt
     dev.uff = uff
 
     try:
@@ -573,7 +564,7 @@ class Calibracion:
 
         return cal
 
-    def escribir_header(self, ruta='ControlDemo/Calibracion.h'):
+    def escribir_header(self, ruta='Banco/Calibracion.h'):
         """Genera el header que deja la calibración compilada adentro del sketch.
 
         Es el camino para un tablero que se enciende solo y nadie conecta a un

@@ -37,7 +37,7 @@ def check(label, condition, detail=''):
 
 # ------------------------------------------------------------ descubrimiento
 dev = connect(FakeUno())
-check('se interpreta id', dev.info.startswith('CtrlLink 1 ControlDemo'), dev.info)
+check('se interpreta id', dev.info.startswith('CtrlLink 1 Banco'), dev.info)
 check('se descubren los parametros', set(dev._params) == set(PARAMS), str(dev._params))
 check('se descubren los canales', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
 check('parametro float tipado', dev._params['kp'].type == 'f32')
@@ -315,21 +315,38 @@ check('las esperas cortas son realmente cortas', _each < 2e-3, f'{_each * 1e6:.0
 check('las esperas largas siguen durmiendo', _cl._SPIN_UNDER <= 2e-3, str(_cl._SPIN_UNDER))
 
 # --------------------------------------------------------------------- banco
-# Las convenciones de unidades del equipo, que se apoyan sobre el protocolo en
-# lugar de estar dentro de el. Se verifican contra canales de prueba: lo que
-# importa es la aritmetica, y el enlace de abajo ya quedo cubierto mas arriba.
+# Las convenciones del equipo, que se apoyan sobre el protocolo en lugar de estar
+# dentro de el: los canales por nombre, y las unidades de un ensayo.
 import bench
+import ensayo
+import numpy as np
+import pandas as pd
 
 rig = bench.Bench.__new__(bench.Bench)
 rig.channels = [_cl.Column('y_uw', 'i32', 360.0 / 4096, 'deg'),
                 _cl.Column('i',    'i16', 26.4,         'mA')]
 
-check('grados -> cuentas', abs(rig.deg(45) - 45 / (360.0 / 4096)) < 1e-9, str(rig.deg(45)))
-check('miliamperes -> LSBs', abs(rig.ma(264) - 10.0) < 1e-9, str(rig.ma(264)))
-check('cuentas -> grados', abs(rig.as_deg(512) - 45.0) < 1e-9, str(rig.as_deg(512)))
-check('LSBs -> miliamperes', abs(rig.as_ma(10) - 264.0) < 1e-9, str(rig.as_ma(10)))
+check('un canal por nombre', rig.channel('i').scale == 26.4)
 check('un canal desconocido levanta excepcion',
       _raises(lambda: rig.channel('nope'), _cl.CtrlLinkError))
+
+# Un eje que gira parejo a una vuelta por segundo, muestreado a 500 Hz, con el
+# comando positivo: la velocidad tiene que dar 2*pi rad/s y el signo +1.
+_t = np.arange(0, 1.0, 0.002)
+_df = pd.DataFrame({'t': _t, 'y_uw': 360.0 * _t, 'u': np.full(len(_t), 200.0),
+                    'i': np.full(len(_t), 100.0)})
+_tv, _w = ensayo.velocidad(_df, ventana=0)
+check('la velocidad sale en rad/s', abs(_w.mean() - 2 * np.pi) < 1e-9 and len(_w) == len(_t) - 1)
+check('el promedio no cambia una velocidad constante',
+      abs(ensayo.velocidad(_df, ventana=0.05)[1].mean() - 2 * np.pi) < 1e-9)
+check('el signo del banco es +1 si el angulo sube con u > 0', ensayo.signo(_df) == 1)
+_df['y_uw'] = -_df['y_uw']
+check('y -1 si baja', ensayo.signo(_df) == -1)
+_n = ensayo.normalizar(_df, ventana=0)
+check('normalizar da vuelta el angulo con el signo del banco', abs(_n['omega'].mean() - 2 * np.pi) < 1e-9)
+check('normalizar pone u en por ciento e i en amperes',
+      abs(_n['u'].iloc[0] - 200 / 2.55) < 1e-9 and abs(_n['i'].iloc[0] - 0.1) < 1e-12)
+check('normalizar trae las columnas de un ensayo', list(_n.columns) == ensayo.COLUMNAS)
 
 # --------------------------------------------- celda cortada por el medio
 # Lo que de verdad pasa en un notebook: el boton de parar en mitad de una
