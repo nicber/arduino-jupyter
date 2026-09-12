@@ -63,9 +63,9 @@ MOTOR = dict(
     L=4.8e-3,       # H
     Ke=0.006,       # V/(rad/s), y N·m/A
     J=7.5e-7,       # kg·m², con el disco
-    Tc=3.0e-5,      # N·m, Coulomb girando
-    Ts=6.25e-5,     # N·m, lo que hace falta para despegar
-    B=2.75e-7,      # N·m/(rad/s)
+    Tc=5.5e-5,      # N·m, Coulomb girando
+    Ts=7.7e-5,      # N·m, lo que hace falta para despegar
+    B=2.33e-7,      # N·m/(rad/s)
 )
 PWM_T = 1e-3        # s, 1 kHz
 
