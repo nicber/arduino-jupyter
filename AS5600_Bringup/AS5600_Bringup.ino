@@ -315,7 +315,7 @@ static void printTelemetry() {
 void setup() {
   // Antes del Serial: a 4 MHz este println saldria a 28800 y el monitor
   // mostraria basura en vez del diagnostico. Ver BoardStart.h.
-  boardClockBegin();
+  board::clock_begin();
 
   Serial.begin(115200);
   while (!Serial) {
@@ -325,7 +325,7 @@ void setup() {
   // Si el reset que trajo hasta aca cayo en medio de una lectura, el sensor
   // quedo esperando pulsos de reloj y sujetando SDA, y Wire se colgaria en la
   // primera transferencia sin decir nada. Ver BoardStart.h.
-  uint8_t pulsos = i2cBusRecover();
+  uint8_t pulsos = board::bus_recover();
 
   Wire.begin();
   Wire.setClock(400000);  // el AS5600 soporta modo rapido

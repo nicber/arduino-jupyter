@@ -90,7 +90,7 @@ static void informar(const __FlashStringHelper* que, uint8_t pin,
 
 void setup()
 {
-    boardClockBegin();
+    board::clock_begin();
 
     Serial.begin(115200);
     delay(100);

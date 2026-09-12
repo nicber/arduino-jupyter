@@ -126,8 +126,8 @@ void setup()
     // Antes del Serial, y antes del muestreador: los 5 kHz son un TOP del
     // Timer2 y valen lo que valga el reloj. El rescate del bus, por el reset
     // que dejó al sensor a medio hablar. Ver BoardStart.h.
-    boardClockBegin();
-    i2cBusRecover();
+    board::clock_begin();
+    board::bus_recover();
 
     Serial.begin(115200);
     while (!Serial)

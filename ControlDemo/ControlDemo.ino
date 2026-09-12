@@ -149,7 +149,7 @@ static const float SENSE_MV_PER_A = 185.0f;
 // reposo: no mide nada, y desde el ADC se ve igual que una entrada al aire.
 //
 // Vcc es REFS=01 en las dos placas del banco. Y elegirla en el clon no es escribir
-// REFS: ver boardAdcSelectReference() en BoardStart.h.
+// REFS: ver board::adc_select_reference() en BoardStart.h.
 //
 // OJO que en este banco el reposo no cae en media escala: cae en 3071 cuentas de
 // 4096, o sea 3,75 V contra Vcc de 5 V, y no en los 2,5 que daría un ACS712
@@ -665,20 +665,20 @@ void setup()
 {
     // El reloj antes que nada: si la placa no corre a 16 MHz, el UART de acá abajo
     // emite al ritmo equivocado y ni el mensaje de error llega. Ver BoardStart.h.
-    boardClockBegin();
+    board::clock_begin();
 
     // El ancho del conversor primero, porque es lo que dice qué placa es; esa sonda
     // no necesita una referencia correcta, porque cae al CLKPR de arranque.
-    g_board.adcfs = boardAdcFullScale();
+    g_board.adcfs = board::adc_full_scale();
 
     // Y enseguida la referencia, antes de cualquier cosa que mida. En una de las
     // dos placas del banco los bits REFS no la eligen, así que todo lo que se mida
     // antes de esta línea corre contra una referencia de resabio: el bandgap, y
     // sobre todo el estado eléctrico de las líneas del bus, que se juzga con
     // umbrales que son fracciones del fondo de escala.
-    boardAdcSelectReference(g_board.adcfs >= ADC_FULL, SENSE_REF_INTERNAL);
+    board::adc_select_reference(g_board.adcfs >= ADC_FULL, SENSE_REF_INTERNAL);
 
-    g_board.bgadc = boardAdcBandgap();
+    g_board.bgadc = board::adc_bandgap();
 
     // La escala del canal de corriente, que depende de la referencia y por lo tanto
     // de la placa. Con Vcc las dos miden lo mismo; con la referencia interna no.
@@ -693,17 +693,17 @@ void setup()
     // protocolo, un cable al aire, un módulo sin alimentación y un corto contra
     // masa se ven los tres igual --el sensor no contesta-- y se arreglan en lugares
     // distintos. Medirlo cuesta cuatro conversiones y una sola vez.
-    g_board.bus = i2cBusCheck(g_board.adcfs);
+    g_board.bus = board::bus_check(g_board.adcfs);
 
     // Y la falla que sobrevive a todo lo anterior: los dos cables cambiados entre
     // sí. El bus se ve impecable y no contesta nadie. Se pregunta antes de
     // destrabar, que es lo que después deja el bus en un estado conocido.
-    if (i2cRespondeInvertido(Sensor::DEVICE_ADDRESS))
+    if (board::responds_swapped(Sensor::DEVICE_ADDRESS))
     {
-        g_board.bus |= I2C_BUS_INVERTIDO;
+        g_board.bus |= board::BUS_SWAPPED;
     }
 
-    i2cBusRecover();
+    board::bus_recover();
 
     // El puente: deja ENA abierto y las dos entradas de sentido en bajo, que es el
     // estado del que parte write().
