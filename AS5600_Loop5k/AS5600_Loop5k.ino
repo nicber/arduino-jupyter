@@ -38,22 +38,25 @@ ISR(TIMER2_COMPA_vect)
 
 // ------------------------------------------------------------------ telemetría
 
+// La muestra y el instante de la última impresión, para sacar la tasa por
+// diferencia. Con nombre y a nivel de archivo, no escondidas adentro de la función:
+// es estado, y el estado que no se ve es el que sorprende.
+static uint16_t g_last_samples = 0;
+static uint32_t g_last_ms      = 0;
+
 static void printAngle(void)
 {
-    static uint16_t last_samples = 0;
-    static uint32_t last_ms = 0;
-
     uint32_t now_ms = millis();
     uint16_t samples = Sensor::samples();
 
     // La vuelta al cero de los enteros sin signo hace que la diferencia sea
     // correcta aunque el contador sea de 16 bits y dé la vuelta cada ~13 s a
     // 5 kHz.
-    uint16_t delta = samples - last_samples;
-    uint32_t elapsed_ms = now_ms - last_ms;
+    uint16_t delta = samples - g_last_samples;
+    uint32_t elapsed_ms = now_ms - g_last_ms;
 
-    last_samples = samples;
-    last_ms = now_ms;
+    g_last_samples = samples;
+    g_last_ms      = now_ms;
 
     if (elapsed_ms == 0)
     {
