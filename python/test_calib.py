@@ -5,7 +5,7 @@ comprueba que lo devuelve: amplitudes, fases, y --lo que importa de verdad-- que
 la compuerta de velocidad rechaza un armónico que depende de la velocidad, que es
 el motor, y acepta el que no, que es el sensor. La segunda empuja la tabla a una
 simulación del dispositivo que reimplementa lut_lookup() y la suma de Fletcher
-tal como están en ControlDemo.ino, así que lo que se prueba es que las dos
+tal como están en AngleLut.h, así que lo que se prueba es que las dos
 mitades del sistema hacen la misma aritmética.
 """
 import os
@@ -236,7 +236,6 @@ class FakeUnoConLut(FakeUno):
         self.params['ang_lutw'] = ('u32', 0, 0xFFFFFFFF)
         self.params['ang_lutsum'] = ('u16', 0, 0)
         self.params['ang_cal'] = ('u8', 0, 0)
-        self.params['ang_sfilt'] = ('u8', 0, 3)
         self.lutw_aplicado = 0xFFFFFFFF
 
     def command(self, cmd):
