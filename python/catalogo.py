@@ -14,14 +14,6 @@ esta tabla contra la del sketch y falla si sobra o falta una entrada. Es la mism
 idea que el golden de `test_tablas.py`.
 """
 
-# Los valores que toman los dos parámetros que eligen qué hace el lazo. Viven acá y
-# no en bench.py porque son parte de lo que significa la tabla de la placa, y porque
-# este módulo no depende de nada: un notebook los importa sin arrastrar el puerto
-# serie, y el banco simulado los usa igual que el de verdad.
-MODE_OPEN, MODE_PID, MODE_RAMP = 0, 1, 2
-POSITION,  CURRENT             = 0, 1
-
-
 # Cada entrada es (clase, unidad, qué es). La clase va primera porque es lo primero
 # que alguien quiere saber: contesta «¿esto lo puedo mover?».
 #
@@ -29,34 +21,13 @@ POSITION,  CURRENT             = 0, 1
 #   lectura   la placa la publica; escribirla no significa nada
 #   cuenta    un total acumulado; ponerla en cero empieza a contar de nuevo
 _CATALOGO = {
-    # La ley de control. Las ganancias son POR MUESTRA, que es lo que hace la
-    # aritmética; `dev.gains()` las toma en tiempo continuo y convierte.
-    'pid_kp':      ('perilla', 'por muestra', 'ganancia proporcional: cuánto comando por cuenta de error'),
-    'pid_ki':      ('perilla', 'por muestra', 'ganancia integral, sobre la suma de errores'),
-    'pid_kd':      ('perilla', 'por muestra', 'ganancia derivativa, sobre el error ya filtrado'),
-    'pid_alpha':   ('perilla', '0 a 1',       'polo del filtro que suaviza el error antes de derivarlo'),
-
-    # Qué se le pide al lazo.
-    'ctl_ref':     ('perilla', 'del objetivo', 'a dónde se le pide que vaya'),
-    'ctl_rate':    ('perilla', 'del objetivo por período', 'pendiente de la rampa; `dev.rev_per_s()` convierte'),
-    'ctl_uff':     ('perilla', '-255 a 255',  'comando de lazo abierto, o prealimentación en lazo cerrado'),
-    'ctl_mode':    ('perilla', '0, 1, 2',     'qué controlador gobierna: MODE_OPEN, MODE_PID, MODE_RAMP'),
-    'ctl_target':  ('perilla', '0, 1',        'sobre qué magnitud cierra el lazo: POSITION o CURRENT'),
-
-    # El puente. Los tres describen el banco y no el programa: `bringup()` los mide.
-    'mot_top':     ('perilla', 'cuentas',     'TOP del Timer1: f = 16 MHz / (2 * top); `dev.pwm()` toma Hz'),
-    'mot_bidir':   ('perilla', '0, 1',        '1 si el puente acciona en los dos sentidos'),
-    'mot_invert':  ('perilla', '0, 1',        '1 si un comando positivo hace *bajar* el ángulo medido'),
+    # Lo único que mueve el motor.
+    'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió de verdad es el canal u'),
 
     # El sensor de ángulo y su calibración.
-    'ang_offset':  ('perilla', 'cuentas',     'la cuenta que se lee como cero; `dev.zero()` la fija'),
-    'ang_alpha':   ('perilla', '0 a 1',       'polo del filtro de posición; 1 lo apaga'),
     'ang_cal':     ('perilla', '0, 1',        '1 si la corrección de la tabla está aplicada'),
-    'ang_sfilt':   ('perilla', '0 a 3',       'filtro interno del AS5600: 3 es el más rápido, 0,29 ms'),
     'ang_lutw':    ('perilla', 'empaquetado', 'una entrada de la tabla: (índice << 16) | valor'),
     'ang_lutsum':  ('lectura', '',            'suma de Fletcher de la tabla: verifica las 64 con una lectura'),
-    'ang_y':       ('lectura', 'cuentas',     'el ángulo de adentro de la vuelta, referido a ang_offset'),
-    'ang_y_uw':    ('lectura', 'cuentas',     'el mismo ángulo desenrollado, que no salta al dar la vuelta'),
     'ang_status':  ('lectura', 'bits',        'STATUS del AS5600: imán detectado, muy débil, muy fuerte'),
     'ang_present': ('lectura', '0, 1',        '0 si el sensor no contesta en el bus I2C'),
     'ang_agc':     ('lectura', '0 a 255',     'ganancia con la que lee; contra un extremo, imán mal montado'),
@@ -66,19 +37,11 @@ _CATALOGO = {
 
     # La medición de corriente.
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
-    'cur_invert':  ('perilla', '0, 1',        '1 si la corriente sale negativa con un comando positivo'),
-    'cur_alpha':   ('perilla', '0 a 1',       'polo del filtro de corriente; 1 lo apaga'),
-    'cur_ma_lsb':  ('lectura', 'mA/cuenta',   'la escala real de esta placa, calculada al arrancar'),
 
-    # Lo que la placa mide de sí misma, para no tener que adivinar cuál es.
-    'board_adcfs': ('lectura', 'cuentas',     'fondo de escala del conversor: 1024 en el UNO, 4096 en el clon'),
-    'board_bgadc': ('lectura', 'cuentas',     'el canal interno medido contra Vcc'),
-    'board_bus':   ('lectura', 'bits',        'estado eléctrico de SDA y SCL antes de encender el TWI'),
-
-    # El reloj del lazo.
-    'loop_div':    ('perilla', 'muestras',    'muestras de 5 kHz por período: 10 son 500 Hz, 5 son 1 kHz'),
+    # El reloj del muestreo.
+    'loop_div':    ('perilla', 'muestras',    'muestras de 5 kHz por fila: 10 son 500 Hz, 5 son 1 kHz'),
     'loop_late':   ('cuenta',  'us',          'peor retardo entre el disparo de un tick y su atención'),
-    'loop_missed': ('cuenta',  'períodos',    'períodos de control que el lazo nunca atendió'),
+    'loop_missed': ('cuenta',  'períodos',    'filas que la placa nunca llegó a atender'),
 
     # Del enlace y no del sketch: éste lo administra CtrlLink.
     'dec':         ('perilla', 'períodos',    'emitir una fila cada tantos períodos, para no saturar el cable'),
@@ -87,13 +50,10 @@ _CATALOGO = {
 # El título de cada grupo, en el orden en que conviene leerlos: primero lo que se
 # mueve para hacer un experimento, después lo que se mira.
 _GRUPOS = (
-    ('ctl',   'Qué se le pide al lazo'),
-    ('pid',   'La ley de control'),
-    ('mot',   'El puente'),
+    ('ctl',   'El comando'),
     ('ang',   'El sensor de ángulo'),
     ('cur',   'La medición de corriente'),
-    ('loop',  'El reloj del lazo'),
-    ('board', 'La placa, medida por sí misma'),
+    ('loop',  'El reloj del muestreo'),
     ('',      'El enlace'),
 )
 
@@ -148,10 +108,9 @@ def por_grupo(nombres):
 #   canales     [(nombre, escala, unidad)], o vacío
 
 _AYUDA = (
-    'para convertir unidades: gains(kp,ki,kd)  deg()  ma()  rev_per_s()  '
-    'as_deg()  as_ma()  smooth()  pwm()  zero()  zero_current()',
-    'para verificar el equipo: rest()  spin(u)  bringup()',
+    'para verificar el equipo: rest()  zero_current()  bringup()',
     'para medir: capture(segundos)  step(parametro, valor)',
+    'para procesar: ensayo.velocidad()  ensayo.normalizar()  ensayo.guardar()',
 )
 
 

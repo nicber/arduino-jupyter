@@ -76,9 +76,9 @@ def main():
     # Las dos vistas tienen que armarse sin explotar, con el simulado y con un
     # filtro. Es una prueba de humo, pero es la que atrapa un f-string roto en una
     # rama que nadie mira hasta que alguien pone `dev` en una celda.
-    check('ang_offset' in banco.describe(), 'describe() nombra las perillas')
-    check('ang_offset' in banco.describe('ang'), 'y el filtro deja pasar su grupo')
-    check('pid_kp' not in banco.describe('ang'), 'y saca los demas')
+    check('ang_cal' in banco.describe(), 'describe() nombra las perillas')
+    check('ang_cal' in banco.describe('ang'), 'y el filtro deja pasar su grupo')
+    check('ctl_uff' not in banco.describe('ang'), 'y saca los demas')
     check(banco._repr_html_().startswith('<div'), 'la tabla de Jupyter se arma')
     check('<table' in banco._repr_html_(), 'y tiene una tabla adentro')
 
