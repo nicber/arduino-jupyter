@@ -1,21 +1,21 @@
 # CtrlLink
 
-Un protocolo serie para gobernar desde un notebook de Jupyter un lazo de control
-que corre en un Arduino: fijar las ganancias, aplicar un escalón en la
-referencia y traerse de vuelta la serie temporal que resulta.
+Un protocolo serie para gobernar desde un notebook de Jupyter un banco que corre
+en un Arduino: fijar sus parámetros, aplicar un escalón y traerse de vuelta la
+serie temporal que resulta.
 
 ```python
 from ctrllink import CtrlLink
 
 dev = CtrlLink()                 # o CtrlLink('COM3'), o '/dev/ttyACM0'
-dev.pid_kp, dev.pid_ki, dev.ctl_mode = 2.5, 0.1, 1
-df = dev.step('ref', 1024, pre=0.1, post=0.9)   # un DataFrame, t = 0 en el escalón
-df.plot(x='t', y=['ref', 'y'])
+dev.ctl_uff = 100
+df = dev.step('ctl_uff', 200, pre=0.3, post=1.2)    # un DataFrame, t = 0 en el escalón
+df.plot(x='t', y=['u', 'y_uw'])
 ```
 
 El dispositivo describe por sí mismo sus parámetros y sus canales de telemetría,
-así que la computadora no sabe nada de ningún sketch en particular. Agregar una
-ganancia al firmware la hace aparecer en el notebook sin tocar una línea del lado
+así que la computadora no sabe nada de ningún sketch en particular. Agregar un
+parámetro al firmware la hace aparecer en el notebook sin tocar una línea del lado
 de Python.
 
 ## Diseño
@@ -94,10 +94,10 @@ un *valor* deformado se aceptaría en silencio.
 que una captura en buffer entra unas 175 muestras: 350 ms a 500 Hz, mucho menos
 que un transitorio hasta el establecimiento. El flujo continuo no tiene límite de
 duración; lo que queda acotado es la frecuencia de muestreo, y a 1 Mbaud ese
-tope está muy por encima de cualquier lazo que pueda correr un UNO.
+tope está muy por encima de lo que puede muestrear un UNO.
 
-**Nunca bloquear el lazo de control.** `Serial.write` bloquea en cuanto se llena
-el buffer de transmisión de 64 bytes, lo que frenaría el lazo y distorsionaría
+**Nunca bloquear el muestreo.** `Serial.write` bloquea en cuanto se llena el
+buffer de transmisión de 64 bytes, lo que frenaría el muestreo y distorsionaría
 justamente la dinámica que se está midiendo. `emit()` consulta primero
 `availableForWrite()` y descarta la fila si no hay lugar, contando el descarte.
 Una fila descartada deja un hueco visible en la secuencia de ticks; una escritura
@@ -115,8 +115,8 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `ControlDemo` corre seis canales a 500 Hz —tres int32 y tres int16, 41
-bytes por fila—, que son 20,5 kB/s, o el 21 % de un enlace de 1 Mbaud.
+sketch `Banco` corre cuatro canales a 500 Hz —un int32 y tres de 16 bits, 25
+bytes por fila—, que son 12,5 kB/s, o el 13 % de un enlace de 1 Mbaud.
 
 ## Protocolo de línea
 
@@ -203,8 +203,8 @@ macOS con un puente CH340 se queda así—, y entonces no hay flanco y la placa
 sigue corriendo con el estado que le dejó la corrida pasada. `reset_wait=0` se
 engancha a un sketch que ya está corriendo, sin resetear nada.
 
-- Los parámetros son atributos, siempre en unidades reales: `dev.pid_kp = 2.5`,
-  `print(dev.pid_kp)`. `dev.params` los lee todos de vuelta.
+- Los parámetros son atributos, siempre en unidades reales: `dev.ctl_uff = 120`,
+  `print(dev.ctl_uff)`. `dev.params` los lee todos de vuelta.
 - `dev.capture(duration, events=[(retardo, nombre, valor), ...])` → DataFrame.
 - `dev.step(nombre, valor, pre=0.1, post=0.9, back=None)` → DataFrame con `t = 0`
   en el escalón. Si se interrumpe, `back` se restituye igual: del otro lado del
@@ -225,8 +225,8 @@ el resto sale solo:
 
 ```cpp
 static const CtrlParam PROGMEM g_params[] = {
-    { "pid_kp", CTRL_I32, &g_pid.kp, 22 },  // Q22: la PC fija 0.5, el dispositivo guarda 2097152
-    { "ref", CTRL_I16, &g_ref,  0 },   // un entero común
+    { "escala", CTRL_I32, &g_escala, 22 },  // Q22: la PC fija 0.5, el dispositivo guarda 2097152
+    { "ctl_uff", CTRL_I16, &g_uff,  0 },    // un entero común
 };
 
 static const CtrlChannel PROGMEM g_channels[] = {
@@ -241,7 +241,7 @@ void setup() {
 
 void loop() {
     if (tick_due()) {
-        control_step();      // escribe g_y, g_u
+        paso();              // escribe g_y, g_u
         CtrlLink::emit();    // una fila, nunca bloquea
     }
     CtrlLink::poll();        // a lo sumo un comando por llamada
@@ -252,7 +252,8 @@ void loop() {
 desde el mismo contexto que los escribe: `loop()`, no una ISR. Los nombres tienen
 12 caracteres como máximo, que es lo que permite ponerles un prefijo de módulo: una
 tabla de tres docenas de parámetros planos no dice quién es dueño de cuál, y
-`pid_kp` contra `ang_offset` contra `mot_top` lo dice sin ir a leer el sketch. Una tabla de canales que produzca una fila más larga
+`ctl_uff` contra `ang_cal` contra `loop_div` lo dice sin ir a leer el sketch. Una
+tabla de canales que produzca una fila más larga
 que el buffer de transmisión es rechazada por `begin()`, en lugar de descartar
 todas las muestras en silencio.
 
@@ -268,14 +269,14 @@ Sobre un clon de UNO con puente CH340G, a 1 Mbaud, con cuatro canales int16 a
 | filas descartadas | 0 |
 | huecos de tick | 0 |
 | uso del enlace | 21 kB/s, 21 % de 1 Mbaud |
-| peor retardo de atención del lazo | 344 µs sobre un período de 1000 µs |
+| peor retardo de atención | 344 µs sobre un período de 1000 µs |
 
 El CH340 merece un párrafo aparte: es el puente que traen la mayoría de los
 clones de UNO y el que suele darse por limitado a velocidades bajas, y aguantó
 1 Mbaud sin perder una sola fila. El retardo de atención es el costo honesto de
-correr la ley de control dentro de `loop()` al lado del manejo del puerto serie;
-el muestreo en sí es rígido, porque lo gobierna el Timer2, así que un cálculo
-tardío aparece como fluctuación en `u`, no en `y`. `loop_late` lo informa, y se
+hacer el paso dentro de `loop()` al lado del manejo del puerto serie; el muestreo
+en sí es rígido, porque lo gobierna el Timer2, así que una atención tardía aparece
+como fluctuación en `u`, no en `y`. `loop_late` lo informa, y se
 puede escribir, así que conviene ponerlo en cero antes de una corrida para medir
 esa corrida.
 
@@ -286,7 +287,7 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r python/requirements.txt jupyterlab matplotlib ipykernel
 ./.venv/bin/python -m ipykernel install --user --name arduino-control \
     --display-name "Arduino Control (.venv)"
-./.venv/bin/jupyter lab notebooks/control_demo.ipynb
+./.venv/bin/jupyter lab notebooks/hardware.ipynb
 ```
 
 ## Organización
@@ -295,20 +296,20 @@ python3 -m venv .venv
 - `python/ctrllink.py` — el protocolo, lado computadora
 - `python/test_ctrllink.py` — pruebas del lado computadora contra una simulación
   del dispositivo fiel byte a byte
-- `ControlDemo/` — lazo de posición con AS5600 a 500 Hz, muestreado a 5 kHz
-- `notebooks/control_demo.ipynb` — demostración completa: salud del enlace,
-  escalones en lazo abierto y cerrado, un barrido de ganancia, cambios en la
-  frecuencia del lazo
+- `Banco/` — el banco en lazo abierto: PWM sobre el actuador, AS5600 muestreado a
+  5 kHz, corriente por el ADC, filas a 500 Hz
+- `notebooks/hardware.ipynb` — el recorrido del banco: el enlace, cada parte del
+  montaje, y un punto de partida para identificar la planta
 
 ```
 arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
   --build-property compiler.c.extra_flags=-O2 \
   --build-property compiler.cpp.extra_flags=-O2 \
   --build-property compiler.c.elf.extra_flags=-O2 \
-  ControlDemo
-arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> ControlDemo
+  Banco
+arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 ```
 
-`ControlDemo` se apropia del Timer2 para el muestreador de 5 kHz, así que
+`Banco` se apropia del Timer2 para el muestreador de 5 kHz, así que
 `analogWrite` deja de funcionar en los pines 3 y 11; los pines 9 y 10 (Timer1) y
 5 y 6 (Timer0) no se ven afectados.

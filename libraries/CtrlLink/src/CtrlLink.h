@@ -58,8 +58,8 @@ enum : uint8_t
 // declarar.
 //
 // Doce y no ocho para que quepa un prefijo de módulo. Una tabla de tres docenas de
-// parámetros planos no dice quién es dueño de cuál, y `pid_kp` contra `ang_offset`
-// contra `mot_top` lo dice sin que haya que ir a leer el sketch. Los cuatro bytes de
+// parámetros planos no dice quién es dueño de cuál, y `ctl_uff` contra `ang_cal`
+// contra `loop_div` lo dice sin que haya que ir a leer el sketch. Los cuatro bytes de
 // más por entrada viven en flash y no en RAM.
 static const uint8_t CTRL_NAME_LEN = 12;
 
