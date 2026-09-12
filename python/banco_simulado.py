@@ -81,6 +81,7 @@ class BancoSimulado:
         self.target = 0
         self.bidir = 1
         self.uinvert = 0
+        self.iinvert = 0
         self.izero = 0
         self.pwmtop = 8000
         self.alpha_y = self.alpha_i = self.alpha_e = 1.0
@@ -232,20 +233,27 @@ class BancoSimulado:
         return self.izero
 
     def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
-        """Vueltas con signo y pico de corriente, con `u` sobre el puente.
+        """Un `Giro`, igual que en el banco de verdad: ver `Bench.spin()`.
 
         `espera` y `quieto` se aceptan para que la firma sea la del banco de
         verdad, donde hay que esperar a que el eje pare antes de medir un sentido.
         Acá el modelo arranca cada captura desde el régimen del comando que tiene
         puesto, así que no hay inercia que esperar.
+
+        La corriente del modelo es el módulo de la velocidad, así que sale siempre
+        positiva: el banco imaginario tiene un sensor unipolar. No es una decisión
+        sobre el banco de verdad, es que no hay ningún signo que simular.
         """
+        from bench import Giro
+
         antes = self.uff
         self.uff = u
         df = self.capture(seconds, warn=False)
         self.uff = antes
         self.rest()
         vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
-        return vueltas, df['i'].abs().max()
+        return Giro(vueltas, df['i'].abs().max(), df['i'].mean(),
+                    df['i'].std() / max(len(df), 1) ** 0.5)
 
     def _comando(self, t, eventos):
         """El `uff` a lo largo de la captura: lo que sale al puente en cada fila.
@@ -338,15 +346,30 @@ class BancoSimulado:
     # ---------------------------------------------------- puesta en marcha
 
     def bringup(self, motor=True, u=120):
+        """Lo mismo que allá, y devuelve lo mismo: un `Cableado`.
+
+        Devuelve el que tiene puesto, no uno medido: en el modelo no hay cables
+        que puedan estar al revés, así que no hay nada que descubrir. Existe para
+        que la celda que hace `cab = dev.bringup()` corra igual, y por eso
+        tampoco lo guarda: un archivo de cableado escrito por un banco de mentira
+        se le aplicaría después al de verdad.
+        """
+        from bench import Cableado
+
         print(f'puesta en marcha: {self.info}')
         for etiqueta, detalle in [
                 ('lazo de control', '500 Hz reales contra 500 nominales, 0 perdidos'),
                 ('sensor', 'contesta en el bus'),
                 ('iman', 'detectado, AGC 128/255, campo 1800'),
                 ('bus i2c', '0 errores de transferencia, 0 desbordes'),
-                ('motor', f'gira con u={u}')]:
+                ('motor', f'gira con u={u}'),
+                ('polaridad', 'un u positivo hace subir el angulo'),
+                ('signo de i', 'el modelo entrega el modulo: sensor unipolar')]:
             print(f'  [   ok]  {etiqueta:<18}  {detalle}')
         print('\n  NADA DE ESTO ES REAL: es el banco simulado.')
+
+        return Cableado(bidir=int(self.bidir), uinvert=int(self.uinvert),
+                        iinvert=int(self.iinvert))
 
 
 def conseguir_banco(forzar_simulado=False, **kw):

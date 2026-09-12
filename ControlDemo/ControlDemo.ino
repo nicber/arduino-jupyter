@@ -112,32 +112,42 @@ static const int16_t U_MAX = 255;
 // `i` se lee como `adc - izero`, así que crece cuando crece la tensión que entrega
 // el sensor. Cuál de los dos sentidos de giro sale positivo depende de dónde esté
 // insertado el sensor, y para un sensor unipolar --en la alimentación del puente--
-// los dos salen positivos. Eso es una propiedad del banco, no de la aritmética.
+// los dos salen positivos. Eso es una propiedad del banco, no de la aritmética, y
+// `iinvert` es la perilla que la reconcilia: un comando positivo tiene que dar una
+// corriente positiva.
 static const uint8_t  SENSE_CHANNEL   = 0;
 
 // La sensibilidad del sensor, que es lo único que convierte cuentas en amperes.
-// 185 mV/A es un ACS712-05B conectado directo. OJO si no cierra con lo que mide
-// un tester en serie con el motor: en este banco el reposo está en 489 mV y no en
-// los 2500 que da un ACS712 alimentado a 5 V, y un divisor de ~5:1 en la salida
-// explicaría las dos cosas a la vez --el cero corrido y la sensibilidad chica--,
-// en cuyo caso acá va 36 y no 185. Ver README.
+// 185 mV/A es un ACS712-05B conectado directo, que es como está pensado el banco.
+// OJO si no cierra con lo que mide un tester en serie con el motor: un reposo muy
+// por debajo de los 2500 mV que da un ACS712 alimentado a 5 V delata un divisor en
+// la salida, y un divisor divide las dos cosas a la vez --el cero y la
+// sensibilidad--, así que ahí va 185 dividido por lo mismo. Ver README.
 static const float    SENSE_MV_PER_A  = 185.0f;
 
 // La referencia del ADC, que es la única perilla de ganancia que tiene el AVR de
-// este lado. Con AVcc un LSB son 4,9 mV; con la referencia interna de 1,1 V son
-// 1,07 mV, o sea 4,5 veces más resolución sobre la misma señal. Para un motor
-// chico eso es la diferencia entre medir y no medir: un ACS712-05B da 185 mV/A, así
-// que 200 mA son 37 mV, que contra AVcc es apenas un escalón de cuantización.
+// este lado, y es una elección entre techo y resolución.
 //
-// El precio es el techo: la entrada no puede pasar de la referencia sin recortar.
-// Con la interna, el reposo del sensor tiene que caer por debajo de 1,1 V, lo que
-// descarta un ACS712 alimentado a 5 V --reposa en 2,5 V y quedaría fuera de escala
-// desde el vamos-- y sirve para uno unipolar, que reposa cerca de cero. Poner
-// SENSE_REF_INTERNAL en false vuelve a AVcc, que admite cualquiera de los dos y
-// mide los dos mal.
+// Manda el techo, así que por omisión va la referencia alta. La entrada no puede
+// pasar de la referencia sin recortar, y un ACS712 es un sensor bipolar: reposa en
+// la mitad de su alimentación --2,5 V con 5 V-- para poder bajar cuando la
+// corriente cambia de sentido. Contra la referencia interna de 1,1 V ese sensor
+// satura en reposo, o sea que no mide nada y encima se ve igual que una entrada al
+// aire. Con la alta reposa en media escala, que es exactamente donde tiene que
+// estar para medir los dos sentidos.
 //
-// SENSE_ZERO es sólo el punto de partida de `izero`; el cero de verdad lo mide la
-// computadora. Ver Bench.zero_current().
+// Lo que se paga es resolución: un LSB pasa de 1,07 mV a 4,9, y con 185 mV/A eso
+// deja 200 mA en apenas siete u ocho cuentas. Es el precio de poder medir el
+// sensor que está puesto.
+//
+// SENSE_REF_INTERNAL en true vuelve a la interna, y sirve para un sensor unipolar
+// --el que va en la alimentación del puente-- que reposa cerca de cero y no
+// necesita techo, o para uno bipolar con un divisor a la salida. Ahí sí conviene:
+// son 4,5 veces más resolución sobre la misma señal.
+//
+// SENSE_ZERO es sólo el punto de partida de `izero` --media escala con la alta,
+// cero con la interna--; el cero de verdad lo mide la computadora. Ver
+// Bench.zero_current().
 //
 // La interna no vale 1,100 V: el bandgap está especificado entre 1,0 y 1,2 V, o
 // sea +/-10 % de error de ganancia de chip a chip, y ese error va derecho a los mA
@@ -145,9 +155,10 @@ static const float    SENSE_MV_PER_A  = 185.0f;
 // es el bandgap leído contra AVcc, en cuentas. Falta una sola tensión conocida
 // para cerrar la cuenta, porque acá adentro no hay ninguna, así que AVcc se mide
 // una vez con un tester y entonces la referencia interna vale
-// AVcc * bgadc / adcfs. `bringup()` hace esa cuenta y dice qué número poner acá;
-// ADC_REF_MV es por placa, y en este banco hay dos.
-static const bool     SENSE_REF_INTERNAL = true;
+// AVcc * bgadc / adcfs. `bringup()` hace esa cuenta y dice qué número poner acá.
+// ADC_REF_MV es por placa --acá son los 5006 mV de AVcc medidos en el UNO de este
+// banco-- y en este banco hay dos placas.
+static const bool     SENSE_REF_INTERNAL = false;
 static const float    ADC_REF_MV      = SENSE_REF_INTERNAL ? 1093.0f : 5006.0f;
 
 // Todo lo que sigue cuenta en cuentas de 12 bits, en las dos placas del banco.
@@ -180,12 +191,16 @@ static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER
 // ambigüedad. Con REFS=11 el canal interno del multiplexor satura --entrada y
 // referencia son la misma tensión-- y con REFS=01 da 1025 cuentas de 4096, que es
 // 0,2502. Eso dice que REFS=11 vale 1,024 V y REFS=01 vale 4,096: dos de las tres
-// que el LGT8F declara por nombre, y con cuatro decimales de acuerdo. O sea que el
-// canal de corriente corre contra 1,024 V y no contra los 1,1 del ATmega.
+// que el LGT8F declara por nombre, y con cuatro decimales de acuerdo.
 //
-// Son un 6 % de diferencia, no un factor de cuatro. El factor de cuatro era el
-// ancho del conversor y ya está corregido más arriba.
-static const float    ADC_REF_MV_LGT8F = 1024.0f;
+// Las dos elecciones difieren, entonces, en las dos placas, y esta constante lleva
+// las dos del clon: con la interna corre contra 1,024 V y no contra los 1,1 del
+// ATmega --un 6 % de diferencia, no un factor de cuatro; el factor de cuatro era
+// el ancho del conversor y ya está corregido más arriba-- y con la alta corre
+// contra 4,096 V y no contra los 5,006 de AVcc, que es un 22 %. Ese 22 % es plata:
+// son los mA que se informan, y dárselos al clon medidos con la regla del UNO
+// dejaría todo el canal alto en la misma proporción.
+static const float    ADC_REF_MV_LGT8F = SENSE_REF_INTERNAL ? 1024.0f : 4096.0f;
 
 // `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
 // menos de una cuenta por período sin que la cuantización la anule.
@@ -275,6 +290,22 @@ static uint8_t g_bidir   = 1;   // 1: el puente acciona en los dos sentidos
 // roto -- dos veredictos opuestos en la misma tarde-- hasta que se lo midió con
 // el eje realmente parado. Ver Bench.spin().
 static uint8_t g_uinvert = 0;
+
+// 1: la corriente medida sale negativa cuando un comando positivo la hace
+// circular. Es el hermano de `uinvert` para el otro sensor, y hace falta que sean
+// dos porque cada uno arregla algo que el otro no puede: `uinvert` da vuelta el
+// puente, así que da vuelta el ángulo y la corriente a la vez. Si después de
+// acertarle al ángulo la corriente sigue saliendo al revés, lo que está dado
+// vuelta es por dónde entra el sensor de corriente, y eso sólo se arregla acá --o
+// dándolo vuelta a mano.
+//
+// Importa porque `i` no es sólo telemetría: con target = CURRENT el lazo cierra
+// sobre ella, y realimentar con el signo cambiado no se establece, se escapa.
+//
+// En un sensor unipolar --el que va en la alimentación del puente-- los dos
+// sentidos de giro salen positivos y esto no arregla nada, porque no hay nada que
+// arreglar. `bringup()` distingue los dos casos midiendo.
+static uint8_t g_iinvert = 0;
 
 static uint16_t g_pwmtop = PWM_TOP_DEFAULT;   // TOP del Timer1: f = 8 MHz / pwmtop
 
@@ -534,6 +565,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "tickdiv", CTRL_U8,  &g_tickdiv,  0           },
     { "bidir",   CTRL_U8,  &g_bidir,    0           },
     { "uinvert", CTRL_U8,  &g_uinvert,  0           },
+    { "iinvert", CTRL_U8,  &g_iinvert,  0           },
     { "pwmtop",  CTRL_U16, &g_pwmtop,   0           },
     { "cal",     CTRL_U8,  &g_cal,      0           },
     { "sfilt",   CTRL_U8,  &g_sfilt,    0           },
@@ -826,7 +858,18 @@ static void measure(void)
     adc = g_adc;
     interrupts();
 
-    g_i = clamp16(g_i_filt[1].update(g_i_filt[0].update(adc - g_izero)),
+    // El offset primero y el signo después: `izero` está en cuentas del ADC, que
+    // es el dominio en el que la computadora lo mide, así que restarlo no puede
+    // depender de hacia dónde se cuente después. Ver Bench.zero_current(), que
+    // deshace esta misma composición para calcular el cero.
+    int16_t sensed = (int16_t)(adc - g_izero);
+
+    if (g_iinvert)
+    {
+        sensed = (int16_t)-sensed;
+    }
+
+    g_i = clamp16(g_i_filt[1].update(g_i_filt[0].update(sensed)),
                   INT16_MIN, INT16_MAX);
 
     int16_t y = sensor_measurement();
@@ -1232,9 +1275,10 @@ void setup()
     // La escala del canal de corriente, que depende de la referencia y por lo
     // tanto de la placa. Con AVcc las dos miden lo mismo; con la referencia
     // interna no.
+    // Cuál de las dos placas es, y nada más: cada constante ya trae adentro la
+    // referencia que le toca según SENSE_REF_INTERNAL.
     {
-        const float ref = (SENSE_REF_INTERNAL && g_adcfs >= ADC_FULL)
-                        ? ADC_REF_MV_LGT8F : ADC_REF_MV;
+        const float ref = (g_adcfs >= ADC_FULL) ? ADC_REF_MV_LGT8F : ADC_REF_MV;
         g_imalsb = (uint16_t)(256.0f * 1000.0f * (ref / ADC_FULL)
                               / SENSE_MV_PER_A + 0.5f);
     }

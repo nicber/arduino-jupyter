@@ -14,6 +14,12 @@ notebook contenga un controlador y un experimento y nada más.
 y reabre el enlace, lo que resetea la placa. Todas las celdas lo llaman, así que
 cada celda arranca desde los valores por omisión del propio sketch y ninguna
 depende de que se haya corrido la de arriba.
+
+Lo único que no puede salir del sketch es lo que describe a este banco y no al
+programa: la calibración del sensor y los tres números del cableado --si el puente
+invierte, y los dos signos que hacen que un comando positivo dé velocidad positiva
+y corriente positiva. Los mide `dev.bringup()` una vez, los deja anotados, y
+`sync_board()` los vuelve a poner después de cada reset. Ver `Cableado`.
 """
 
 from __future__ import annotations
@@ -22,14 +28,16 @@ import hashlib
 import json
 import subprocess
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import serial
 
 from ctrllink import CtrlLink, CtrlLinkError, find_port
 
-__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError',
-           'CALIBRACION',
+__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'Cableado', 'Giro',
+           'CtrlLinkError', 'CALIBRACION', 'CABLEADO',
            'MODE_OPEN', 'MODE_PID', 'MODE_RAMP', 'POSITION', 'CURRENT']
 
 FQBN      = 'arduino:avr:uno'
@@ -58,6 +66,10 @@ BUILD_DIR = _HERE / 'build'
 # del banco y no del proyecto-- y la ruta se resuelve desde este archivo, así que
 # no depende de desde dónde se corra el notebook. Ver sync_board_cal().
 CALIBRACION = _HERE / 'notebooks' / 'calibracion.json'
+
+# Y el cableado de este banco, por la misma razón y con las mismas reglas. Lo
+# escribe bringup() y lo aplica sync_board(). Ver Cableado.
+CABLEADO = _HERE / 'notebooks' / 'cableado.json'
 
 # El core de AVR compila con `-Os` --optimizar por tamaño--, que es lo razonable
 # para un sketch cualquiera y no es lo que quiere éste: acá el paso de control
@@ -121,7 +133,110 @@ _BUS_LINEA = {
 # Los dos cables cambiados entre sí, que no es de una línea sino de las dos.
 _BUS_INVERTIDO = 0x10
 
+# Cuánto tiene que girar el eje en un tirón de lazo abierto para que el signo de
+# lo que giró signifique algo. Por debajo de esto lo que se mide es el arrastre
+# del giro anterior o el ruido del sensor, no el sentido en el que empuja el
+# puente. Veinte grados: bastante más que el ruido y bastante menos que lo que
+# da cualquier motor que realmente arranque.
+_GIRO_MINIMO = 0.05     # vueltas
+
+# Y cuánta corriente de pico por encima del reposo cuenta como «el motor consumio
+# algo». Es el otro testigo de que el actuador existe, para el banco que no tiene
+# sensor de angulo.
+_I_MOTOR_MA = 50
+
 _link = None
+
+
+# ------------------------------------------------------------------ el cableado
+
+class Giro(NamedTuple):
+    """Lo que deja un tirón de lazo abierto: ver `Bench.spin()`."""
+
+    vueltas: float    # con signo: es lo que hace verificable el sentido
+    pico: float       # mA, sin signo: el pico de arranque
+    corriente: float  # mA, con signo y promediados: es lo que tiene el signo
+    error: float      # mA, cuánto vale ese promedio: su error estándar
+
+
+@dataclass
+class Cableado:
+    """Lo que en este banco se fija con cables y la placa olvida en cada reset.
+
+    Son tres números, y los tres describen un banco y no el programa:
+
+      - `bidir`, si el puente acciona en los dos sentidos o en uno solo;
+      - `uinvert`, el signo que hace que un comando positivo *suba* el ángulo;
+      - `iinvert`, el que hace que ese mismo comando dé una corriente *positiva*.
+
+    Hacen falta los dos signos y no uno: `uinvert` da vuelta el puente, así que da
+    vuelta el ángulo y la corriente a la vez. Si con el ángulo ya derecho la
+    corriente sigue saliendo al revés, lo que está dado vuelta es por dónde entra
+    el sensor de corriente, y eso no hay `uinvert` que lo arregle.
+
+    El sketch arranca siempre en los mismos valores --a propósito: una placa tiene
+    que arrancar diciendo lo que es y no lo que alguien le dejó puesto-- y
+    `sync_board()` resetea la placa en cada celda. Así que estos tres números hay
+    que volver a ponerlos cada vez, y el único que los sabe es esta máquina. Es la
+    misma división de trabajo que la calibración del sensor, y por eso se guardan
+    igual: un archivo del banco, fuera del repositorio.
+
+    `bringup()` los mide y devuelve este objeto; `sync_board()` lo aplica solo.
+    """
+
+    bidir: int = 1
+    uinvert: int = 0
+    iinvert: int = 0
+
+    # El veredicto de la corrida de bringup() que armó este objeto. No es parte
+    # del cableado --no se guarda, y un Cableado leído del archivo lo trae en
+    # True-- pero vive acá para que `if dev.bringup():` siga significando lo que
+    # significaba cuando bringup() devolvía un booleano.
+    ok: bool = True
+
+    _GUARDADOS = ('bidir', 'uinvert', 'iinvert')
+
+    def __bool__(self):
+        return self.ok
+
+    def aplicar(self, dev):
+        """Escribe los tres parámetros en la placa. Devuelve `dev`.
+
+        `iinvert` puede no estar: es más nuevo que los otros dos, y una placa con
+        un sketch de antes no lo declara. Se saltea en lugar de fallar, porque el
+        resto del cableado sigue siendo aplicable y decirlo es tarea de bringup().
+        """
+        for nombre in self._GUARDADOS:
+            if nombre in dev._params:
+                setattr(dev, nombre, getattr(self, nombre))
+        return dev
+
+    def guardar(self, ruta=None):
+        """Lo deja escrito para las próximas celdas. Devuelve la ruta."""
+        ruta = Path(ruta) if ruta else CABLEADO
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        datos = {k: v for k, v in asdict(self).items() if k in self._GUARDADOS}
+        ruta.write_text(json.dumps(datos, indent=1) + '\n')
+        return ruta
+
+    @classmethod
+    def cargar(cls, ruta=None):
+        """El cableado guardado, o None si no hay archivo.
+
+        Un archivo ilegible es lo mismo que no tenerlo: el banco anda igual, sólo
+        que con los valores por omisión del sketch, y eso es preferible a que una
+        celda no arranque por un JSON a medio escribir.
+        """
+        ruta = Path(ruta) if ruta else CABLEADO
+        try:
+            datos = json.loads(ruta.read_text())
+        except (OSError, ValueError):
+            return None
+        return cls(**{k: int(v) for k, v in datos.items() if k in cls._GUARDADOS})
+
+    def __str__(self):
+        return (f'bidir = {self.bidir}, uinvert = {self.uinvert}, '
+                f'iinvert = {self.iinvert}')
 
 
 # -------------------------------------------------------------- el dispositivo
@@ -254,11 +369,31 @@ class Bench(CtrlLink):
         pone el cero sobre la cuenta actual y `i` en cero. Es exactamente lo que
         hace zero() con el ángulo. Deja el motor en reposo, que es la condición
         bajo la cual la medición significa algo.
+
+        Con `iinvert` puesto la placa informa `izero - adc`, así que la corrección
+        va para el otro lado. El offset se mide en cuentas del ADC y el signo se
+        aplica después, que es el orden en el que lo hace la placa: ver measure()
+        en ControlDemo.ino.
         """
         self.rest()
         df = self.capture(seconds, warn=False)
-        self.izero = round(self.izero + df['i'].mean() / self.channel('i').scale)
+        self.izero = round(self.adc_de_i(df['i'].mean()))
         return self.izero
+
+    def adc_de_i(self, ma):
+        """Los mA que informa el canal `i` -> la cuenta cruda del ADC que los produjo.
+
+        Deshace las dos cosas que la placa le hace a la lectura --el offset y, si
+        está puesto, el signo-- y es lo que permite juzgar si la entrada está
+        contra un riel, que es una pregunta sobre el ADC y no sobre la corriente.
+        """
+        cuentas = ma / self.channel('i').scale
+        return self.izero + (-cuentas if self._iinvert else cuentas)
+
+    @property
+    def _iinvert(self):
+        """`iinvert`, o 0 si la placa tiene grabado un sketch que no lo declara."""
+        return int(self.iinvert) if 'iinvert' in self._params else 0
 
     def rest(self):
         """Lazo abierto, comando en cero. Donde tendría que terminar todo experimento.
@@ -273,10 +408,14 @@ class Bench(CtrlLink):
     def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
         """Lazo abierto con `u` sobre el puente por un instante, y de vuelta a reposo.
 
-        Devuelve (vueltas, mA de pico). Las vueltas van con signo, que es lo que
-        hace verificable el sentido; la corriente no, porque que el ACS712 vea o no
-        el signo depende de en qué parte del circuito esté insertado, y para el
-        pico da igual.
+        Devuelve un `Giro`: vueltas, pico de corriente y corriente media. Las
+        vueltas van con signo, que es lo que hace verificable el sentido. De la
+        corriente vienen las dos formas porque contestan preguntas distintas: el
+        pico va sin signo y dice si el motor consumió algo, y la media va con signo
+        y es la única evidencia de para qué lado circuló. Que el sensor vea o no el
+        signo depende de en qué parte del circuito esté insertado --uno unipolar da
+        positivo en los dos sentidos-- y eso también es algo que hay que medir, no
+        suponer.
 
         Espera primero a que el eje esté realmente quieto, y esa espera no es una
         precaución de más: con el puente abierto el motor no frena, sigue por
@@ -314,12 +453,19 @@ class Bench(CtrlLink):
             print(f'  OJO: el eje seguia girando a {arrastre:.0f} grados/s al empezar '
                   f'esta medicion; el sentido que informa puede ser el de la inercia')
 
-        return vueltas, df['i'].abs().max()
+        # El error del promedio y no la dispersión de las muestras: lo que hay que
+        # saber es si el signo del promedio es el de la corriente o el del ruido, y
+        # promediar doscientas muestras baja esa incertidumbre por raíz de
+        # doscientas. Juzgarlo contra la dispersión suelta rechazaría mediciones
+        # que están a veinte sigmas de cero, que es lo que hacía acá: este banco
+        # da -45 mA de media con 25 mA de ruido por muestra, o sea 1,7 mA de error.
+        return Giro(vueltas, df['i'].abs().max(), df['i'].mean(),
+                    df['i'].std() / max(len(df), 1) ** 0.5)
 
     # ------------------------------------------------------- puesta en marcha
 
     def bringup(self, motor=True, u=120):
-        """Verifica el hardware, un subsistema por vez.
+        """Verifica el hardware, un subsistema por vez. Devuelve un `Cableado`.
 
         Cada línea es algo que puede estar mal por su cuenta: el enlace, el lazo,
         el imán, el bus I2C, el cero de la medición de corriente --que de paso se
@@ -327,6 +473,18 @@ class Bench(CtrlLink):
         correrlo primero, y después de cualquier cambio en el cableado: un
         controlador ajustado contra un sensor que no está leyendo es una tarde
         larga.
+
+        No sólo mide los dos signos del banco: los *deja puestos*. Un diagnóstico
+        que dice «poner uinvert = 1» y deja la placa como estaba hace falla la
+        celda siguiente, y la que la corre ya se olvidó de lo que decía la línea.
+        Así que bringup() corrige lo que encuentra, vuelve a medir para
+        comprobarlo --el ángulo se mide de nuevo accionando el motor, que es lo
+        único que lo prueba-- y devuelve los valores que quedaron, que son los que
+        hay que volver a poner después de cada reset. Los guarda además en
+        `CABLEADO`, y ahí es donde `sync_board()` los encuentra sola.
+
+        El objeto que devuelve sigue valiendo por su veredicto, así que
+        `if dev.bringup():` significa lo mismo que antes.
         """
         results = []
 
@@ -369,7 +527,7 @@ class Bench(CtrlLink):
         #    a simple vista. Importa porque el ADC del clon tiene 12 bits contra
         #    los 10 del UNO: la placa normaliza a 12 y lo dice acá, así que un
         #    canal de corriente cuatro veces grande deja de ser un misterio.
-        if 'adcfs' in self.params:
+        if 'adcfs' in self._params:
             fondo = self.get('adcfs')
             bg    = self.get('bgadc')
             report('placa', True,
@@ -401,22 +559,44 @@ class Bench(CtrlLink):
         #    Va antes que el sensor a propósito: si el sensor no contesta, esta
         #    línea dice si es un cable, una alimentación o un corto, que desde el
         #    protocolo se ven los tres igual.
-        if 'busdiag' in self.params:
+        #
+        #    Pero es una foto del arranque y no una medición de ahora: la placa la
+        #    saca una sola vez, antes de que el TWI tome las líneas, porque después
+        #    ya no puede --el periférico gobierna los pines. Así que hay que
+        #    contrastarla con algo vivo, y ese algo es `spres`: si el sensor está
+        #    contestando en este momento, el bus está bien ahora, diga lo que diga
+        #    la foto. Sin esto, alguien que ve «SDA y SCL estan cambiados»,
+        #    intercambia los cables y vuelve a correr bringup() recibe el mismo
+        #    veredicto sobre un cableado que ya arregló, y se pone a buscar en el
+        #    lugar equivocado. Lo que hace falta no es tocar más cables: es
+        #    resetear la placa para que vuelva a mirar, y eso es sync_board().
+        present = bool(df.attrs.get('spres', 1))
+
+        if 'busdiag' in self._params:
             diag = self.get('busdiag')
             sda, scl = diag & 0x03, (diag >> 2) & 0x03
-            if diag & _BUS_INVERTIDO:
+            sano = not (diag & _BUS_INVERTIDO) and sda == 0 and scl == 0
+
+            if present and not sano:
+                report('cables del bus', None,
+                       'la placa vio un problema en el bus al arrancar y el sensor '
+                       'esta contestando igual, asi que esa foto ya no describe el '
+                       'bus de ahora: o los cables se arreglaron despues, o la '
+                       'medicion del arranque agarro un transitorio. Correr '
+                       'sync_board() para que la placa la vuelva a sacar')
+            elif diag & _BUS_INVERTIDO:
                 report('cables del bus', False,
                        'SDA y SCL estan cambiados entre si: el sensor contesta '
-                       'hablandole al reves. Intercambiar los dos cables')
+                       'hablandole al reves. Intercambiar los dos cables y correr '
+                       'sync_board(), que resetea la placa y la hace medir de nuevo')
             else:
-                report('cables del bus', sda == 0 and scl == 0,
+                report('cables del bus', sano,
                        f'SDA {_BUS_LINEA.get(sda, "?")}, '
                        f'SCL {_BUS_LINEA.get(scl, "?")}')
 
         # 4. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
         #    que diga su registro del imán no significa nada, y conviene decir
         #    cuál de los dos problemas es.
-        present = bool(df.attrs.get('spres', 1))
         report('sensor', present,
                'contesta en el bus' if present else
                'no contesta -- revisar SDA (A4), SCL (A5), alimentacion y pull-ups')
@@ -495,14 +675,27 @@ class Bench(CtrlLink):
         #    sin recortar. Eso se juzga por el margen y no por el valor, porque
         #    dónde reposa depende del sensor y de con qué esté alimentado.
         lsb = self.channel('i').scale
-        adc = self.izero + df['i'].mean() / lsb
+        adc = self.adc_de_i(df['i'].mean())
         sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
 
         if not sensed:
+            # Contra el riel de arriba hay dos causas y se arreglan en lugares
+            # distintos, así que conviene nombrar las dos en lugar de adivinar: la
+            # entrada al aire, y la entrada que mide bien pero contra una
+            # referencia más chica que ella. Un ACS712 alimentado a 5 V reposa en
+            # Vcc/2, o sea 2,5 V, y la referencia interna vale 1,1: ese sensor
+            # satura en reposo y desde acá se ve igual que un cable que no está. La
+            # diferencia la hace de qué riel se trata.
             rest_ma = 0.0
+            arriba = adc > _ADC_FULL / 2
             report('cero de i', None,
-                   f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): '
-                   f'no parece haber nada conectado en A0')
+                   f'entrada contra el riel {"de arriba" if arriba else "de abajo"} '
+                   f'del ADC ({adc:.0f} de {_ADC_FULL}): '
+                   + ('no hay nada conectado en A0, o lo que hay reposa por encima '
+                      'de la referencia y satura: un ACS712 alimentado a 5 V reposa '
+                      'en Vcc/2 y la interna vale 1,1 V. Ver README'
+                      if arriba else
+                      'no parece haber nada conectado en A0'))
         else:
             # Lo que hay que mirar es el margen, no el valor: desde el reposo hasta
             # el tope de escala es todo lo que una corriente puede crecer antes de
@@ -538,43 +731,89 @@ class Bench(CtrlLink):
         #    disponible: dar por bueno un motor porque la corriente se movió,
         #    cuando la entrada de corriente está al aire, es peor que no medir.
         if not motor:
-            report('motor', None, 'omitido (motor=False)')
-            report('sentido', None, 'omitido (motor=False)')
-            report('polaridad', None, 'omitido (motor=False)')
+            for etiqueta in ('motor', 'polaridad', 'sentido', 'signo de i'):
+                report(etiqueta, None, 'omitido (motor=False)')
         else:
             print(f'  accionando el motor con u = {u:+} durante 0,4 s, '
                   f'PWM a {self.pwm_hz / 1000:.1f} kHz ...')
-            fwd, drawn = self.spin(u)
+            ida = self.spin(u)
 
-            evidence = ([f'{abs(fwd):.2f} vueltas'] if present else []) + \
-                       ([f'{drawn:.0f} mA de pico'] if sensed else [])
+            evidence = ([f'{abs(ida.vueltas):.2f} vueltas'] if present else []) + \
+                       ([f'{ida.pico:.0f} mA de pico'] if sensed else [])
 
             if not evidence:
                 report('motor', None, 'no se puede evaluar: no hay sensor de '
                                       'angulo ni medicion de corriente')
             else:
                 report('motor',
-                       (present and abs(fwd) > 0.05) or
-                       (sensed and drawn > abs(rest_ma) + 50),
+                       (present and abs(ida.vueltas) > _GIRO_MINIMO) or
+                       (sensed and ida.pico > abs(rest_ma) + _I_MOTOR_MA),
                        ', '.join(evidence))
 
-            # 7. El sentido, que es una verificación aparte porque falla aparte y
+            # 7. La polaridad: un comando positivo tiene que hacer *subir* el
+            #    ángulo medido. Si lo hace bajar, el lazo de posición realimenta en
+            #    positivo y se escapa con una referencia de cualquier signo, así que
+            #    probando no se descubre. Depende de dos cables --los del motor en
+            #    el puente, y el sentido en que el imán mira al sensor-- y `uinvert`
+            #    es el que los reconcilia.
+            #
+            #    Va antes que el sentido por dos razones. Una es que define qué
+            #    quiere decir «un comando positivo», y todo lo que sigue lo usa. La
+            #    otra es que, al revés que el sentido, no necesita que el
+            #    puente invierta: `uinvert` da vuelta el sentido adentro de drive()
+            #    y eso vale igual con `bidir = 0`, donde el comando nunca es
+            #    negativo pero sí sale por la otra entrada. Un banco de un solo
+            #    cuadrante también puede tener el imán al revés, y hasta acá se
+            #    quedaba sin la única verificación que lo detecta.
+            #
+            #    Lo que `uinvert` no puede arreglar es un sentido fijado en cobre:
+            #    IN1 e IN2 atados a riel, o un actuador de un solo transistor, no
+            #    escuchan qué pin levanta drive(). Por eso se mide de nuevo después
+            #    de darlo vuelta en lugar de darlo por arreglado: si el ángulo
+            #    sigue bajando, el arreglo no es un parámetro sino dos cables.
+            if not present:
+                report('polaridad', None, 'no se puede evaluar sin el sensor de angulo')
+            elif abs(ida.vueltas) <= _GIRO_MINIMO:
+                report('polaridad', None,
+                       f'no se puede evaluar: con u = {u:+} el eje no se movio')
+            else:
+                if ida.vueltas < 0:
+                    print(f'  un u positivo baja el angulo: poniendo uinvert = '
+                          f'{0 if self.uinvert else 1} y midiendo de nuevo ...')
+                    self.uinvert = 0 if self.uinvert else 1
+                    ida = self.spin(u)
+
+                derecho = ida.vueltas > 0
+                report('polaridad', derecho,
+                       f'un u positivo hace {"subir" if derecho else "BAJAR"} el '
+                       f'angulo, con uinvert = {self.uinvert}'
+                       + ('' if derecho else
+                          '  -- dar vuelta uinvert no cambio nada, asi que el '
+                          'sentido de este banco esta fijado en cobre y no en '
+                          'software: IN1 (6) e IN2 (7) atados, o un actuador de un '
+                          'solo transistor. Dar vuelta los dos cables del motor, o '
+                          'el iman sobre el sensor'))
+
+            # 8. El sentido, que es una verificación aparte porque falla aparte y
             #    en otro lado: IN1 e IN2 intercambiados, o uno de los dos sin
             #    conectar, dejan pasar todo lo anterior y recién se notan como un
             #    lazo cerrado que se escapa en vez de establecerse. La evidencia
             #    tiene que ser el angulo: la corriente mide lo mismo en los dos
             #    sentidos, asi que no distingue el caso.
+            vuelta = None
+            reverses = False
+
             if not self.bidir:
                 report('sentido', None, 'bidir = 0, el puente esta declarado de un '
-                                        'solo cuadrante')
-                report('polaridad', None, 'no se puede evaluar sin invertir')
+                                        'solo cuadrante: no hay segundo sentido que '
+                                        'verificar')
             elif not present:
                 report('sentido', None, 'no se puede evaluar sin el sensor de angulo')
-                report('polaridad', None, 'no se puede evaluar sin el sensor de angulo')
             else:
                 print(f'  y ahora con u = {-u:+} ...')
-                rev, _ = self.spin(-u)
-                reverses = fwd * rev < 0 and abs(rev) > 0.05
+                vuelta = self.spin(-u)
+                reverses = (ida.vueltas * vuelta.vueltas < 0 and
+                            abs(vuelta.vueltas) > _GIRO_MINIMO)
 
                 # Las dos maneras de no invertir se arreglan en lugares distintos
                 # y se distinguen en los datos, así que conviene no meterlas en el
@@ -584,42 +823,114 @@ class Bench(CtrlLink):
                 # no se mueve nada, el puente no tiene el segundo cuadrante: no hay
                 # nada que arreglar en el cableado, hay que decírselo al lazo para
                 # que recorte en cero y el anti-windup se entere.
+                #
+                # Eso último no se decide acá aunque se vea: un IN2 suelto da
+                # exactamente la misma medición que un puente de un solo cuadrante,
+                # y poner `bidir = 0` sólo taparía un cable flojo dándole nombre de
+                # topología. La diferencia está en el banco, no en los datos.
                 if reverses:
                     pista = ''
-                elif abs(rev) <= 0.05:
+                elif abs(vuelta.vueltas) <= _GIRO_MINIMO:
                     pista = ('  -- con el comando negativo no se movio: si el puente '
                              'es de un solo cuadrante, poner dev.bidir = 0; si no, '
                              'revisar IN2 (7)')
                 else:
                     pista = ('  -- giro para el mismo lado con las dos polaridades: '
-                             'revisar IN1 (6) e IN2 (7)')
+                             'el puente no esta escuchando IN1 (6) ni IN2 (7). Si '
+                             'estan fijos por cable --el montaje de un solo '
+                             'cuadrante-- poner dev.bidir = 0, que es declararlo; '
+                             'si no, revisar los dos')
 
                 report('sentido', reverses,
-                       f'{fwd:+.2f} vueltas con u = {u:+}, {rev:+.2f} con u = {-u:+}'
-                       + pista)
+                       f'{ida.vueltas:+.2f} vueltas con u = {u:+}, '
+                       f'{vuelta.vueltas:+.2f} con u = {-u:+}' + pista)
 
-                # 8. Y la polaridad, que es distinta de que el puente invierta: un
-                #    comando positivo tiene que hacer *subir* el angulo medido. Si
-                #    lo hace bajar, el lazo de posicion realimenta en positivo y se
-                #    escapa con una referencia de cualquier signo, asi que probando
-                #    no se descubre. Depende de dos cables --los del motor en el
-                #    puente, y el sentido en que el iman mira al sensor-- y `uinvert`
-                #    es el que los reconcilia.
-                if not reverses:
-                    report('polaridad', None,
-                           'no se puede evaluar mientras el puente no invierta')
-                else:
-                    ok = fwd > 0
-                    report('polaridad', ok,
-                           f'un u positivo hace {"subir" if ok else "BAJAR"} el '
-                           f'angulo, con uinvert = {self.uinvert}'
-                           + ('' if ok else
-                              f'  -- poner uinvert = {0 if self.uinvert else 1}, '
-                              f'o dar vuelta los dos cables del motor'))
+            # 9. Y el signo de la corriente, que es el mismo problema que la
+            #    polaridad sobre el otro sensor: un comando positivo tiene que dar
+            #    una corriente positiva, porque con target = CURRENT el lazo cierra
+            #    sobre ella y realimentar con el signo cambiado no se establece.
+            #
+            #    Hace falta un segundo parámetro y no alcanza con `uinvert` porque
+            #    `uinvert` da vuelta el puente, o sea las dos cosas a la vez: si el
+            #    ángulo ya quedó derecho y la corriente sigue saliendo al revés, lo
+            #    que está dado vuelta es por dónde entra el sensor de corriente.
+            #
+            #    El umbral no es un número elegido: es cinco veces el error del
+            #    propio promedio, o sea la pregunta de si el signo que se está por
+            #    creer es el de la corriente o el del ruido. Un banco con el eje
+            #    frenado informaría si no una polaridad inventada con cara de
+            #    medición. El piso de tres cuentas es para que un canal silencioso
+            #    --uno que no llega a un escalón del ADC-- no se cuele por tener el
+            #    error chico justamente porque no está midiendo nada.
+            umbral = max(5 * ida.error, 3 * lsb)
+
+            if not sensed:
+                report('signo de i', None,
+                       'no se puede evaluar sin medicion de corriente')
+            elif abs(ida.corriente) <= umbral:
+                report('signo de i', None,
+                       f'{ida.corriente:+.0f} mA de media con u = {u:+}, que no se '
+                       f'despegan de su propio error ({umbral:.0f} mA): el motor '
+                       f'consume muy poco para que el signo signifique algo')
+            elif ida.corriente < 0 and 'iinvert' not in self._params:
+                report('signo de i', False,
+                       f'{ida.corriente:+.0f} mA de media con un u positivo, y este '
+                       f'sketch no declara iinvert: regrabar la placa con '
+                       f'sync_board(force_upload=True), o dar vuelta el sensor')
+            else:
+                if ida.corriente < 0:
+                    self.iinvert = 0 if self._iinvert else 1
+                    print(f'  la corriente sale negativa con un u positivo: '
+                          f'poniendo iinvert = {self._iinvert}')
+                    ida = ida._replace(corriente=-ida.corriente)
+                    if vuelta is not None:
+                        vuelta = vuelta._replace(corriente=-vuelta.corriente)
+
+                # Con los dos sentidos medidos se ve además de qué clase es el
+                # sensor, y eso decide qué se puede hacer con el canal: uno
+                # unipolar --el que va en la alimentación del puente-- entrega el
+                # módulo, así que da positivo en los dos sentidos y no hay `iinvert`
+                # que le devuelva un signo que nunca midió.
+                #
+                # Pero eso sólo se puede concluir si el eje realmente dio vuelta.
+                # En un banco cuyo puente no invierte --IN1 e IN2 atados-- la
+                # corriente sale igual en las dos pasadas porque circula igual, y
+                # leer ahí un sensor unipolar es culpar al sensor de lo que hace el
+                # puente. Este banco lo hizo decir exactamente eso.
+                bipolar_medible = reverses and vuelta is not None
+                unipolar = (bipolar_medible and
+                            abs(vuelta.corriente) > umbral and vuelta.corriente > 0)
+
+                detalle = (f'{ida.corriente:+.0f} mA de media con u = {u:+}, con '
+                           f'iinvert = {self._iinvert}')
+
+                if vuelta is not None and abs(vuelta.corriente) > umbral:
+                    detalle += f', {vuelta.corriente:+.0f} mA con u = {-u:+}'
+
+                if unipolar:
+                    detalle += ('  -- los dos sentidos dan positivo: el sensor mide '
+                                'el modulo y no el signo, asi que no se puede cerrar '
+                                'el lazo sobre la corriente con signo')
+                elif vuelta is not None and not reverses:
+                    detalle += ('  -- de que clase es el sensor no se puede decir '
+                                'todavia: el puente no invirtio, asi que la '
+                                'corriente tampoco tenia por que invertir')
+
+                report('signo de i', None if unipolar else True, detalle)
 
         bad = results.count(False)
         print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')
-        return not bad
+
+        # Y lo que hay que volver a poner después de cada reset, que es todo lo que
+        # acá se midió y la placa no recuerda. Se devuelve y se guarda: devolverlo
+        # es para quien quiera aplicarlo a mano, y guardarlo es para que
+        # `sync_board()` lo aplique sin que nadie tenga que acordarse.
+        cableado = Cableado(bidir=int(self.bidir), uinvert=int(self.uinvert),
+                            iinvert=self._iinvert, ok=not bad)
+        ruta = cableado.guardar()
+        print(f'cableado de este banco: {cableado}\n'
+              f'  anotado en {ruta.name}; sync_board() lo vuelve a poner en cada celda')
+        return cableado
 
 
 # ------------------------------------------------------- compilación y carga
@@ -740,7 +1051,8 @@ def _wait_for_port(hint=None, timeout=2.0):
             time.sleep(0.3)
 
 
-def sync_board(port=None, force_compile=False, force_upload=False, verbose=True):
+def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
+               cableado=None):
     """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
 
     Compila sólo cuando algún archivo fuente cambió de verdad, carga sólo cuando
@@ -748,6 +1060,17 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
     siempre reabre el enlace, lo que resetea la placa, así que el lazo arranca
     desde los valores por omisión del sketch haya hecho falta o no grabar. Ese
     reset es el motivo de llamarlo al principio de cada celda.
+
+    Y es también el motivo de `cableado`. El reset devuelve la placa a los valores
+    del sketch, que son los de un banco genérico, y hay tres que no lo son:
+    `bidir`, `uinvert` e `iinvert` describen cómo está cableado *este* banco. Sin
+    volver a ponerlos, cada celda empieza con el puente declarado bidireccional y
+    los dos signos en cero, que para medio banco es al revés. Así que se aplican
+    acá: por omisión los que dejó anotados `bringup()` en `CABLEADO`, y si no hay
+    archivo, los del sketch, que es lo mismo que había antes.
+
+    `cableado` acepta un `Cableado`, una ruta a un archivo de cableado, o
+    `Cableado()` para arrancar con los valores de fábrica a propósito.
 
     force_compile y force_upload saltean cada uno su propia verificación.
     """
@@ -820,6 +1143,14 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         ) from None
 
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
+
+    if not isinstance(cableado, Cableado):
+        cableado = Cableado.cargar(cableado)
+
+    if cableado is not None:
+        cableado.aplicar(_link)
+        say(f'  cableado: {cableado}')
+
     return _link
 
 
@@ -839,6 +1170,9 @@ def sync_board_cal(*args, calibracion=None, **kw):
     `calibracion` es la ruta del archivo; por omisión el de este repositorio, que
     se resuelve desde acá y no desde el directorio de trabajo, así que da igual
     desde dónde se corra el notebook.
+
+    El cableado del banco no hace falta pedirlo acá: lo aplica `sync_board()`, que
+    es por donde pasan las dos. Ver su `cableado`.
     """
     dev = sync_board(*args, **kw)
 

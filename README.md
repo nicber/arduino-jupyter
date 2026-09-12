@@ -58,18 +58,25 @@ verificar a mano, y por qué la identificación sale completa igual.
 | L298N `IN1` | 6 | opcional |
 | L298N `IN2` | 7 | opcional |
 
-**La medición de corriente lee A0 contra la referencia interna de 1,1 V**, no
-contra los 5 V: un LSB pasa de 4,9 mV a 1,07 mV, y para un motor chico ésa es la
-diferencia entre medir y no medir. El precio es el techo —la entrada no puede pasar
-de 1,1 V—, así que sirve para un sensor cuyo reposo caiga por debajo de eso y no
-para un ACS712 alimentado a 5 V, que reposa en 2,5 V. `SENSE_REF_INTERNAL = false`
-vuelve a AVcc.
+**La medición de corriente lee A0 contra la referencia alta**, que en el UNO es
+AVcc y en el clon son los 4,096 V que trae trimados de fábrica. Manda el techo: un
+ACS712 es bipolar y reposa en la mitad de su alimentación —2,5 V con 5 V— para
+poder bajar cuando la corriente cambia de sentido, así que contra la referencia
+interna de 1,1 V satura en reposo y no mide nada. Con la alta reposa en media
+escala, que es justo donde tiene que estar.
+
+Se paga en resolución: un LSB son 4,9 mV en vez de 1,07, y con 185 mV/A eso deja
+200 mA en siete u ocho cuentas. `SENSE_REF_INTERNAL = true` vuelve a la interna y
+recupera esas 4,5 veces, y es lo que corresponde si el sensor es unipolar —el que
+va en la alimentación del puente, que reposa cerca de cero— o si hay un divisor a
+la salida.
 
 Dos números que conviene verificar una vez por banco, los dos en el sketch:
 
-- `ADC_REF_MV`. El bandgap interno está especificado entre 1,0 y 1,2 V, o sea
-  ±10 % de error de ganancia entre chips. Se mide sin instrumental leyendo el canal
-  14 del multiplexor del ADC contra AVcc.
+- `ADC_REF_MV`. Con la referencia alta es AVcc, que se mide una vez con un tester.
+  Con la interna es el bandgap, especificado entre 1,0 y 1,2 V —o sea ±10 % de
+  error de ganancia entre chips— y se mide sin instrumental leyendo el canal 14 del
+  multiplexor del ADC contra AVcc; `bringup()` hace esa cuenta y dice qué poner.
 - `SENSE_MV_PER_A`. La sensibilidad del sensor, que es lo único que convierte
   cuentas en amperes. `bringup()` no la puede verificar: calibra el cero, que
   tiene una condición conocida —el puente abierto—, pero para la ganancia haría
@@ -92,6 +99,12 @@ idéntica: alcanza con girar el imán a mano para ver al sensor y al filtro
 trabajar; `bringup(motor=False)` saltea la parte que lo haría girar. Sin ACS712,
 `bringup()` detecta que la entrada quedó contra el riel del ADC y lo dice; todo lo
 demás sigue en pie.
+
+Contra el riel de arriba hay una segunda causa que conviene descartar antes de ir
+a buscar un cable: un sensor que reposa por encima de la referencia satura, y desde
+el ADC eso se ve igual que una entrada al aire. Es lo que le pasa a un ACS712
+alimentado a 5 V si alguien dejó `SENSE_REF_INTERNAL = true`. `bringup()` nombra
+las dos causas en lugar de dar por sentado que falta un cable.
 
 Incluso sin el AS5600 el lazo mantiene su período: al no obtener respuesta, el
 muestreo pasa a sondear el bus dos veces por segundo en lugar de cinco mil, y
@@ -218,6 +231,55 @@ si cambió el binario y reabre el enlace, lo que resetea la placa. Por eso las
 celdas se pueden correr en cualquier orden: ninguna depende de lo que dejó la
 anterior.
 
+Ese reset devuelve la placa a los valores del sketch, que describen un banco
+genérico. Lo que no es genérico --la calibración del sensor y los tres números del
+cableado-- lo repone la computadora en cada celda; ver *El cableado del banco* y
+*La calibración del sensor*.
+
+---
+
+## El cableado del banco
+
+Tres números describen cómo está cableado este banco y no tienen nada que ver con
+el programa:
+
+| | |
+|---|---|
+| `bidir` | si el puente acciona en los dos sentidos o en uno solo |
+| `uinvert` | el signo que hace que un comando positivo **suba** el ángulo |
+| `iinvert` | el signo que hace que ese mismo comando dé una corriente **positiva** |
+
+Son dos signos y no uno porque arreglan cosas distintas. `uinvert` da vuelta el
+puente, así que da vuelta el ángulo y la corriente a la vez; si con el ángulo ya
+derecho la corriente sigue saliendo al revés, lo que está dado vuelta es por dónde
+entra el sensor de corriente, y eso sólo lo arregla `iinvert`. Importa más allá de
+la telemetría: con `target = CURRENT` el lazo cierra sobre `i`, y realimentar con
+el signo cambiado no se establece, se escapa.
+
+`dev.bringup()` los mide, **los deja puestos** --no se limita a aconsejar-- y
+devuelve un `Cableado` con los tres. De paso los anota en `notebooks/cableado.json`,
+que es de donde `sync_board()` los vuelve a sacar después de cada reset.
+
+```python
+cab = dev.bringup()             # mide, corrige y anota
+dev = sync_board()              # y cada celda arranca con el banco bien descripto
+```
+
+El archivo no entra en el repositorio, por lo mismo que la calibración: es un dato
+de *este* banco. Para arrancar a propósito con los valores de fábrica,
+`sync_board(cableado=Cableado())`.
+
+Un banco de un solo cuadrante no se queda sin verificación. La del **sentido** no
+se puede hacer --no hay una inversión que comprobar-- pero la de la **polaridad** y
+la del **signo de la corriente** sí, porque para las dos alcanza con accionar para
+un lado solo, y son justamente las que hacen falta para cerrar el lazo.
+
+Lo que ningún parámetro arregla es un sentido fijado en cobre: si `IN1` e `IN2`
+están atados a riel, o el actuador es un solo transistor, el puente no escucha qué
+pin levanta el sketch. Por eso `bringup()` vuelve a accionar el motor después de
+dar vuelta `uinvert` en lugar de darlo por arreglado; si el ángulo sigue bajando,
+el arreglo son dos cables y lo dice así.
+
 ---
 
 ## Qué se puede tocar desde el notebook
@@ -234,6 +296,7 @@ Los parámetros son atributos, siempre en unidades reales:
 | `tickdiv` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
 | `bidir` | 1 si el puente acciona en los dos sentidos; 0 lo recorta en cero |
 | `uinvert` | 1 si un comando positivo hace *bajar* el ángulo medido |
+| `iinvert` | 1 si un comando positivo da una corriente *negativa* |
 | `pwmtop` | TOP del Timer1: la frecuencia del PWM, `f = 16 MHz / (2·pwmtop)` |
 | `alpha_y`, `alpha_i`, `alpha_e` | polos de los filtros de posición, corriente y error |
 | `offset` | cuenta del sensor de ángulo que se lee como cero |
@@ -319,8 +382,8 @@ control tanto como a la medición.
 | `bringup` marca falla en `iman` | el sensor contesta pero el imán está ausente, muy lejos o muy cerca; el mensaje dice cuál |
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa en media escala: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
-| `bringup` marca falla en `polaridad` | el comando y el sensor tienen signos opuestos: el lazo de posición realimenta en positivo y se escapa. Dar vuelta `uinvert`, o los dos cables del motor |
-| `bringup` marca falla en `sentido` | el motor gira para el mismo lado con las dos polaridades: `IN1` (6) e `IN2` (7) intercambiados, o uno sin conectar. Si con el comando negativo no se mueve nada, el puente es de un solo cuadrante y va `dev.bidir = 0` |
+| `bringup` marca falla en `polaridad` | dio vuelta `uinvert` y el ángulo siguió bajando, así que el sentido de este banco está fijado en cobre: `IN1` e `IN2` atados, o un solo transistor. Dar vuelta los dos cables del motor, o el imán |
+| `bringup` marca falla en `sentido` | el puente no invierte. Si con el comando negativo no se mueve nada, o si gira para el mismo lado con las dos polaridades porque `IN1` (6) e `IN2` (7) están fijos por cable, es de un solo cuadrante y va `dev.bidir = 0`. Si no, revisar esos dos pines |
 | `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el puente no lo sigue». Con el imán mal montado el ángulo es ruido y `bringup` no puede distinguirlos. La causa más común es la alimentación de potencia del puente |
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
