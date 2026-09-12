@@ -16,3 +16,7 @@ notebooks/calibracion*.json
 # Y el cableado de ese banco, por lo mismo: qué puente tiene y de qué lado miran
 # el imán y el sensor de corriente. Lo escribe bringup().
 notebooks/cableado*.json
+
+# Los binarios de los tests de escritorio.
+test/test_modulos
+libraries/*/test/test
