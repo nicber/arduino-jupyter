@@ -8,7 +8,7 @@ referencia y traerse de vuelta la serie temporal que resulta.
 from ctrllink import CtrlLink
 
 dev = CtrlLink()                 # o CtrlLink('COM3'), o '/dev/ttyACM0'
-dev.kp, dev.ki, dev.mode = 2.5, 0.1, 1
+dev.pid_kp, dev.pid_ki, dev.ctl_mode = 2.5, 0.1, 1
 df = dev.step('ref', 1024, pre=0.1, post=0.9)   # un DataFrame, t = 0 en el escalón
 df.plot(x='t', y=['ref', 'y'])
 ```
@@ -203,8 +203,8 @@ macOS con un puente CH340 se queda así—, y entonces no hay flanco y la placa
 sigue corriendo con el estado que le dejó la corrida pasada. `reset_wait=0` se
 engancha a un sketch que ya está corriendo, sin resetear nada.
 
-- Los parámetros son atributos, siempre en unidades reales: `dev.kp = 2.5`,
-  `print(dev.kp)`. `dev.params` los lee todos de vuelta.
+- Los parámetros son atributos, siempre en unidades reales: `dev.pid_kp = 2.5`,
+  `print(dev.pid_kp)`. `dev.params` los lee todos de vuelta.
 - `dev.capture(duration, events=[(retardo, nombre, valor), ...])` → DataFrame.
 - `dev.step(nombre, valor, pre=0.1, post=0.9, back=None)` → DataFrame con `t = 0`
   en el escalón. Si se interrumpe, `back` se restituye igual: del otro lado del
@@ -225,7 +225,7 @@ el resto sale solo:
 
 ```cpp
 static const CtrlParam PROGMEM g_params[] = {
-    { "kp",  CTRL_I32, &g_kp,  22 },   // Q22: la PC fija 0.5, el dispositivo guarda 2097152
+    { "pid_kp", CTRL_I32, &g_pid.kp, 22 },  // Q22: la PC fija 0.5, el dispositivo guarda 2097152
     { "ref", CTRL_I16, &g_ref,  0 },   // un entero común
 };
 
@@ -250,7 +250,9 @@ void loop() {
 
 `emit()` lee los canales a través de sus direcciones, así que hay que llamarlo
 desde el mismo contexto que los escribe: `loop()`, no una ISR. Los nombres tienen
-8 caracteres como máximo. Una tabla de canales que produzca una fila más larga
+12 caracteres como máximo, que es lo que permite ponerles un prefijo de módulo: una
+tabla de tres docenas de parámetros planos no dice quién es dueño de cuál, y
+`pid_kp` contra `ang_offset` contra `mot_top` lo dice sin ir a leer el sketch. Una tabla de canales que produzca una fila más larga
 que el buffer de transmisión es rechazada por `begin()`, en lugar de descartar
 todas las muestras en silencio.
 
@@ -273,7 +275,7 @@ clones de UNO y el que suele darse por limitado a velocidades bajas, y aguantó
 1 Mbaud sin perder una sola fila. El retardo de atención es el costo honesto de
 correr la ley de control dentro de `loop()` al lado del manejo del puerto serie;
 el muestreo en sí es rígido, porque lo gobierna el Timer2, así que un cálculo
-tardío aparece como fluctuación en `u`, no en `y`. `maxlate` lo informa, y se
+tardío aparece como fluctuación en `u`, no en `y`. `lop_late` lo informa, y se
 puede escribir, así que conviene ponerlo en cero antes de una corrida para medir
 esa corrida.
 

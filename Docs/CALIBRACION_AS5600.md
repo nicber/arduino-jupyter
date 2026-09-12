@@ -71,7 +71,7 @@ Lo que tenemos, y que es bastante:
 - Telemetría a 500 Hz por omisión (`tickdiv = 10`), con número de tick en cada
   fila, así que un hueco se ve y no se confunde con una muestra.
 - `y_uw`, el ángulo ya desenrollado en cuentas, en el flujo.
-- Lazo abierto con `mode = 0` y `uff` como comando, y `capture(duración,
+- Lazo abierto con `mode = 0` y `ctl_uff` como comando, y `capture(duración,
   events=[...])` para cambiar un parámetro en un tick conocido en mitad de la
   corrida.
 - 4096 cuentas por vuelta: una cuenta son 0,0879°.
@@ -113,7 +113,7 @@ grande y más barata de todo el trabajo.
 
 ## 3. El problema difícil: qué es el sensor y qué es el motor
 
-Un motor de continua con escobillas a `uff` constante no gira a velocidad
+Un motor de continua con escobillas a `ctl_uff` constante no gira a velocidad
 constante. Tiene ondulación de par por conmutación (una vez por cada segmento del
 colector), *cogging*, y rozamiento que depende del ángulo. Y todo eso está
 **enganchado al ángulo**, igual que el error del sensor. En una sola corrida a una
@@ -164,13 +164,13 @@ experimento con mejor relación entre lo que cuesta y lo que dice.
 Nada de esto es la etapa de calibración todavía. Es lo mínimo para que los datos
 signifiquen algo.
 
-1. **Parámetro `sfilt` (u8, 0..3)** que escribe los bits `SF` del CONF del AS5600.
+1. **Parámetro `ang_filt` (u8, 0..3)** que escribe los bits `SF` del CONF del AS5600.
    Sin esto se mide con 2,2 ms de retardo y la fase de la tabla depende de la
    velocidad. Es un registro volátil, no hay que quemar nada.
-2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, sin `offset`, sin signo
-   invertido y sin corregir. Hoy `sensor_measurement()` devuelve `offset − counts`,
+2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, sin `ang_offset`, sin signo
+   invertido y sin corregir. El seguimiento del ángulo entrega `offset − counts`,
    así que desde el notebook la cuenta cruda se recupera como `(-y_uw) % 4096`
-   con `offset = 0`; funciona, pero indexar la tabla es exactamente el lugar donde
+   con `ang_offset = 0`; funciona, pero indexar la tabla es exactamente el lugar donde
    un signo equivocado se paga caro y no se nota. Cuesta dos bytes por fila.
 3. **Diagnóstico de montaje**: leer una vez `AGC` (0x1A) y `MAGNITUDE` (0x1B/1C)
    además de `STATUS`, y exponerlos como parámetros de sólo lectura. `AGC` cerca
@@ -195,7 +195,7 @@ sacarle una foto al conjunto imán/sensor.
 
 ### E1 — Piso de ruido (5 min)
 
-Eje quieto y sujeto, `sfilt` en 2x, capturar 10 s. Calcular el desvío estándar de
+Eje quieto y sujeto, `ang_filt` en 2x, capturar 10 s. Calcular el desvío estándar de
 `y_raw` en cuentas y su espectro.
 
 Esto fija el umbral de detección de todo lo demás: nada por debajo de unas pocas
@@ -205,19 +205,19 @@ el filtro en 2x, que son 0,49 cuentas.
 ### E2 — Desaceleración libre (el experimento central)
 
 ```python
-dev.mode, dev.offset, dev.cal = 0, 0, 0
-dev.sfilt = 3                      # filtro 2x
-dev.uff = 200                      # llevarlo a velocidad
+dev.ctl_mode, dev.ang_offset, dev.ang_cal = 0, 0, 0
+dev.ang_filt = 3                      # filtro 2x
+dev.ctl_uff = 200                      # llevarlo a velocidad
 df = dev.capture(25, events=[(3.0, 'uff', 0)])   # y soltarlo
 ```
 
-Cinco repeticiones en cada sentido (`uff` positivo y negativo). De cada captura:
+Cinco repeticiones en cada sentido (`ctl_uff` positivo y negativo). De cada captura:
 partir la parte de desaceleración en ventanas de ~10 vueltas y ajustar en cada
 ventana los armónicos `k = 1..8` (§6). Salida: `A_k(ω)` y `φ_k(ω)`.
 
 ### E3 — Velocidad sostenida a varios comandos
 
-Cuatro valores de `uff` que cubran un factor tres o cuatro de velocidad, 20 s
+Cuatro valores de `ctl_uff` que cubran un factor tres o cuatro de velocidad, 20 s
 cada uno, en los dos sentidos. Es la contraparte "en régimen" de E2: confirma que
 lo que se ve en la desaceleración también está cuando el motor tira, donde la
 ondulación de conmutación sí existe.
@@ -239,7 +239,7 @@ para que la fila entre en el enlace.
 
 ### E4 — Retardo y sentido
 
-Repetir un `uff` de E3 con `sfilt` en 16x y en 2x, en los dos sentidos. La fase
+Repetir un `ctl_uff` de E3 con `ang_filt` en 16x y en 2x, en los dos sentidos. La fase
 ajustada `φ_k` tiene que correrse en `k·ω·τ` y cambiar de signo con el sentido.
 
 Predicción falsable: entre 16x y 2x, `φ_1` se corre 39 cuentas a 5 rev/s. Si el
@@ -251,7 +251,7 @@ promediando los dos sentidos.
 
 ### E5 — Repetibilidad
 
-Repetir E3 a un `uff` (a) después de apagar y encender la placa, (b) después de
+Repetir E3 a un `ctl_uff` (a) después de apagar y encender la placa, (b) después de
 frenar el eje con la mano y soltarlo, (c) al día siguiente.
 
 > **G3.** Si las tablas de dos corridas separadas difieren en más de un tercio de
@@ -292,7 +292,7 @@ sesión, sin tocar nada más.
 
 ### E9 — El "y entonces qué"
 
-Escalón de posición y seguimiento de rampa con `cal` en 0 y en 1, con las mismas
+Escalón de posición y seguimiento de rampa con `ang_cal` en 0 y en 1, con las mismas
 ganancias. Es la única medición que le importa a alguien que no esté mirando el
 sensor: si el lazo no mejora, la tabla es un adorno.
 
@@ -330,7 +330,7 @@ def ajustar(t, cuentas, K=8, grado=8):
 Notas que hacen la diferencia entre un ajuste y una medición:
 
 - **`cuentas` sale de `y_raw`**, desenrollado en Python, no de `y_uw`: así el
-  signo y el `offset` no entran en juego. Con `offset = 0` y sin el canal nuevo,
+  signo y el `ang_offset` no entran en juego. Con `ang_offset = 0` y sin el canal nuevo,
   es `-df.y_uw`.
 - **El grado de la tendencia** se elige por separación espectral, no a ojo: los
   armónicos están a 1 ciclo por vuelta o más, o sea ≥50 ciclos en una corrida de
@@ -356,20 +356,24 @@ veces lo que el propio ajuste inventa.
 
 ### Dónde se aplica
 
-En `sensor_measurement()`, sobre la cuenta cruda y **antes** de desenrollar:
+En `measure()`, sobre la cuenta cruda y **antes** de desenrollar:
 
 ```c
-static int16_t sensor_measurement(void)
+// ControlDemo.ino: la corrección se aplica acá y no adentro del seguimiento del
+// ángulo, así que ese módulo no sabe que existe una calibración y la decisión de
+// corregir queda donde se toma.
+static void measure(void)
 {
-    int16_t counts = (int16_t)Sensor::counts();
-    if (g_cal) counts = (int16_t)((counts - lut_lookup(counts)) & 0x0FFF);
-    return wrapped_error(g_offset, counts);
+    const Lut::Counts raw = (Lut::Counts)Sensor::counts();
+
+    g_y_raw = (uint16_t)raw;
+    g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
 }
 ```
 
 Antes de desenrollar porque la tabla se indexa con el ángulo dentro de la vuelta,
 y después de desenrollar ese ángulo ya no está. Y en el dominio de la cuenta
-cruda, no en el de `y`, porque `y` lleva el signo invertido y el `offset`: dos
+cruda, no en el de `y`, porque `y` lleva el signo invertido y el `ang_offset`: dos
 oportunidades de equivocarse a cambio de nada.
 
 ### La tabla
@@ -402,13 +406,17 @@ tabla tendría tres o cuatro valores distintos y sería un escalón, no una
 corrección.
 
 ```c
-// Corrección en cuentas, redondeada. La tabla está en octavos de cuenta.
-static int16_t lut_lookup(int16_t counts)
+// AngleLut::correction(): la corrección en cuentas, redondeada. La tabla está en
+// octavos de cuenta. Es aritmética pura, así que se prueba en la máquina de
+// escritorio: test/test_modulos.cpp la compara con la referencia en las 4096
+// cuentas de la vuelta.
+Counts correction(Counts raw) const
 {
-    uint8_t i    = (uint8_t)(counts >> 6) & 0x3F;
-    uint8_t frac = (uint8_t)counts & 0x3F;
-    int32_t a = (int32_t)g_lut[i];
-    int32_t b = (int32_t)g_lut[(i + 1) & 0x3F];
+    const uint16_t r    = (uint16_t)raw;
+    const uint8_t index = (uint8_t)(r >> SPAN_BITS) & (uint8_t)(Size - 1);
+    const uint16_t frac = r & (uint16_t)(SPAN - 1);
+    const int32_t a = (int32_t)entry[index];
+    const int32_t b = (int32_t)entry[(uint8_t)(index + 1) & (uint8_t)(Size - 1)];
 
     // int32 en el medio: con entradas de hasta 4095 octavos la suma llega a
     // 262080, que no entra en 16 bits.
@@ -458,13 +466,13 @@ vista en el código y no escondida en una memoria.
 
 Cargar la tabla no necesitó tocar el protocolo. Alcanzan dos parámetros:
 
-- **`lutw` (u32)**: una entrada, empaquetada como `(índice << 16) | valor`. El
+- **`ang_lutw` (u32)**: una entrada, empaquetada como `(índice << 16) | valor`. El
   índice viaja adentro del valor para que dos escrituras seguidas nunca sean
   iguales por casualidad: el sketch aplica la escritura al notar que el parámetro
   cambió, y con índice y valor separados una tabla con dos entradas iguales
-  seguidas perdería la segunda. `refresh_tuning()` --que ya corría después de
+  seguidas perdería la segunda. `refresh_tuning()` del sketch --que ya corría después de
   cualquier escritura-- hace el resto.
-- **`lutsum` (u16)**: la suma de Fletcher de lo que la placa tiene. La
+- **`ang_lutsum` (u16)**: la suma de Fletcher de lo que la placa tiene. La
   computadora calcula la suya y compara: **64 escrituras se verifican con una
   sola lectura**.
 
@@ -476,21 +484,21 @@ que se aceptaría en silencio; una tabla es toda valores.
 
 Más dos parámetros de operación:
 
-- **`cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
+- **`ang_cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
   puede apagar no se puede medir.
-- **`sfilt` (u8)**: los bits `SF` del CONF, de §4.
+- **`ang_filt` (u8)**: los bits `SF` del CONF, de §4.
 
 ## 8. Riesgos, y qué los detecta
 
 | Riesgo | Cómo se manifiesta | Qué lo agarra |
 |---|---|---|
 | Se calibra la mecánica del motor como si fuera el sensor | la tabla mejora una velocidad y empeora otra | G2, la pendiente de `A_k(ω)` |
-| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y poner `sfilt` en 2x desde el principio |
+| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y poner `ang_filt` en 2x desde el principio |
 | El imán está flojo en el eje | la tabla no se repite entre encendidos | G3 |
 | Aliasing: pocas muestras por vuelta | armónicos altos aparecen donde no están | ≥40 muestras/vuelta, verificado en cada captura |
 | Huecos de telemetría desenrollados como saltos | vueltas fantasma en el desenrollado | reconstruir con `tick`, no con el índice |
 | La tendencia se come el primer armónico | `A_1` chico y con barra de error grande | ≥20 vueltas por ventana de ajuste |
-| Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `cal` en 0 y en 1: es el chequeo, y es barato |
+| Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `ang_cal` en 0 y en 1: es el chequeo, y es barato |
 | Medir con el eje todavía girando por inercia | el sentido informado es el de la medición anterior | esperar a que el eje pare de verdad y verificarlo; ver `Bench.spin()` |
 | Una calibración compilada que quedó de otro banco | el dispositivo arranca con `cal = 1` y una tabla ajena | `escribir_header()` no se llama solo; borrar `Calibracion.h` cuando deje de corresponder |
 
@@ -500,7 +508,7 @@ Este plan está implementado. El reparto:
 
 | | |
 |---|---|
-| `ControlDemo/ControlDemo.ino` | la tabla, `lut_lookup()`, `cal`, `sfilt`, el canal `y_raw` |
+| `ControlDemo/ControlDemo.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, `ang_filt`, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
 | `python/calib.py` | ajuste, compuertas, tabla, archivo, header |
 | `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
@@ -509,12 +517,12 @@ Este plan está implementado. El reparto:
 
 ## 10. Orden de trabajo
 
-1. Firmware de medición: `sfilt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
+1. Firmware de medición: `ang_filt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
 2. E0, E1 — higiene y piso de ruido. Compuerta G0.
 3. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
 4. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.
 5. E7 — ajuste mecánico y remedición. Compuerta G4.
-6. Firmware de corrección: tabla, `lutw`, `lutsum`, `cal` (§7).
+6. Firmware de corrección: tabla, `ang_lutw`, `ang_lutsum`, `ang_cal` (§7).
 7. E8, E9 — validación y efecto sobre el lazo. Compuerta G5.
 
 Los pasos 1 a 5 no miden con una línea de la etapa de calibración prendida. Es a

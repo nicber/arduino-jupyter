@@ -14,7 +14,7 @@ saturación, su ruido y su cuantización.
 ```python
 dev = sync_board()
 dev.gains(kp=0.002, ki=0.05)          # ganancias en tiempo continuo
-dev.mode = MODE_PID
+dev.ctl_mode = MODE_PID
 
 df = dev.step('ref', dev.deg(90))     # escalón de 90 grados
 df.plot(x='t', y=['ref', 'y_uw'])     # t = 0 en el escalón, con precisión de una muestra
@@ -89,7 +89,7 @@ pull-ups del bus; un chip pelado en modo 3,3 V necesita adaptación de niveles.
 El motor va al puente en H, y el puente a su propia fuente: el UNO le da la
 lógica, nunca la potencia. El sketch modula `ENA` y usa `IN1`/`IN2` para el
 sentido, así que el accionamiento es **bidireccional**, de -255 a 255. Un puente
-cableado para un solo cuadrante se declara con `dev.bidir = 0`, y ahí el comando
+cableado para un solo cuadrante se declara con `dev.mot_bidir = 0`, y ahí el comando
 se recorta en cero y el anti-windup se entera; es un parámetro y no un `#define`,
 así que se contesta desde el notebook y sin recompilar.
 
@@ -289,21 +289,21 @@ Los parámetros son atributos, siempre en unidades reales:
 | Parámetro | Qué es |
 |---|---|
 | `kp`, `ki`, `kd` | ganancias del PID, **por muestra** |
-| `mode` | `MODE_OPEN`, `MODE_PID`, `MODE_RAMP` |
+| `ctl_mode` | `MODE_OPEN`, `MODE_PID`, `MODE_RAMP` |
 | `target` | `POSITION` o `CURRENT`: sobre qué magnitud cierra el lazo |
 | `ref`, `refrate` | referencia y pendiente de rampa, en unidades del `target` |
-| `uff` | comando de lazo abierto / prealimentación |
-| `tickdiv` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
+| `ctl_uff` | comando de lazo abierto / prealimentación |
+| `lop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
 | `bidir` | 1 si el puente acciona en los dos sentidos; 0 lo recorta en cero |
 | `uinvert` | 1 si un comando positivo hace *bajar* el ángulo medido |
 | `iinvert` | 1 si un comando positivo da una corriente *negativa* |
 | `pwmtop` | TOP del Timer1: la frecuencia del PWM, `f = 16 MHz / (2·pwmtop)` |
 | `alpha_y`, `alpha_i`, `alpha_e` | polos de los filtros de posición, corriente y error |
-| `offset` | cuenta del sensor de ángulo que se lee como cero |
+| `ang_offset` | cuenta del sensor de ángulo que se lee como cero |
 | `izero` | LSB del ADC que se lee como corriente cero |
-| `cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
-| `sfilt` | filtro lento del AS5600: 0 es 16x (2,2 ms de retardo), 3 es 2x (0,286 ms) |
-| `lutw`, `lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
+| `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
+| `ang_filt` | filtro lento del AS5600: 0 es 16x (2,2 ms de retardo), 3 es 2x (0,286 ms) |
+| `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `maxlate`, `missed`, `sovr`, `serr` | contadores de salud del lazo |
 | `spres`, `mstat` | estado del sensor: si contesta en el bus, y qué dice del imán |
 | `agc`, `mag` | ganancia y campo que ve el AS5600: con `agc` contra un extremo, el imán está a la distancia equivocada |
@@ -317,12 +317,18 @@ quedó, `dev.zero()` toma la posición actual como cero y `dev.zero_current()` h
 lo propio con el sensor de corriente, que es la calibración de offset que `bringup()`
 ya corre sola.
 
-Para cambiar la *ley* de control —y no sus parámetros— el archivo es
-`ControlDemo/ControlDemo.ino`. Agregar un controlador es agregar una función junto
-a `controller_pid()` y un caso al `switch` de `control_step()`; agregar una
-realimentación nueva es una rama en `target_error()`. Un parámetro nuevo es una
-línea en la tabla `g_params[]`, y aparece solo en el notebook: del lado de Python
-no hay nada que cambiar.
+Para cambiar la *ley* de control —y no sus parámetros— el sketch arma módulos y
+cada uno vive en `libraries/`. La ley está en `Control/Pid.h`, y agregar un
+controlador es una clase nueva ahí más un caso en el `switch` de `control_step()`;
+agregar una realimentación nueva es una rama en `measured_value()`, que es la única
+función del sketch que sabe sobre qué magnitud cierra el lazo. Un parámetro nuevo es
+una línea en la tabla `g_params[]`, y aparece solo en el notebook: del lado de
+Python no hay nada que cambiar.
+
+Los nombres de esa tabla llevan prefijo de módulo, que es lo que hace que tres
+docenas de entradas planas digan de quién es cada una. `python/test_tablas.py` la
+compara contra un golden guardado, así que un renombre o un reordenamiento se ve en
+la revisión en lugar de descubrirse desde un notebook.
 
 ---
 
@@ -383,12 +389,12 @@ control tanto como a la medición.
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa en media escala: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
 | `bringup` marca falla en `polaridad` | dio vuelta `uinvert` y el ángulo siguió bajando, así que el sentido de este banco está fijado en cobre: `IN1` e `IN2` atados, o un solo transistor. Dar vuelta los dos cables del motor, o el imán |
-| `bringup` marca falla en `sentido` | el puente no invierte. Si con el comando negativo no se mueve nada, o si gira para el mismo lado con las dos polaridades porque `IN1` (6) e `IN2` (7) están fijos por cable, es de un solo cuadrante y va `dev.bidir = 0`. Si no, revisar esos dos pines |
+| `bringup` marca falla en `sentido` | el puente no invierte. Si con el comando negativo no se mueve nada, o si gira para el mismo lado con las dos polaridades porque `IN1` (6) e `IN2` (7) están fijos por cable, es de un solo cuadrante y va `dev.mot_bidir = 0`. Si no, revisar esos dos pines |
 | `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el puente no lo sigue». Con el imán mal montado el ángulo es ruido y `bringup` no puede distinguirlos. La causa más común es la alimentación de potencia del puente |
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
-| se pierden períodos de control | subir `tickdiv`, o sacarle trabajo al paso de control |
+| se pierden períodos de control | subir `lop_div`, o sacarle trabajo al paso de control |
 | se descartan filas de telemetría | subir `dec`, o emitir menos canales |
 
 Toda captura verifica su propia salud y avisa por `stderr` si el lazo perdió
@@ -433,15 +439,23 @@ AS5600_Loop5k/           prueba de muestreo a 5 kHz
 Puente_Bringup/          verificación del accionamiento, sin usar el sensor
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/ControlMath/   punto fijo y filtros enteros
+libraries/Control/       el PID y la referencia
+libraries/Actuator/      el puente en H
+libraries/Sampler/       el reloj del lazo: período rígido y divisor
+libraries/Sense/         el conversor libre, y una corriente con sentido
+libraries/AngleSensor/   ángulo desenrollado, y salud del sensor
+libraries/Calibracion/   la corrección del error de ángulo
 libraries/AS5600Async/   lectura asincrónica del AS5600
+libraries/AS5600Regs/    el mapa de registros, sin ningún transporte
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
-libraries/BoardStart/    el reloj y el destrabe del bus, antes de todo lo demás
+libraries/BoardStart/    el reloj, el ADC y el bus, antes de todo lo demás
+test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y unidades de este equipo
 python/calib.py          calibración del AS5600: medición, decisión y tabla
 python/banco_simulado.py un banco de mentira, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
-python/test_*.py         pruebas, no necesitan hardware
+python/test_*.py         pruebas, no necesitan hardware ni compilar
 notebooks/               los notebooks: hardware, demostración y calibración
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
@@ -463,3 +477,13 @@ de AVR trae `-Os` —optimizar por tamaño—, y este sketch quiere ciclos y no 
 `sync_board()` las pasa solas, así que sólo hacen falta al compilar a mano. El
 porqué de `-O2` y no `-O3` está comentado arriba de `BUILD_PROPERTIES`, en
 `python/bench.py`.
+
+Lo que **no** se pasa es `-flto`, y no por olvido: se probó y no cambia nada. Con
+`-flto -fno-fat-lto-objects` al compilar y `-flto -fuse-linker-plugin` al enlazar,
+los objetos intermedios salen distintos y el `.hex` final sale idéntico al byte,
+medido antes y después de partir el sketch en módulos. Tiene sentido: todas las
+librerías de este proyecto son sólo de cabecera, así que el sketch entero ya es una
+sola unidad de traducción y no hay ninguna frontera que LTO pueda disolver. Lo que
+queda afuera --nI2C y el core-- se alcanza por punteros de función y desde una ISR,
+que no es algo que convenga inclinar hacia adentro. Así que serían tres
+`--build-property` más para no ganar un byte.
