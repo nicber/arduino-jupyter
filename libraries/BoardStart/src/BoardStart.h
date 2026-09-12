@@ -199,6 +199,27 @@ inline uint8_t i2cBusRecover()
 
 // ------------------------------------------------- el estado eléctrico del bus
 
+// Mientras TWEN esté puesto, SDA y SCL los gobierna el TWI y no el puerto, así que
+// toda medición o maniobra a mano tiene que soltarlos primero y devolverlos
+// después. i2cBusRecover() ya lo hacía; lo que sigue también tiene que hacerlo.
+//
+// Y acá TWEN ya está puesto antes de que empiece setup(): nI2C construye su objeto
+// global durante la inicialización estática y su constructor enciende el
+// periférico. Olvidarlo no da un error: da mediciones mudas. El detector de cruce
+// informó que no había cruce con los cables cruzados sobre la mesa, porque sus
+// pulsos nunca salieron de los pines.
+inline uint8_t i2cSueltaTwi(void)
+{
+    const uint8_t twcr = TWCR;
+    TWCR = 0;
+    return twcr;
+}
+
+inline void i2cDevuelveTwi(uint8_t twcr)
+{
+    TWCR = twcr;
+}
+
 // Qué le pasa a una línea del bus, antes de que el TWI la tome. Un sensor que no
 // contesta tiene cuatro causas que se arreglan en lugares distintos, y desde el
 // protocolo las cuatro se ven igual: silencio.
@@ -261,8 +282,10 @@ inline uint8_t i2cLineaEstado(uint8_t pin, uint16_t fondo)
 // el lazo, porque deja el multiplexor donde lo dejó analogRead().
 inline uint8_t i2cBusCheck(uint16_t fondo)
 {
-    const uint8_t sda = i2cLineaEstado(SDA, fondo);
-    const uint8_t scl = i2cLineaEstado(SCL, fondo);
+    const uint8_t twcr = i2cSueltaTwi();
+    const uint8_t sda  = i2cLineaEstado(SDA, fondo);
+    const uint8_t scl  = i2cLineaEstado(SCL, fondo);
+    i2cDevuelveTwi(twcr);
     return (uint8_t)(sda | (scl << 2));
 }
 
@@ -323,9 +346,48 @@ inline bool i2cSwByte(uint8_t sda, uint8_t scl, uint8_t valor)
     return ack;
 }
 
+// Suelta el bus antes de preguntar, con los roles dados. Es la misma maniobra que
+// i2cBusRecover() --pulsos de reloj hasta que el esclavo largue la línea de datos,
+// y un STOP para dejarlo en un estado conocido-- pero con los pines explícitos,
+// porque acá se intercambian a propósito.
+inline void i2cSwLibera(uint8_t sda, uint8_t scl)
+{
+    i2cSwSuelta(sda);
+    i2cSwSuelta(scl);
+    delayMicroseconds(I2C_SW_US);
+
+    for (uint8_t i = 0; i < 9 && digitalRead(sda) == LOW; i++) {
+        i2cSwBaja(scl);
+        delayMicroseconds(I2C_SW_US);
+        i2cSwSuelta(scl);
+        delayMicroseconds(I2C_SW_US);
+    }
+
+    i2cSwBaja(sda);                  // STOP
+    delayMicroseconds(I2C_SW_US);
+    i2cSwSuelta(sda);
+    delayMicroseconds(I2C_SW_US);
+}
+
 // START, dirección, STOP. Devuelve si alguien dio ACK.
+//
+// Suelta el bus antes de preguntar y se niega a preguntar sobre una línea que
+// sigue abajo. Sin eso la prueba miente en el peor momento: un esclavo que quedó a
+// mitad de camino sujeta su línea de datos, y una línea sujeta se lee exactamente
+// igual que un ACK. Así fue como el detector de cruce informó que no había cruce
+// justo cuando los cables estaban cruzados.
 inline bool i2cSwSonda(uint8_t sda, uint8_t scl, uint8_t addr)
 {
+    i2cSwLibera(sda, scl);
+
+    i2cSwSuelta(sda);
+    delayMicroseconds(I2C_SW_US);
+    if (digitalRead(sda) == LOW) {
+        pinMode(sda, INPUT);
+        pinMode(scl, INPUT);
+        return false;                // sujeta: no hay pregunta que hacer acá
+    }
+
     i2cSwSuelta(sda);
     i2cSwSuelta(scl);
     delayMicroseconds(I2C_SW_US);
@@ -356,8 +418,12 @@ inline bool i2cSwSonda(uint8_t sda, uint8_t scl, uint8_t addr)
 // conocido por si esta sonda dejó a alguien a mitad de camino.
 inline bool i2cRespondeInvertido(uint8_t addr)
 {
-    if (i2cSwSonda(SDA, SCL, addr)) {
-        return false;
-    }
-    return i2cSwSonda(SCL, SDA, addr);
+    const uint8_t twcr = i2cSueltaTwi();
+
+    // Al derecho primero: si contesta ahí no hay nada que informar.
+    const bool derecho = i2cSwSonda(SDA, SCL, addr);
+    const bool reves   = derecho ? false : i2cSwSonda(SCL, SDA, addr);
+
+    i2cDevuelveTwi(twcr);
+    return reves;
 }

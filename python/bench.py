@@ -134,6 +134,26 @@ class Bench(CtrlLink):
     se diseña un experimento.
     """
 
+    def _read_channels(self):
+        """Los canales de la placa, con la escala de `i` corregida por placa.
+
+        La escala que viaja en la tabla de canales es una constante compilada, y
+        la referencia del ADC no lo es: el bandgap del ATmega anda por 1093 mV y
+        la referencia interna del clon vale 1024. La placa no puede corregir su
+        propia tabla --vive en flash-- pero sí calcula la escala al arrancar y la
+        publica en `imalsb`, en mA por cuenta. Acá se la cree a ella y no a la
+        tabla. Ver el comentario de ADC_REF_MV_LGT8F en ControlDemo.ino.
+        """
+        chans = super()._read_channels()
+        ma = self.params.get('imalsb') and self.get('imalsb')
+
+        if ma:
+            for columna in chans:
+                if columna.name == 'i':
+                    columna.scale = ma
+
+        return chans
+
     def channel(self, name):
         for column in self.channels:
             if column.name == name:

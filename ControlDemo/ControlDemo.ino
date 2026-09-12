@@ -166,6 +166,27 @@ static const int16_t  SENSE_ZERO      = SENSE_REF_INTERNAL ? 0 : (ADC_FULL / 2);
 static const float    ADC_MV_PER_LSB  = ADC_REF_MV / ADC_FULL;
 static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER_A;
 
+// Y la referencia tampoco vale lo mismo en las dos placas, así que la escala de
+// arriba es la del ATmega y nada más. La tabla de canales viaja en flash con una
+// constante compilada y no se puede corregir al arrancar; lo que sí se calcula al
+// arrancar es `imalsb`, y con eso la computadora corrige la escala de `i`. Ver
+// Bench._read_channels().
+//
+// En el ATmega la referencia interna es el bandgap, especificado entre 1,0 y
+// 1,2 V: el número es de esta placa y no del modelo, y son los 1093 mV medidos en
+// el UNO de este banco.
+//
+// En el clon es una referencia trimada de fábrica, y el banco la identificó sin
+// ambigüedad. Con REFS=11 el canal interno del multiplexor satura --entrada y
+// referencia son la misma tensión-- y con REFS=01 da 1025 cuentas de 4096, que es
+// 0,2502. Eso dice que REFS=11 vale 1,024 V y REFS=01 vale 4,096: dos de las tres
+// que el LGT8F declara por nombre, y con cuatro decimales de acuerdo. O sea que el
+// canal de corriente corre contra 1,024 V y no contra los 1,1 del ATmega.
+//
+// Son un 6 % de diferencia, no un factor de cuatro. El factor de cuatro era el
+// ancho del conversor y ya está corregido más arriba.
+static const float    ADC_REF_MV_LGT8F = 1024.0f;
+
 // `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
 // menos de una cuenta por período sin que la cuantización la anule.
 static const uint8_t  REF_FRAC = 8;
@@ -334,6 +355,7 @@ static uint16_t g_adcfs    = ADC_FULL;  // fondo de escala real del ADC de esta 
 static uint8_t  g_adcshift = 0;         // cuánto se corre cada lectura para llegar a 12 bits
 static uint16_t g_bgadc    = 0;         // el bandgap contra AVcc, en cuentas
 static uint8_t  g_busdiag  = 0;         // estado eléctrico del bus I2C al arrancar
+static uint16_t g_imalsb   = 0;         // mA por cuenta de `i` en esta placa, en Q8
 static volatile uint8_t  g_divider    = 10;
 
 // --------------------------------------------------------- calibración del AS5600
@@ -530,6 +552,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "adcfs",   CTRL_U16, &g_adcfs,    0           },
     { "bgadc",   CTRL_U16, &g_bgadc,    0           },
     { "busdiag", CTRL_U8,  &g_busdiag,  0           },
+    { "imalsb",  CTRL_U16, &g_imalsb,   8           },
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
@@ -1205,6 +1228,16 @@ void setup()
     g_adcfs    = boardAdcFullScale();
     g_adcshift = (g_adcfs >= ADC_FULL) ? 0 : 2;
     g_bgadc    = boardAdcBandgap();
+
+    // La escala del canal de corriente, que depende de la referencia y por lo
+    // tanto de la placa. Con AVcc las dos miden lo mismo; con la referencia
+    // interna no.
+    {
+        const float ref = (SENSE_REF_INTERNAL && g_adcfs >= ADC_FULL)
+                        ? ADC_REF_MV_LGT8F : ADC_REF_MV;
+        g_imalsb = (uint16_t)(256.0f * 1000.0f * (ref / ADC_FULL)
+                              / SENSE_MV_PER_A + 0.5f);
+    }
 
     // El estado eléctrico del bus, antes de que el TWI tome las líneas. Desde el
     // protocolo, un cable al aire, un módulo sin alimentación y un corto contra
