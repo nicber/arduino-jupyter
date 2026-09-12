@@ -98,14 +98,28 @@ _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
 # que es por lo que cuenta el hardware, así que la conversión a Hz pasa por acá.
 _F_CPU = 16_000_000
 
-# El ADC del UNO da 10 bits sobre su referencia. Dónde tiene que reposar el sensor
-# depende de cuál sea y de cómo esté alimentado, así que acá no se juzga el valor:
-# se juzga que quede fuera de los rieles --contra un riel no hay una corriente
-# grande sino una entrada al aire-- y que sobre margen hacia arriba para que una
-# corriente tenga adónde crecer.
-_ADC_FULL     = 1023
-_ADC_RAIL     = 20   # a menos de esto de cualquiera de los dos extremos
-_ADC_HEADROOM = 100  # cuentas de margen que se le piden al reposo
+# La placa informa siempre en cuentas de 12 bits, tenga el ADC de 10 bits del UNO
+# o el de 12 del clon: normaliza ella, y publica en `adcfs` cuál de los dos es.
+# Ver ControlDemo.ino. Dónde tiene que reposar el sensor depende de cuál sea y de
+# cómo esté alimentado, así que acá no se juzga el valor: se juzga que quede fuera
+# de los rieles --contra un riel no hay una corriente grande sino una entrada al
+# aire-- y que sobre margen hacia arriba para que una corriente tenga adónde
+# crecer.
+_ADC_FULL     = 4095
+_ADC_RAIL     = 80   # a menos de esto de cualquiera de los dos extremos
+_ADC_HEADROOM = 400  # cuentas de margen que se le piden al reposo
+
+# Qué le pasa a cada línea del bus I2C, medido por la placa al arrancar. Los
+# códigos son los del enum de BoardStart.h.
+_BUS_LINEA = {
+    0: 'ok',
+    1: 'hay algo colgado pero sin alimentacion',
+    2: 'el cable no llega a ningun lado',
+    3: 'sujeta contra masa',
+}
+
+# Los dos cables cambiados entre sí, que no es de una línea sino de las dos.
+_BUS_INVERTIDO = 0x10
 
 _link = None
 
@@ -331,7 +345,45 @@ class Bench(CtrlLink):
                f'peor retardo de atencion {late} us de {df.attrs["dt_us"]} us '
                f'({margin:.0%})')
 
-        # 2. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
+        # 2. La placa, que en este banco puede ser una de dos y no se distinguen
+        #    a simple vista. Importa porque el ADC del clon tiene 12 bits contra
+        #    los 10 del UNO: la placa normaliza a 12 y lo dice acá, así que un
+        #    canal de corriente cuatro veces grande deja de ser un misterio.
+        if 'adcfs' in self.params:
+            fondo = self.get('adcfs')
+            bg    = self.get('bgadc')
+            report('placa', True,
+                   'ADC de 12 bits, el del clon LGT8F328P' if fondo >= 4096 else
+                   'ADC de 10 bits, el del ATmega328P; las lecturas se corren '
+                   '2 bits para contar en 12')
+
+            # La referencia interna, que es la ganancia del canal de corriente.
+            # Falta una tensión conocida para cerrar la cuenta, y no la hay
+            # adentro del chip: AVcc se mide una vez con un tester.
+            if bg:
+                report('referencia', None,
+                       f'bandgap {bg} cuentas de {fondo}: la referencia interna '
+                       f'vale AVcc*{bg}/{fondo}, o sea {5000 * bg / fondo:.0f} mV '
+                       f'si AVcc fuera 5000 mV. Medir AVcc y poner el resultado '
+                       f'en ADC_REF_MV de ControlDemo.ino')
+
+        # 3. Los cables del bus, medidos por la placa antes de encender el TWI.
+        #    Va antes que el sensor a propósito: si el sensor no contesta, esta
+        #    línea dice si es un cable, una alimentación o un corto, que desde el
+        #    protocolo se ven los tres igual.
+        if 'busdiag' in self.params:
+            diag = self.get('busdiag')
+            sda, scl = diag & 0x03, (diag >> 2) & 0x03
+            if diag & _BUS_INVERTIDO:
+                report('cables del bus', False,
+                       'SDA y SCL estan cambiados entre si: el sensor contesta '
+                       'hablandole al reves. Intercambiar los dos cables')
+            else:
+                report('cables del bus', sda == 0 and scl == 0,
+                       f'SDA {_BUS_LINEA.get(sda, "?")}, '
+                       f'SCL {_BUS_LINEA.get(scl, "?")}')
+
+        # 4. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
         #    que diga su registro del imán no significa nada, y conviene decir
         #    cuál de los dos problemas es.
         present = bool(df.attrs.get('spres', 1))
@@ -418,26 +470,9 @@ class Bench(CtrlLink):
 
         if not sensed:
             rest_ma = 0.0
-
-            # Una lectura por encima del fondo de escala no es un sensor mal
-            # puesto: es un conversor que no tiene los bits que este código le
-            # supone. El LGT8F328P --el clon que también arranca con el reloj
-            # dividido; ver BoardStart.h-- trae un ADC de 12 bits en lugar de los
-            # 10 del ATmega328P, así que informa cuatro veces más cuentas por la
-            # misma tensión. Sin nada conectado en A0 eso no cambia nada, pero con
-            # un sensor de corriente los amperes saldrían cuatro veces grandes, y
-            # eso es de las cosas que uno prefiere leer antes que descubrir.
-            if adc > _ADC_FULL:
-                report('cero de i', None,
-                       f'la entrada informa {adc:.0f} cuentas y un ADC de 10 bits '
-                       f'llega a {_ADC_FULL}: o no hay nada conectado en A0 --la '
-                       f'entrada al aire termina contra un riel-- o esta placa '
-                       f'tiene el ADC de 12 bits del LGT8F328P, y entonces la '
-                       f'escala de corriente sale multiplicada por 4')
-            else:
-                report('cero de i', None,
-                       f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): '
-                       f'no parece haber nada conectado en A0')
+            report('cero de i', None,
+                   f'entrada contra el riel del ADC ({adc:.0f} de {_ADC_FULL}): '
+                   f'no parece haber nada conectado en A0')
         else:
             # Lo que hay que mirar es el margen, no el valor: desde el reposo hasta
             # el tope de escala es todo lo que una corriente puede crecer antes de

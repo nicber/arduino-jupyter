@@ -140,14 +140,30 @@ static const float    SENSE_MV_PER_A  = 185.0f;
 // computadora. Ver Bench.zero_current().
 //
 // La interna no vale 1,100 V: el bandgap está especificado entre 1,0 y 1,2 V, o
-// sea +/-10 % de error de ganancia de chip a chip. Se mide sin instrumental,
-// leyendo el canal 14 del multiplexor contra AVcc: en esta placa dio 1093 mV, y
-// AVcc 5006. Cambiar el número al que mida la placa de uno; el error va derecho a
-// los mA que se informan.
+// sea +/-10 % de error de ganancia de chip a chip, y ese error va derecho a los mA
+// que se informan. La placa se mide a sí misma y publica el resultado en `bgadc`:
+// es el bandgap leído contra AVcc, en cuentas. Falta una sola tensión conocida
+// para cerrar la cuenta, porque acá adentro no hay ninguna, así que AVcc se mide
+// una vez con un tester y entonces la referencia interna vale
+// AVcc * bgadc / adcfs. `bringup()` hace esa cuenta y dice qué número poner acá;
+// ADC_REF_MV es por placa, y en este banco hay dos.
 static const bool     SENSE_REF_INTERNAL = true;
 static const float    ADC_REF_MV      = SENSE_REF_INTERNAL ? 1093.0f : 5006.0f;
-static const int16_t  SENSE_ZERO      = SENSE_REF_INTERNAL ? 0 : 512;
-static const float    ADC_MV_PER_LSB  = ADC_REF_MV / 1024.0f;
+
+// Todo lo que sigue cuenta en cuentas de 12 bits, en las dos placas del banco.
+//
+// El UNO tiene un ADC de 10 bits y el clon con LGT8F328P uno de 12, así que la
+// misma tensión mide cuatro veces más en una que en la otra. Hay dos maneras de
+// emparejarlas y no son equivalentes: tirar los dos bits de abajo del clon, o
+// correr la lectura del UNO dos bits para arriba y dejar esos dos LSBs en cero.
+// Se elige la segunda. La primera deja las dos placas en 10 bits y tira
+// resolución que en este canal escasea --un ACS712-05B da 185 mV/A, y 200 mA son
+// 37 mV--; la segunda conserva lo que el clon mide de verdad y le cuesta al UNO
+// dos ceros al final de un número que igual no los tenía. Las escalas de abajo
+// son entonces una sola, y el corrimiento vive en un único lugar: g_adcshift.
+static const uint16_t ADC_FULL        = 4096;
+static const int16_t  SENSE_ZERO      = SENSE_REF_INTERNAL ? 0 : (ADC_FULL / 2);
+static const float    ADC_MV_PER_LSB  = ADC_REF_MV / ADC_FULL;
 static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER_A;
 
 // `ref` y `refrate` llevan 8 bits fraccionarios, así que una rampa puede avanzar
@@ -311,6 +327,13 @@ static volatile bool     g_tick       = false;
 static volatile uint32_t g_tick_us    = 0;
 static volatile uint16_t g_missed_isr = 0;
 static volatile int16_t  g_adc        = 0;   // última conversión completada de A0
+
+// Propiedades de la placa, medidas al arrancar y publicadas como parámetros para
+// que la computadora no tenga que adivinarlas. Ver BoardStart.h.
+static uint16_t g_adcfs    = ADC_FULL;  // fondo de escala real del ADC de esta placa
+static uint8_t  g_adcshift = 0;         // cuánto se corre cada lectura para llegar a 12 bits
+static uint16_t g_bgadc    = 0;         // el bandgap contra AVcc, en cuentas
+static uint8_t  g_busdiag  = 0;         // estado eléctrico del bus I2C al arrancar
 static volatile uint8_t  g_divider    = 10;
 
 // --------------------------------------------------------- calibración del AS5600
@@ -504,6 +527,9 @@ static const CtrlParam PROGMEM g_params[] =
     { "missed",  CTRL_U16, &g_missed,   0           },
     { "sovr",    CTRL_U16, &g_sovr,     0           },
     { "serr",    CTRL_U16, &g_serr,     0           },
+    { "adcfs",   CTRL_U16, &g_adcfs,    0           },
+    { "bgadc",   CTRL_U16, &g_bgadc,    0           },
+    { "busdiag", CTRL_U8,  &g_busdiag,  0           },
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
@@ -603,7 +629,7 @@ ISR(TIMER2_COMPA_vect)
 
     if (ADCSRA & _BV(ADIF))
     {
-        g_adc = (int16_t)ADC;
+        g_adc = (int16_t)(ADC << g_adcshift);
         // Escribir un 1 en ADIF lo borra; ese mismo almacenamiento lanza la
         // conversión siguiente, así que el ADC corre libre un resultado por
         // detrás del muestreador.
@@ -1171,6 +1197,28 @@ void setup()
     // lectura deja al AS5600 sujetando SDA, con lo que el muestreador arranca
     // trabado para siempre. Ver BoardStart.h.
     boardClockBegin();
+
+    // El ADC antes que nada de lo que sigue. Su fondo de escala decide con qué
+    // umbrales se juzgan las líneas del bus, y las sondas mueven el multiplexor,
+    // así que las tres cosas tienen que pasar antes de que startAdc() lo deje
+    // donde el lazo lo necesita.
+    g_adcfs    = boardAdcFullScale();
+    g_adcshift = (g_adcfs >= ADC_FULL) ? 0 : 2;
+    g_bgadc    = boardAdcBandgap();
+
+    // El estado eléctrico del bus, antes de que el TWI tome las líneas. Desde el
+    // protocolo, un cable al aire, un módulo sin alimentación y un corto contra
+    // masa se ven los tres igual --el sensor no contesta-- y se arreglan en
+    // lugares distintos. Medirlo cuesta cuatro conversiones y una sola vez.
+    g_busdiag = i2cBusCheck(g_adcfs);
+
+    // Y la falla que sobrevive a todo lo anterior: los dos cables cambiados entre
+    // sí. El bus se ve impecable y no contesta nadie. Se pregunta antes de
+    // destrabar, que es lo que después deja el bus en un estado conocido.
+    if (i2cRespondeInvertido(Sensor::DEVICE_ADDRESS)) {
+        g_busdiag |= I2C_BUS_INVERTIDO;
+    }
+
     i2cBusRecover();
 
     // ENA primero: mientras el puente esté abierto las entradas de sentido no
