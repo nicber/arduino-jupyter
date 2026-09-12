@@ -1,6 +1,6 @@
 """La tabla de parámetros y la de canales son la interfaz pública del sketch.
 
-Los notebooks las usan como atributos de Python --`dev.pid_kp`, `df['y_uw']`-- así
+Los notebooks las usan como atributos de Python --`dev.ctl_uff`, `df['y_uw']`-- así
 que un nombre que cambia, una entrada que se reordena o un `frac` que queda con el
 del vecino rompen el otro lado en silencio. No hay ningún test que mire eso: los de
 ctrllink prueban el protocolo contra un dispositivo inventado, y los de calib
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 _AQUI   = Path(__file__).resolve().parent
-SKETCH  = _AQUI.parent / 'ControlDemo' / 'ControlDemo.ino'
+SKETCH  = _AQUI.parent / 'Banco' / 'Banco.ino'
 GOLDEN  = _AQUI / 'tablas_golden.json'
 
 # Una entrada de tabla es una línea entre llaves con campos separados por comas. Se

@@ -6,7 +6,7 @@
 // está mal montado el ángulo es ruido y todo parece un motor muerto. Acá la
 // evidencia no sale del banco: la placa lee sus propios pines de vuelta.
 //
-// Primero se verifica a sí misma. Usa el mismo módulo de puente que ControlDemo
+// Primero se verifica a sí misma. Usa el mismo módulo de puente que Banco
 // --así el temporizador y la escala del ciclo de trabajo son los mismos y no una
 // copia que ya se le fue separando-- y mira el registro PIN, que refleja el estado
 // real del pin aunque sea salida, para confirmar que ENA conmuta y que IN1 e IN2
@@ -27,7 +27,7 @@
 static const uint8_t  PWM_PIN = 9;      // ENA del L298N, OC1A
 static const uint8_t  IN1_PIN = 6;
 static const uint8_t  IN2_PIN = 7;
-static const uint16_t PWM_TOP = 8000;   // 1 kHz phase-correct, como ControlDemo
+static const uint16_t PWM_TOP = 8000;   // 1 kHz phase-correct, como Banco
 
 typedef HBridge<PWM_PIN, IN1_PIN, IN2_PIN> Motor;
 

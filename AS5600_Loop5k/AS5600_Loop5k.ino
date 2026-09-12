@@ -22,7 +22,7 @@ typedef AS5600<NI2CBus> Sensor;
 
 static const uint16_t SAMPLE_HZ = 5000;
 
-// El mismo reloj que usa ControlDemo, en lugar de otra copia del Timer2 que se le
+// El mismo reloj que usa Banco, en lugar de otra copia del Timer2 que se le
 // vaya separando. Acá no hay ley de control, así que el divisor es 1: cada muestra
 // es su propio período y nadie pregunta si venció uno.
 //

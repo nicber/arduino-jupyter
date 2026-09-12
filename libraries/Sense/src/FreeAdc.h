@@ -34,10 +34,13 @@ class FreeAdc
     }
 
     // `full_scale` es lo que el conversor de esta placa da a fondo de escala, y
-    // `normalized` el ancho al que se quiere publicar. La referencia hay que
-    // elegirla antes: en una de las dos placas del banco no la eligen los bits REFS.
-    // Ver boardAdcSelectReference().
-    void begin(uint16_t full_scale, uint16_t normalized, bool internal_ref)
+    // `normalized` el ancho al que se quiere publicar.
+    //
+    // Siempre contra Vcc. Un sensor de corriente bipolar y ratiométrico --un ACS712--
+    // reposa en la mitad de su alimentación, y medirlo contra la misma tensión que lo
+    // alimenta lo deja en media escala por construcción. En una de las dos placas
+    // del banco los bits REFS no eligen nada: ver board::adc_select_vcc().
+    void begin(uint16_t full_scale, uint16_t normalized)
     {
         m_shift = 0;
         for (uint16_t width = full_scale; width < normalized; width <<= 1)
@@ -45,8 +48,7 @@ class FreeAdc
             m_shift++;
         }
 
-        ADMUX  = (uint8_t)((internal_ref ? (_BV(REFS1) | _BV(REFS0)) : _BV(REFS0))
-                         | (Channel & 0x07));
+        ADMUX  = (uint8_t)(_BV(REFS0) | (Channel & 0x07));
         ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0) | _BV(ADSC);
     }
 
@@ -77,10 +79,6 @@ class FreeAdc
 
         return value;
     }
-
-    // Cuánto se corre cada lectura para llegar al ancho normalizado. Se publica
-    // porque la computadora necesita saberlo para interpretar la escala.
-    uint8_t shift(void) const { return m_shift; }
 
     private:
 
