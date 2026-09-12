@@ -60,10 +60,14 @@ class AngleLut
     // modos torcido, y ahí el error es real y grande.
     static const Eighths MAX = 4095;
 
+    // El valor de `packed` que quiere decir «nada que hacer»: un índice que no
+    // existe. De ahí sale el valor de arranque del parámetro.
+    static const uint32_t NOTHING = 0xFFFFFFFFUL;
+
     // Las entradas, públicas porque quien las cargue de PROGMEM copia sobre ellas.
     Eighths entry[Size];
 
-    constexpr AngleLut() : entry() {}
+    constexpr AngleLut() : entry(), m_applied(NOTHING) {}
 
     // La corrección en cuentas para un ángulo crudo, interpolada linealmente entre
     // las dos entradas que lo rodean.
@@ -94,7 +98,11 @@ class AngleLut
     // El ángulo corregido, que es lo que el lazo quiere. Se aplica sobre la cuenta
     // cruda y antes de desenrollar, porque la tabla se indexa con el ángulo de
     // adentro de la vuelta y una vez desenrollado ese ángulo ya no está.
-    Counts apply(Counts raw) const
+    //
+    // Se llama corrected() y no apply() para no quedar sobrecargado contra la
+    // escritura de una entrada: los dos tomarían un entero y el compilador elegiría
+    // por el ancho del tipo, que es la clase de resolución que nadie quiere leer.
+    Counts corrected(Counts raw) const
     {
         return (Counts)((raw - correction(raw)) & (Counts)(PerRev - 1));
     }
@@ -155,6 +163,28 @@ class AngleLut
         entry[index] = value;
         return true;
     }
+
+    // Lo mismo, pero sólo cuando el parámetro de verdad cambió desde la última vez.
+    //
+    // Quien llama corre después de cada escritura de cualquier parámetro, así que sin
+    // esto un barrido de ganancia reescribiría la misma entrada de la tabla una vez
+    // por comando. El valor ya aplicado es un miembro de la tabla y no una variable
+    // escondida adentro de la función de ajuste: es la tabla la que sabe qué tiene
+    // puesto.
+    bool apply(uint32_t packed)
+    {
+        if (packed == m_applied)
+        {
+            return false;
+        }
+
+        m_applied = packed;
+        return write_packed(packed);
+    }
+
+    private:
+
+    uint32_t m_applied;
 };
 
 #endif  // CALIBRACION_ANGLELUT_H

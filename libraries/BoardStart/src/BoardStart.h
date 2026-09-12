@@ -44,10 +44,23 @@
 // segunda opinión para distinguir las dos placas del banco cuando hay que
 // decidir algo más que el reloj; ver boardAdcFullScale(). Vale 0 si nadie llamó
 // todavía a boardClockBegin(), que es el caso del UNO de todos modos.
+// Se guarda en un miembro de clase y no en un static adentro de la función: un
+// static de función es estado escondido en un lugar donde nadie lo busca, y además
+// arrastra el guardia de inicialización que el core apaga con
+// -fno-threadsafe-statics. La plantilla es lo que permite definir el miembro en el
+// header sin un .cpp, y deja una sola instancia aunque lo incluyan varias unidades.
+template <class Dummy>
+struct BoardClockStateT
+{
+    static uint8_t reset_clkpr;
+};
+template <class Dummy> uint8_t BoardClockStateT<Dummy>::reset_clkpr = 0;
+
+typedef BoardClockStateT<void> BoardClockState;
+
 inline uint8_t& boardResetClkpr()
 {
-    static uint8_t valor = 0;
-    return valor;
+    return BoardClockState::reset_clkpr;
 }
 
 inline void boardClockBegin()
@@ -87,20 +100,72 @@ inline uint16_t boardAdcOnce(uint8_t admux)
     return valor;
 }
 
+// Elige la referencia del ADC de verdad, en las dos placas del banco.
+//
+// En el LGT8F328P los bits REFS del ADMUX NO la eligen. La eligen DACON, VCAL y el
+// bit REFS2 de ADCSRD, y REFS queda de resabio porque el core lgt8fx lo escribe
+// igual --`ADMUX = analog_reference << 6`-- después de haber configurado los otros
+// tres. Ver analogReference() en su wiring_analog.c.
+//
+// Un sketch que escriba sólo REFS no elige nada en esa placa: la referencia queda
+// en lo que haya quedado de antes. Eso es lo que explica por qué la misma lectura
+// del canal interno da números distintos en corridas distintas.
+//
+// Y por eso esto vive acá y no adentro del lazo: todo lo que mide con el ADC al
+// arrancar --el fondo de escala, el bandgap, y el estado eléctrico de las líneas
+// del bus, que se juzga con umbrales que son fracciones del fondo-- necesita que la
+// referencia ya esté elegida. Llamarlo después dejaba esas tres mediciones corriendo
+// contra una referencia de resabio, y la del bus es la que importa: sus umbrales no
+// significan volts, así que con una referencia chica las dos líneas leen saturadas y
+// el diagnóstico no puede quejarse nunca.
+//
+// Las dos placas corren el mismo binario y el core es el del ATmega, así que estos
+// registros no existen por nombre y van por dirección. Sólo se los toca cuando la
+// placa es la del ADC de 12 bits: en el UNO 0xA0 y 0xAD no son registros, y no hay
+// por qué escribirles.
+static const uint16_t LGT_DACON  = 0xA0;
+static const uint16_t LGT_ADCSRD = 0xAD;
+static const uint16_t LGT_VCAL   = 0xC8;
+static const uint16_t LGT_VCAL1  = 0xCD;   // el valor de calibración de 1,024 V
+static const uint8_t  LGT_REFS2  = 6;
+
+// `doce_bits` distingue las dos placas, y es lo que devuelve boardAdcFullScale():
+// esa sonda no necesita una referencia correcta, porque cae al CLKPR de arranque.
+inline void boardAdcSelectReference(bool doce_bits, bool interna)
+{
+    if (!doce_bits) {
+        return;                 // un ATmega: los bits REFS alcanzan y son los suyos
+    }
+
+    _SFR_MEM8(LGT_ADCSRD) &= (uint8_t)~_BV(LGT_REFS2);
+
+    if (interna) {
+        // La referencia interna, con VCAL cargado con la calibración de 1,024 V.
+        _SFR_MEM8(LGT_DACON) = (uint8_t)((_SFR_MEM8(LGT_DACON) & 0x0C) | 0x02);
+        _SFR_MEM8(LGT_VCAL)  = _SFR_MEM8(LGT_VCAL1);
+    } else {
+        // DEFAULT del core: Vcc, que es la misma elección que REFS=01 en el UNO.
+        _SFR_MEM8(LGT_DACON) &= 0x0C;
+    }
+}
+
 // Cuántas cuentas da el ADC a fondo de escala: 1024 en el UNO, 4096 en el clon
 // con LGT8F328P, que trae un ADC de 12 bits. La misma tensión mide cuatro veces
 // más en una placa que en la otra, y en este banco las dos corren el mismo
 // binario, así que el número no puede ser una constante compilada.
 //
-// La sonda no depende de ningún valor de tensión: mide el bandgap tomando como
-// referencia el bandgap mismo. Entrada y referencia son la misma cosa, así que
-// el resultado es el fondo de escala, valga el bandgap 1,0 o 1,2 V. Un ADC de 10
-// bits satura en 1023 y no puede devolver más, de manera que cualquier cosa por
-// encima de 1023 es una prueba y no un indicio.
+// La sonda mide el bandgap tomando como referencia el bandgap mismo: entrada y
+// referencia son la misma cosa, así que el resultado es el fondo de escala, valga
+// el bandgap 1,0 o 1,2 V. Un ADC de 10 bits satura en 1023 y no puede devolver más,
+// de manera que cualquier cosa por encima de 1023 prueba que hay más de 10 bits.
 //
-// Si la sonda no concluye --una placa que no implemente el canal del bandgap
-// devuelve cero-- se cae al mismo discriminador que usa el reloj, que es el
-// CLKPR de arranque. Por eso conviene llamar a boardClockBegin() antes.
+// OJO que ese razonamiento vale en el ATmega y no en el clon. Ahí los bits REFS no
+// eligen la referencia --ver boardAdcSelectReference()-- así que no hay ninguna
+// garantía de que entrada y referencia sean la misma tensión, y la sonda puede
+// devolver cualquier cosa. Lo que contesta bien en esa placa es el respaldo: el
+// CLKPR de arranque, que la distingue sin ambigüedad. Así que en el clon el que
+// carga el peso es el respaldo y no la sonda, y por eso hay que llamar a
+// boardClockBegin() antes que a esto.
 inline uint16_t boardAdcFullScale()
 {
     const uint16_t saturado = boardAdcOnce((_BV(REFS1) | _BV(REFS0)) | 0x0E);
