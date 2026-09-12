@@ -252,8 +252,8 @@ class BancoSimulado:
         self.uff = antes
         self.rest()
         vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
-        return Giro(vueltas, df['i'].abs().max(), df['i'].mean(),
-                    df['i'].std() / max(len(df), 1) ** 0.5)
+        i = df['i']
+        return Giro(vueltas, i.iloc[i.abs().to_numpy().argmax()])
 
     def _comando(self, t, eventos):
         """El `uff` a lo largo de la captura: lo que sale al puente en cada fila.

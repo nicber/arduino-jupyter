@@ -154,9 +154,7 @@ class Giro(NamedTuple):
     """Lo que deja un tirón de lazo abierto: ver `Bench.spin()`."""
 
     vueltas: float    # con signo: es lo que hace verificable el sentido
-    pico: float       # mA, sin signo: el pico de arranque
-    corriente: float  # mA, con signo y promediados: es lo que tiene el signo
-    error: float      # mA, cuánto vale ese promedio: su error estándar
+    corriente: float  # mA, con signo, la muestra de mayor |i| de todo el tirón
 
 
 @dataclass
@@ -408,14 +406,25 @@ class Bench(CtrlLink):
     def spin(self, u, seconds=0.4, espera=6.0, quieto=5.0):
         """Lazo abierto con `u` sobre el puente por un instante, y de vuelta a reposo.
 
-        Devuelve un `Giro`: vueltas, pico de corriente y corriente media. Las
-        vueltas van con signo, que es lo que hace verificable el sentido. De la
-        corriente vienen las dos formas porque contestan preguntas distintas: el
-        pico va sin signo y dice si el motor consumió algo, y la media va con signo
-        y es la única evidencia de para qué lado circuló. Que el sensor vea o no el
-        signo depende de en qué parte del circuito esté insertado --uno unipolar da
-        positivo en los dos sentidos-- y eso también es algo que hay que medir, no
-        suponer.
+        Devuelve un `Giro`: vueltas, corriente y ruido. Las vueltas van con signo,
+        que es lo que hace verificable el sentido.
+
+        De la corriente se informa la muestra de mayor módulo de todo el tirón, con
+        su signo, y no el promedio. El promedio de un tirón es casi todo el régimen,
+        y un motor sin carga en régimen no consume nada: la fuerza contraelectromotriz
+        le cancela el comando, así que la corriente vive en el arranque y en ningún
+        otro lado. Medido en este banco, con el eje parado y un escalón a u = 255:
+        925 mA de pico contra 125 mA ya girando, y a u = 120, 317 mA contra cero. Un
+        promedio sobre los 0,4 s enteros diluye eso hasta el ruido, y entonces el
+        signo que informa es el del ruido.
+
+Contra qué se juzga esa muestra no sale de acá: sale del ruido del canal
+        en reposo, con el puente abierto. La dispersión de este tirón no sirve,
+        porque adentro está la propia corriente que se quiere medir --arranca en el
+        pico y cae a nada-- así que crece justo cuando hay más señal. Ver
+        `bringup()`. Que el sensor vea o no el signo depende además de en qué parte
+        del circuito esté insertado --uno unipolar da positivo en los dos
+        sentidos-- y eso también es algo que hay que medir, no suponer.
 
         Espera primero a que el eje esté realmente quieto, y esa espera no es una
         precaución de más: con el puente abierto el motor no frena, sigue por
@@ -453,14 +462,11 @@ class Bench(CtrlLink):
             print(f'  OJO: el eje seguia girando a {arrastre:.0f} grados/s al empezar '
                   f'esta medicion; el sentido que informa puede ser el de la inercia')
 
-        # El error del promedio y no la dispersión de las muestras: lo que hay que
-        # saber es si el signo del promedio es el de la corriente o el del ruido, y
-        # promediar doscientas muestras baja esa incertidumbre por raíz de
-        # doscientas. Juzgarlo contra la dispersión suelta rechazaría mediciones
-        # que están a veinte sigmas de cero, que es lo que hacía acá: este banco
-        # da -45 mA de media con 25 mA de ruido por muestra, o sea 1,7 mA de error.
-        return Giro(vueltas, df['i'].abs().max(), df['i'].mean(),
-                    df['i'].std() / max(len(df), 1) ** 0.5)
+        # La muestra de mayor módulo, con su signo: es el instante en el que el
+        # sensor tiene algo que decir, y el único en el que la relación entre señal
+        # y ruido de este canal alcanza para creerle un signo.
+        i = df['i']
+        return Giro(vueltas, i.iloc[i.abs().to_numpy().argmax()])
 
     # ------------------------------------------------------- puesta en marcha
 
@@ -680,6 +686,7 @@ class Bench(CtrlLink):
         lsb = self.channel('i').scale
         adc = self.adc_de_i(df['i'].mean())
         sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
+        noise = 0.0
 
         if not sensed:
             # Contra el riel de arriba hay dos causas y se arreglan en lugares
@@ -742,7 +749,7 @@ class Bench(CtrlLink):
             ida = self.spin(u)
 
             evidence = ([f'{abs(ida.vueltas):.2f} vueltas'] if present else []) + \
-                       ([f'{ida.pico:.0f} mA de pico'] if sensed else [])
+                       ([f'{abs(ida.corriente):.0f} mA de pico'] if sensed else [])
 
             if not evidence:
                 report('motor', None, 'no se puede evaluar: no hay sensor de '
@@ -750,7 +757,7 @@ class Bench(CtrlLink):
             else:
                 report('motor',
                        (present and abs(ida.vueltas) > _GIRO_MINIMO) or
-                       (sensed and ida.pico > abs(rest_ma) + _I_MOTOR_MA),
+                       (sensed and abs(ida.corriente) > abs(rest_ma) + _I_MOTOR_MA),
                        ', '.join(evidence))
 
             # 7. La polaridad: un comando positivo tiene que hacer *subir* el
@@ -858,26 +865,33 @@ class Bench(CtrlLink):
             #    ángulo ya quedó derecho y la corriente sigue saliendo al revés, lo
             #    que está dado vuelta es por dónde entra el sensor de corriente.
             #
-            #    El umbral no es un número elegido: es cinco veces el error del
-            #    propio promedio, o sea la pregunta de si el signo que se está por
-            #    creer es el de la corriente o el del ruido. Un banco con el eje
-            #    frenado informaría si no una polaridad inventada con cara de
-            #    medición. El piso de tres cuentas es para que un canal silencioso
-            #    --uno que no llega a un escalón del ADC-- no se cuele por tener el
-            #    error chico justamente porque no está midiendo nada.
-            umbral = max(5 * ida.error, 3 * lsb)
+            #    El umbral no es un número elegido: son cinco veces el ruido que
+            #    este canal tiene *en reposo*, con el puente abierto, que es el que
+            #    se acaba de medir unas líneas más arriba. O sea la pregunta de si
+            #    lo que se está por creer es corriente o es una muestra de ruido.
+            #
+            #    Tiene que ser el ruido en reposo y no la dispersión del tirón: en
+            #    el tirón está adentro la corriente misma, que arranca en el pico y
+            #    cae a nada, así que esa dispersión crece justo cuando hay más
+            #    señal. Medido en este banco, con el tirón el umbral daba 302 mA
+            #    contra un pico de 225 y rechazaba una medición perfectamente buena.
+            #
+            #    El piso de tres cuentas es para que un canal silencioso --uno que
+            #    no llega a un escalón del ADC-- no se cuele por tener el ruido
+            #    chico justamente porque no está midiendo nada.
+            umbral = max(5 * noise, 3 * lsb)
 
             if not sensed:
                 report('signo de i', None,
                        'no se puede evaluar sin medicion de corriente')
             elif abs(ida.corriente) <= umbral:
                 report('signo de i', None,
-                       f'{ida.corriente:+.0f} mA de media con u = {u:+}, que no se '
-                       f'despegan de su propio error ({umbral:.0f} mA): el motor '
+                       f'{ida.corriente:+.0f} mA de pico con u = {u:+}, que no se '
+                       f'despegan del ruido del canal ({umbral:.0f} mA): el motor '
                        f'consume muy poco para que el signo signifique algo')
             elif ida.corriente < 0 and 'iinvert' not in self._params:
                 report('signo de i', False,
-                       f'{ida.corriente:+.0f} mA de media con un u positivo, y este '
+                       f'{ida.corriente:+.0f} mA de pico con un u positivo, y este '
                        f'sketch no declara iinvert: regrabar la placa con '
                        f'sync_board(force_upload=True), o dar vuelta el sensor')
             else:
@@ -904,7 +918,7 @@ class Bench(CtrlLink):
                 unipolar = (bipolar_medible and
                             abs(vuelta.corriente) > umbral and vuelta.corriente > 0)
 
-                detalle = (f'{ida.corriente:+.0f} mA de media con u = {u:+}, con '
+                detalle = (f'{ida.corriente:+.0f} mA de pico con u = {u:+}, con '
                            f'iinvert = {self._iinvert}')
 
                 if vuelta is not None and abs(vuelta.corriente) > umbral:

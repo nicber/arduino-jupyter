@@ -147,14 +147,17 @@ static const float    SENSE_MV_PER_A  = 185.0f;
 //
 // Y elegirla en el clon no es escribir REFS: ver startAdcReference().
 //
-// OJO que en este banco el reposo NO cae en media escala: cae en 3071 cuentas de
-// 4096, o sea tres cuartos, que contra Vcc de 5 V son 3,75 V y no los 2,5 que
-// tendría que dar un ACS712 quieto. El número es estable y repetible --no es ruido
-// ni una entrada al aire-- así que hay algo de ese sensor que todavía no está
-// entendido: con qué se lo alimenta, qué corriente lo atraviesa en reposo, o si la
-// plaqueta trae algo más que el chip. Mientras eso no se aclare, el margen queda
-// torcido: un cuarto de escala para un sentido de la corriente y tres para el
-// otro. Medir la salida del sensor con un tester es lo que lo contesta.
+// OJO que en este banco el reposo no cae en media escala: cae en 3071 cuentas de
+// 4096, o sea 3,75 V contra Vcc de 5 V, y no en los 2,5 que daría un ACS712
+// alimentado a 5. El canal mide bien --se lo verificó accionando el motor-- así
+// que lo más probable es que el sensor no esté alimentado con los mismos 5 V: uno
+// que reposa en 3,75 está viendo 7,5 V, que es lo que suele tener la fuente del
+// puente. Vale la pena confirmarlo con un tester, porque de ahí sale para qué lado
+// hay margen: la corriente de este banco hace *bajar* la salida, y hacia abajo
+// quedan las 3071 cuentas enteras.
+//
+// Y porque un sensor alimentado por encima de 5 V puede sacar la salida por encima
+// de 5 V, que es más de lo que le gusta a una entrada del AVR.
 //
 // Lo que se paga es resolución: un LSB pasa de 1,07 mV a 4,9, y con 185 mV/A eso
 // deja 200 mA en apenas siete u ocho cuentas. Es el precio de poder medir el
