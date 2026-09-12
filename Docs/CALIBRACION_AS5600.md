@@ -71,7 +71,7 @@ Lo que tenemos, y que es bastante:
 - Telemetría a 500 Hz por omisión (`tickdiv = 10`), con número de tick en cada
   fila, así que un hueco se ve y no se confunde con una muestra.
 - `y_uw`, el ángulo ya desenrollado en cuentas, en el flujo.
-- Lazo abierto con `mode = 0` y `uff` como comando, y `capture(duración,
+- `uff` como comando sobre el puente, y `capture(duración,
   events=[...])` para cambiar un parámetro en un tick conocido en mitad de la
   corrida.
 - 4096 cuentas por vuelta: una cuenta son 0,0879°.
@@ -164,18 +164,15 @@ experimento con mejor relación entre lo que cuesta y lo que dice.
 Nada de esto es la etapa de calibración todavía. Es lo mínimo para que los datos
 signifiquen algo.
 
-1. **Parámetro `sfilt` (u8, 0..3)** que escribe los bits `SF` del CONF del AS5600.
-   Sin esto se mide con 2,2 ms de retardo y la fase de la tabla depende de la
-   velocidad. Es un registro volátil, no hay que quemar nada.
-2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, sin `offset`, sin signo
-   invertido y sin corregir. Hoy `sensor_measurement()` devuelve `offset − counts`,
-   así que desde el notebook la cuenta cruda se recupera como `(-y_uw) % 4096`
-   con `offset = 0`; funciona, pero indexar la tabla es exactamente el lugar donde
-   un signo equivocado se paga caro y no se nota. Cuesta dos bytes por fila.
-3. **Diagnóstico de montaje**: leer una vez `AGC` (0x1A) y `MAGNITUDE` (0x1B/1C)
-   además de `STATUS`, y exponerlos como parámetros de sólo lectura. `AGC` cerca
-   del medio de su rango es la única evidencia barata de que el imán está a la
-   distancia correcta. Es el mismo mecanismo perezoso que ya usa `read_status()`.
+1. **El filtro del AS5600 en 2x.** Sin esto se mide con 2,2 ms de retardo y la
+   fase de la tabla depende de la velocidad. Es un registro volátil, no hay que
+   quemar nada; el sketch lo escribe al arrancar.
+2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, dentro de la vuelta y sin
+   corregir. Es lo que indexa la tabla, y reconstruirla desde `y_uw` es exactamente
+   el lugar donde un signo equivocado se paga caro y no se nota. Cuesta dos bytes
+   por fila.
+3. **Diagnóstico de montaje**: `STATUS` del sensor como parámetro de sólo lectura,
+   que dice si el imán está, y si está demasiado cerca o demasiado lejos.
 
 ## 5. Los experimentos
 
@@ -195,7 +192,7 @@ sacarle una foto al conjunto imán/sensor.
 
 ### E1 — Piso de ruido (5 min)
 
-Eje quieto y sujeto, `sfilt` en 2x, capturar 10 s. Calcular el desvío estándar de
+Eje quieto y sujeto, capturar 10 s. Calcular el desvío estándar de
 `y_raw` en cuentas y su espectro.
 
 Esto fija el umbral de detección de todo lo demás: nada por debajo de unas pocas
@@ -205,8 +202,7 @@ el filtro en 2x, que son 0,49 cuentas.
 ### E2 — Desaceleración libre (el experimento central)
 
 ```python
-dev.mode, dev.offset, dev.cal = 0, 0, 0
-dev.sfilt = 3                      # filtro 2x
+dev.cal = 0
 dev.uff = 200                      # llevarlo a velocidad
 df = dev.capture(25, events=[(3.0, 'uff', 0)])   # y soltarlo
 ```
@@ -239,7 +235,8 @@ para que la fila entre en el enlace.
 
 ### E4 — Retardo y sentido
 
-Repetir un `uff` de E3 con `sfilt` en 16x y en 2x, en los dos sentidos. La fase
+Repetir un `uff` de E3 con el filtro del sensor en 16x y en 2x --es
+`SENSOR_FILTER` en el sketch, y pide recompilar--, en los dos sentidos. La fase
 ajustada `φ_k` tiene que correrse en `k·ω·τ` y cambiar de signo con el sentido.
 
 Predicción falsable: entre 16x y 2x, `φ_1` se corre 39 cuentas a 5 rev/s. Si el
@@ -450,7 +447,7 @@ banco. Porque:
   placas con memoria distinta.
 
 Para un tablero que se enciende solo y nadie conecta a una computadora,
-`calib.escribir_header()` genera `ControlDemo/Calibracion.h` y el sketch lo toma
+`calib.escribir_header()` genera `Banco/Calibracion.h` y el sketch lo toma
 con `__has_include`. Ahí la calibración sí queda adentro de la placa, pero a la
 vista en el código y no escondida en una memoria.
 
@@ -478,14 +475,13 @@ Más dos parámetros de operación:
 
 - **`cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
   puede apagar no se puede medir.
-- **`sfilt` (u8)**: los bits `SF` del CONF, de §4.
 
 ## 8. Riesgos, y qué los detecta
 
 | Riesgo | Cómo se manifiesta | Qué lo agarra |
 |---|---|---|
 | Se calibra la mecánica del motor como si fuera el sensor | la tabla mejora una velocidad y empeora otra | G2, la pendiente de `A_k(ω)` |
-| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y poner `sfilt` en 2x desde el principio |
+| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y el filtro del sensor en 2x desde el principio |
 | El imán está flojo en el eje | la tabla no se repite entre encendidos | G3 |
 | Aliasing: pocas muestras por vuelta | armónicos altos aparecen donde no están | ≥40 muestras/vuelta, verificado en cada captura |
 | Huecos de telemetría desenrollados como saltos | vueltas fantasma en el desenrollado | reconstruir con `tick`, no con el índice |
@@ -500,7 +496,7 @@ Este plan está implementado. El reparto:
 
 | | |
 |---|---|
-| `ControlDemo/ControlDemo.ino` | la tabla, `lut_lookup()`, `cal`, `sfilt`, el canal `y_raw` |
+| `Banco/Banco.ino` | la tabla, `lut_lookup()`, `cal`, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
 | `python/calib.py` | ajuste, compuertas, tabla, archivo, header |
 | `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
@@ -509,7 +505,7 @@ Este plan está implementado. El reparto:
 
 ## 10. Orden de trabajo
 
-1. Firmware de medición: `sfilt`, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
+1. Firmware de medición: el filtro del sensor, `y_raw`, el estado del imán (§4).
 2. E0, E1 — higiene y piso de ruido. Compuerta G0.
 3. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
 4. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.

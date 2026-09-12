@@ -1,16 +1,16 @@
 # CtrlLink
 
-Un protocolo serie para gobernar desde un notebook de Jupyter un lazo de control
-que corre en un Arduino: fijar las ganancias, aplicar un escalón en la
-referencia y traerse de vuelta la serie temporal que resulta.
+Un protocolo serie para gobernar desde un notebook de Jupyter un banco que corre
+en un Arduino: fijar sus parámetros, aplicar un escalón y traerse de vuelta la
+serie temporal que resulta.
 
 ```python
 from ctrllink import CtrlLink
 
 dev = CtrlLink()                 # o CtrlLink('COM3'), o '/dev/ttyACM0'
-dev.kp, dev.ki, dev.mode = 2.5, 0.1, 1
-df = dev.step('ref', 1024, pre=0.1, post=0.9)   # un DataFrame, t = 0 en el escalón
-df.plot(x='t', y=['ref', 'y'])
+dev.uff = 100
+df = dev.step('uff', 200, pre=0.3, post=1.2)    # un DataFrame, t = 0 en el escalón
+df.plot(x='t', y=['u', 'y_uw'])
 ```
 
 El dispositivo describe por sí mismo sus parámetros y sus canales de telemetría,
@@ -96,8 +96,8 @@ que un transitorio hasta el establecimiento. El flujo continuo no tiene límite 
 duración; lo que queda acotado es la frecuencia de muestreo, y a 1 Mbaud ese
 tope está muy por encima de cualquier lazo que pueda correr un UNO.
 
-**Nunca bloquear el lazo de control.** `Serial.write` bloquea en cuanto se llena
-el buffer de transmisión de 64 bytes, lo que frenaría el lazo y distorsionaría
+**Nunca bloquear el muestreo.** `Serial.write` bloquea en cuanto se llena el
+buffer de transmisión de 64 bytes, lo que frenaría el muestreo y distorsionaría
 justamente la dinámica que se está midiendo. `emit()` consulta primero
 `availableForWrite()` y descarta la fila si no hay lugar, contando el descarte.
 Una fila descartada deja un hueco visible en la secuencia de ticks; una escritura
@@ -115,8 +115,8 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `ControlDemo` corre seis canales a 500 Hz —tres int32 y tres int16, 41
-bytes por fila—, que son 20,5 kB/s, o el 21 % de un enlace de 1 Mbaud.
+sketch `Banco` corre cuatro canales a 500 Hz —un int32 y tres de 16 bits, 25
+bytes por fila—, que son 12,5 kB/s, o el 13 % de un enlace de 1 Mbaud.
 
 ## Protocolo de línea
 
@@ -203,8 +203,8 @@ macOS con un puente CH340 se queda así—, y entonces no hay flanco y la placa
 sigue corriendo con el estado que le dejó la corrida pasada. `reset_wait=0` se
 engancha a un sketch que ya está corriendo, sin resetear nada.
 
-- Los parámetros son atributos, siempre en unidades reales: `dev.kp = 2.5`,
-  `print(dev.kp)`. `dev.params` los lee todos de vuelta.
+- Los parámetros son atributos, siempre en unidades reales: `dev.uff = 120`,
+  `print(dev.uff)`. `dev.params` los lee todos de vuelta.
 - `dev.capture(duration, events=[(retardo, nombre, valor), ...])` → DataFrame.
 - `dev.step(nombre, valor, pre=0.1, post=0.9, back=None)` → DataFrame con `t = 0`
   en el escalón. Si se interrumpe, `back` se restituye igual: del otro lado del
@@ -284,7 +284,7 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r python/requirements.txt jupyterlab matplotlib ipykernel
 ./.venv/bin/python -m ipykernel install --user --name arduino-control \
     --display-name "Arduino Control (.venv)"
-./.venv/bin/jupyter lab notebooks/control_demo.ipynb
+./.venv/bin/jupyter lab notebooks/hardware.ipynb
 ```
 
 ## Organización
@@ -293,20 +293,20 @@ python3 -m venv .venv
 - `python/ctrllink.py` — el protocolo, lado computadora
 - `python/test_ctrllink.py` — pruebas del lado computadora contra una simulación
   del dispositivo fiel byte a byte
-- `ControlDemo/` — lazo de posición con AS5600 a 500 Hz, muestreado a 5 kHz
-- `notebooks/control_demo.ipynb` — demostración completa: salud del enlace,
-  escalones en lazo abierto y cerrado, un barrido de ganancia, cambios en la
-  frecuencia del lazo
+- `Banco/` — el banco en lazo abierto: PWM sobre el puente, AS5600 muestreado a
+  5 kHz, corriente por el ADC, filas a 500 Hz
+- `notebooks/hardware.ipynb` — el recorrido del banco: el enlace, cada parte del
+  montaje, y un escalón
 
 ```
 arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
   --build-property compiler.c.extra_flags=-O2 \
   --build-property compiler.cpp.extra_flags=-O2 \
   --build-property compiler.c.elf.extra_flags=-O2 \
-  ControlDemo
-arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> ControlDemo
+  Banco
+arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 ```
 
-`ControlDemo` se apropia del Timer2 para el muestreador de 5 kHz, así que
+`Banco` se apropia del Timer2 para el muestreador de 5 kHz, así que
 `analogWrite` deja de funcionar en los pines 3 y 11; los pines 9 y 10 (Timer1) y
 5 y 6 (Timer0) no se ven afectados.
