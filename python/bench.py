@@ -927,10 +927,28 @@ class Bench:
             # siempre la misma cuenta y no hay forma de saber que hay abajo. Con
             # dither de una fraccion de LSB, en cambio, el promedio de la ventana
             # resuelve por debajo del escalon.
+            # Cuánto residuo se le tolera: tres cuentas y no una.
+            #
+            # Una cuenta era lo que pedía antes, y es más de lo que este canal puede
+            # dar. Medido en el banco del clon, doce ciclos de medir el cero y volver
+            # a mirar: el residuo va de -2,1 a +1,7 cuentas, y sólo cuatro de los doce
+            # bajan de una. No es ruido de muestra --eso se promedia, y con 150
+            # muestras el error del promedio son dos décimas de cuenta-- sino una
+            # deriva lenta entre la captura que mide el cero y la que lo verifica, que
+            # no se promedia. Es la misma deriva que ya se había achicado de 275
+            # cuentas a un par eligiendo la referencia del ADC de verdad; lo que
+            # queda es el piso de este sensor.
+            #
+            # Así que la verificación pedía menos que la repetibilidad del canal y
+            # fallaba dos de cada tres veces en un equipo sano, que es la peor clase
+            # de verificación: la que enseña a ignorarla.
+            _RESIDUO_MAX = 3.0      # cuentas del ADC
+
             report('calibracion de i',
-                   abs(rest_ma) < lsb and 0.1 * lsb < noise < 8 * lsb,
+                   abs(rest_ma) < _RESIDUO_MAX * lsb and 0.1 * lsb < noise < 8 * lsb,
                    f'izero = {self.cur_zero}, {lsb:.2f} mA por cuenta, quedan '
-                   f'{rest_ma:+.1f} mA en reposo (ruido {noise / lsb:.2f} cuentas)'
+                   f'{rest_ma:+.1f} mA en reposo = {rest_ma / lsb:+.1f} cuentas de '
+                   f'{_RESIDUO_MAX:.0f} toleradas (ruido {noise / lsb:.2f} cuentas)'
                    + ('' if noise > 0.1 * lsb else
                       '  -- sin dither: la senal no llega a un escalon del ADC'))
 

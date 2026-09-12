@@ -483,6 +483,7 @@ python/banco_simulado.py un banco de mentira, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware ni compilar
                          (test_notebooks.py además corre los notebooks simulados)
+python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/               los notebooks: hardware, demostración y calibración
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
