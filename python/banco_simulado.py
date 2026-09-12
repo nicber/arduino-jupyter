@@ -31,12 +31,14 @@ ERROR_SENSOR = {1: (6.0, 0.7), 2: (2.5, -2.0)}
 RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 
 # El motor de mentira, visto desde el PWM. La velocidad de régimen es lineal con
-# el comando por encima de una zona muerta, y el transitorio es de primer orden:
-# rápido al acelerar, lento al soltar porque frenando sólo actúa el rozamiento.
+# el comando por encima de una zona muerta, y el transitorio es de primer orden
+# mientras el puente empuja, para arriba o para abajo: la fuerza
+# contraelectromotriz frena tan rápido como acelera. Lo lento es soltarlo: con el
+# puente abierto sólo actúa el rozamiento.
 U_MUERTO   = 60.0    # cuentas: por debajo no arranca
 W_MAX      = 12.0    # vueltas por segundo a fondo
-TAU_SUBE   = 0.3     # s, acelerando
-TAU_BAJA   = 6.0     # s, soltando
+TAU_MOTOR  = 0.3     # s, con el puente empujando
+TAU_SUELTO = 6.0     # s, con el puente abierto
 RETARDO    = 1       # muestras entre el eje y lo que informa el sensor
 
 # La corriente sale de la ecuación eléctrica sobre esa velocidad: lo que la
@@ -160,7 +162,7 @@ class BancoSimulado:
 
         for k in range(len(t)):
             objetivo = self._velocidad_final(u[k])
-            tau = TAU_SUBE if abs(objetivo) > abs(actual) else TAU_BAJA
+            tau = TAU_SUELTO if abs(u[k]) < 1.0 else TAU_MOTOR
             actual += (objetivo - actual) * dt / tau
             w[k] = actual
 
@@ -211,7 +213,8 @@ class BancoSimulado:
         # Lo que informa el sensor llega una muestra después de lo que hizo el
         # eje, que es lo que hacen el filtro del AS5600 y la cadena de muestreo.
         if RETARDO:
-            theta = np.concatenate([np.full(RETARDO, theta[0]), theta[:-RETARDO]])
+            previo = theta[0] - np.arange(RETARDO, 0, -1) * w[0] * CUENTAS * self.dt
+            theta = np.concatenate([previo, theta[:-RETARDO]])
 
         medido = theta + self._error_sensor(theta, w)
         medido = medido + self._rng.normal(0, self.ruido, len(t))
