@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-// El ADC: que placa es, cuanto vale su referencia, y elegirla.
+// El ADC: que placa es, y dejarlo midiendo contra Vcc.
 //
 // Parte de BoardStart, que eran tres trabajos en un header: el reloj, el ADC y el
 // bus. Cada uno falla de manera distinta y se arregla en otro lugar, asi que cada
@@ -39,60 +39,49 @@ inline uint16_t adc_once(uint8_t admux)
     return valor;
 }
 
-// Elige la referencia del ADC de verdad, en las dos placas del banco.
+// Deja el ADC midiendo contra Vcc de verdad, en las dos placas del banco.
 //
-// En el LGT8F328P los bits REFS del ADMUX NO la eligen. La eligen DACON, VCAL y el
-// bit REFS2 de ADCSRD, y REFS queda de resabio porque el core lgt8fx lo escribe
-// igual --`ADMUX = analog_reference << 6`-- después de haber configurado los otros
-// tres. Ver analogReference() en su wiring_analog.c.
-//
-// Un sketch que escriba sólo REFS no elige nada en esa placa: la referencia queda
-// en lo que haya quedado de antes. Eso es lo que explica por qué la misma lectura
-// del canal interno da números distintos en corridas distintas.
-//
-// Y por eso esto vive acá y no adentro del lazo: todo lo que mide con el ADC al
-// arrancar --el fondo de escala, el bandgap, y el estado eléctrico de las líneas
-// del bus, que se juzga con umbrales que son fracciones del fondo-- necesita que la
-// referencia ya esté elegida. Llamarlo después dejaba esas tres mediciones corriendo
-// contra una referencia de resabio, y la del bus es la que importa: sus umbrales no
-// significan volts, así que con una referencia chica las dos líneas leen saturadas y
-// el diagnóstico no puede quejarse nunca.
+// En el LGT8F328P los bits REFS del ADMUX NO eligen la referencia. La eligen DACON y
+// el bit REFS2 de ADCSRD, y REFS queda de resabio porque el core lgt8fx lo escribe
+// igual después de haber configurado los otros. Un sketch que escriba sólo REFS no
+// elige nada en esa placa: la referencia queda en lo que haya quedado de antes, y
+// eso es lo que explicaba que la misma lectura diera números distintos en corridas
+// distintas.
 //
 // Las dos placas corren el mismo binario y el core es el del ATmega, así que estos
 // registros no existen por nombre y van por dirección. Sólo se los toca cuando la
-// placa es la del ADC de 12 bits: en el UNO 0xA0 y 0xAD no son registros, y no hay
-// por qué escribirles.
+// placa es la del ADC de 12 bits: en el UNO 0xA0 y 0xAD no son registros, y ahí los
+// bits REFS alcanzan y son los suyos.
 static const uint16_t LGT_DACON  = 0xA0;
 static const uint16_t LGT_ADCSRD = 0xAD;
-static const uint16_t LGT_VCAL   = 0xC8;
-static const uint16_t LGT_VCAL1  = 0xCD;   // el valor de calibración de 1,024 V
 static const uint8_t  LGT_REFS2  = 6;
 
-// `doce_bits` distingue las dos placas, y es lo que devuelve adc_full_scale():
-// esa sonda no necesita una referencia correcta, porque cae al CLKPR de arranque.
-inline void adc_select_reference(bool doce_bits, bool interna)
+// `doce_bits` distingue las dos placas, y es lo que devuelve adc_full_scale().
+inline void adc_select_vcc(bool doce_bits)
 {
     if (!doce_bits) {
-        return;                 // un ATmega: los bits REFS alcanzan y son los suyos
+        return;
     }
 
     _SFR_MEM8(LGT_ADCSRD) &= (uint8_t)~_BV(LGT_REFS2);
-
-    if (interna) {
-        // La referencia interna, con VCAL cargado con la calibración de 1,024 V.
-        _SFR_MEM8(LGT_DACON) = (uint8_t)((_SFR_MEM8(LGT_DACON) & 0x0C) | 0x02);
-        _SFR_MEM8(LGT_VCAL)  = _SFR_MEM8(LGT_VCAL1);
-    } else {
-        // DEFAULT del core: Vcc, que es la misma elección que REFS=01 en el UNO.
-        _SFR_MEM8(LGT_DACON) &= 0x0C;
-    }
+    _SFR_MEM8(LGT_DACON)  &= 0x0C;      // DEFAULT del core: Vcc
 }
 
-// El ADC midiendo contra Vcc, que es donde un sensor de corriente bipolar y
-// ratiométrico reposa en media escala solo.
-inline void adc_select_vcc(bool doce_bits)
+// La referencia interna, para quien mida una corriente chica contra ella en lugar
+// de contra Vcc. En el clon es la de 1,024 V con VCAL cargado con su calibración;
+// en el UNO la eligen los bits REFS, que escribe quien arranque el conversor.
+static const uint16_t LGT_VCAL   = 0xC8;
+static const uint16_t LGT_VCAL1  = 0xCD;   // el valor de calibración de 1,024 V
+
+inline void adc_select_internal(bool doce_bits)
 {
-    adc_select_reference(doce_bits, false);
+    if (!doce_bits) {
+        return;
+    }
+
+    _SFR_MEM8(LGT_ADCSRD) &= (uint8_t)~_BV(LGT_REFS2);
+    _SFR_MEM8(LGT_DACON)   = (uint8_t)((_SFR_MEM8(LGT_DACON) & 0x0C) | 0x02);
+    _SFR_MEM8(LGT_VCAL)    = _SFR_MEM8(LGT_VCAL1);
 }
 
 // Cuántas cuentas da el ADC a fondo de escala: 1024 en el UNO, 4096 en el clon
@@ -106,7 +95,7 @@ inline void adc_select_vcc(bool doce_bits)
 // de manera que cualquier cosa por encima de 1023 prueba que hay más de 10 bits.
 //
 // OJO que ese razonamiento vale en el ATmega y no en el clon. Ahí los bits REFS no
-// eligen la referencia --ver adc_select_reference()-- así que no hay ninguna
+// eligen la referencia --ver adc_select_vcc()-- así que no hay ninguna
 // garantía de que entrada y referencia sean la misma tensión, y la sonda puede
 // devolver cualquier cosa. Lo que contesta bien en esa placa es el respaldo: el
 // CLKPR de arranque, que la distingue sin ambigüedad. Así que en el clon el que
@@ -152,4 +141,5 @@ inline uint16_t adc_bandgap()
 {
     return adc_once(_BV(REFS0) | 0x0E);
 }
+
 }  // namespace board

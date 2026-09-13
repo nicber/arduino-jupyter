@@ -13,13 +13,13 @@
 //
 //   g_clock    el reloj del lazo          Sampler/SampleClock.h
 //   g_adc      el conversor corriendo libre  Sense/FreeAdc.h
-//   g_current  la corriente con sentido    Sense/CurrentSense.h
+//   g_current  la corriente con sentido    Control/LoopCurrent.h
 //   g_lut      la corrección del ángulo    Calibracion/AngleLut.h
-//   g_angle    el ángulo desenrollado      AngleSensor/AngleTracker.h
+//   g_angle    la posición del lazo        Control/LoopAngle.h
 //   g_health   qué se le puede creer al sensor  AngleSensor/SensorHealth.h
 //   g_pid      la ley de control           Control/Pid.h
 //   g_set      la referencia y el objetivo Control/Setpoint.h
-//   g_motor    el puente                   Actuator/HBridge.h
+//   g_motor    el puente                   Control/LoopDrive.h
 //
 // Lo que queda acá es lo que de verdad es de este sketch y de ningún módulo: qué
 // pines, qué sensor, qué escalas, y el orden en el que las cosas arrancan.
@@ -83,11 +83,12 @@
 #include <FirstOrderFilter.h>
 
 #include <AngleLut.h>
-#include <AngleTracker.h>
 #include <SensorHealth.h>
-#include <CurrentSense.h>
 #include <FreeAdc.h>
 #include <HBridge.h>
+#include <LoopAngle.h>
+#include <LoopCurrent.h>
+#include <LoopDrive.h>
 #include <Pid.h>
 #include <SampleClock.h>
 #include <Setpoint.h>
@@ -237,15 +238,15 @@ enum : uint8_t
 
 typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
-typedef AngleTracker<COUNTS_PER_REV>                           Angle;
-typedef HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN>   Motor;
+typedef LoopAngle<COUNTS_PER_REV>                              Angle;
+typedef LoopDrive<HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN> > Motor;
 typedef FreeAdc<SENSE_CHANNEL>                                 Adc;
 
 // Los divisores por omisión: 10 muestras de 5 kHz por período de control son
 // 500 Hz de lazo.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
-static CurrentSense g_current(SENSE_ZERO);
+static LoopCurrent  g_current(SENSE_ZERO);
 static Lut          g_lut;
 static Angle        g_angle;
 static SensorHealth g_health;
@@ -307,7 +308,7 @@ static uint16_t g_lutsum = 0;
 // Juntos y no cada uno al lado de su módulo, para que se vea que son tres del mismo
 // tipo y que los tres se aplican en el mismo lugar.
 static int32_t g_alpha_y = Angle::Alpha::from_int(1).raw();                  // posición
-static int32_t g_alpha_i = CurrentSense::Alpha::from_float(0.1667f).raw();   // corriente
+static int32_t g_alpha_i = LoopCurrent::Alpha::from_float(0.1667f).raw();   // corriente
 static int32_t g_alpha_e = Pid::Alpha::from_float(0.0909f).raw();            // error
 
 // Si había flujo en la pasada anterior del lazo, y el contador de escrituras que se
@@ -361,8 +362,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_sfilt",    CTRL_U8,  &g_sfilt.want,        0                 },
     { "ang_lutw",    CTRL_U32, &g_lutw,              0                 },
     { "ang_lutsum",  CTRL_U16, &g_lutsum,            0                 },
-    { "ang_y",       CTRL_I16, &g_angle.y,           0                 },
-    { "ang_y_uw",    CTRL_I32, &g_angle.y_uw,        0                 },
+    { "ang_y",       CTRL_I16, &g_angle.track.y,     0                 },
+    { "ang_y_uw",    CTRL_I32, &g_angle.track.y_uw,  0                 },
     { "ang_status",  CTRL_U8,  &g_health.status,     0                 },
     { "ang_present", CTRL_U8,  &g_health.present,    0                 },
     { "ang_agc",     CTRL_U8,  &g_health.agc,        0                 },
@@ -370,9 +371,9 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_busovr",     CTRL_U16, &g_health.overruns,   0                 },
     { "ang_buserr",     CTRL_U16, &g_health.errors,     0                 },
 
-    { "cur_zero",    CTRL_I16, &g_current.zero,      0                 },
+    { "cur_zero",    CTRL_I16, &g_current.sense.zero, 0                },
     { "cur_invert",  CTRL_U8,  &g_current.invert,    0                 },
-    { "cur_alpha",   CTRL_I32, &g_alpha_i,           CurrentSense::Alpha::FRAC },
+    { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
     { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
 
     { "board_adcfs",   CTRL_U16, &g_board.adcfs,       0                 },
@@ -398,7 +399,7 @@ static const CtrlChannel PROGMEM g_channels[] =
 {
     { "ref",   CTRL_I32, &g_set.ref,      1.0f / (1 << Setpoint::FRAC), "tgt" },
     { "y_raw", CTRL_U16, &g_y_raw,        COUNTS_TO_DEG,    "deg" },
-    { "y_uw",  CTRL_I32, &g_angle.y_uw,   COUNTS_TO_DEG,    "deg" },
+    { "y_uw",  CTRL_I32, &g_angle.track.y_uw, COUNTS_TO_DEG,    "deg" },
     { "y_uwf", CTRL_I32, &g_angle.y_uwf,  COUNTS_TO_DEG,    "deg" },
     { "e",     CTRL_I16, &g_set.e,        1.0f,             "tgt" },
     { "u",     CTRL_I16, &g_motor.u,      1.0f,             "pwm" },
@@ -481,7 +482,7 @@ static void measure(void)
     const Lut::Counts raw = (Lut::Counts)Sensor::counts();
 
     g_y_raw = (uint16_t)raw;
-    g_angle.update_referred(g_cal ? g_lut.corrected(raw) : raw);
+    g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
 }
 
 // El despacho de la realimentación: sobre qué magnitud medida cierra el lazo.
@@ -562,7 +563,7 @@ static void refresh_tuning(void)
     g_pid.set_alpha(Pid::Alpha::from_raw(g_alpha_e));
 
     g_angle.set_alpha(Angle::Alpha::from_raw(g_alpha_y));
-    g_current.set_alpha(CurrentSense::Alpha::from_raw(g_alpha_i));
+    g_current.set_alpha(LoopCurrent::Alpha::from_raw(g_alpha_i));
 
     g_lut.apply(g_lutw);
 
@@ -676,7 +677,14 @@ void setup()
     // antes de esta línea corre contra una referencia de resabio: el bandgap, y
     // sobre todo el estado eléctrico de las líneas del bus, que se juzga con
     // umbrales que son fracciones del fondo de escala.
-    board::adc_select_reference(g_board.adcfs >= ADC_FULL, SENSE_REF_INTERNAL);
+    if (SENSE_REF_INTERNAL)
+    {
+        board::adc_select_internal(g_board.adcfs >= ADC_FULL);
+    }
+    else
+    {
+        board::adc_select_vcc(g_board.adcfs >= ADC_FULL);
+    }
 
     g_board.bgadc = board::adc_bandgap();
 
@@ -717,7 +725,15 @@ void setup()
 
     refresh_tuning();
 
-    g_adc.begin(g_board.adcfs, ADC_FULL, SENSE_REF_INTERNAL);
+    g_adc.begin(g_board.adcfs, ADC_FULL);
+
+    // FreeAdc mide siempre contra Vcc; en el ATmega la interna la eligen los bits
+    // REFS, así que se agregan acá. La primera conversión, lanzada contra Vcc, se
+    // lee antes de que corra el muestreo, y la que sigue ya sale con la interna.
+    if (SENSE_REF_INTERNAL)
+    {
+        ADMUX |= _BV(REFS1);
+    }
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 

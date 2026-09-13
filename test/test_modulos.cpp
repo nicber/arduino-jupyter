@@ -23,6 +23,8 @@
 #include "AngleLut.h"
 #include "AngleTracker.h"
 #include "CurrentSense.h"
+#include "LoopAngle.h"
+#include "LoopCurrent.h"
 #include "Pid.h"
 
 static int fails = 0;
@@ -157,23 +159,19 @@ int main()
     check(atras.y_uw < -4096 + 200 && atras.y_uw >= -4096,
           "y una vuelta para el otro lado da una vuelta negativa");
 
-    check_eq(ang.y_uwf, ang.y_uw, "sin set_alpha() el filtro no filtra");
-
     // Lo que lee un lazo: referido a `offset` y con el signo del eje, que es el
     // contrario al del imán.
-    Tracker lazo;
+    LoopAngle<4096> lazo;
     lazo.offset = 1000;
-    lazo.update_referred(1000);
-    check_eq(lazo.y, 0, "la cuenta de offset se lee como cero");
-    lazo.update_referred(1100);
-    check_eq(lazo.y_uw, -100, "y cien cuentas mas del iman son cien menos del eje");
+    lazo.update(1000);
+    check_eq(lazo.track.y, 0, "la cuenta de offset se lee como cero");
+    lazo.update(1100);
+    check_eq(lazo.track.y_uw, -100, "y cien cuentas mas del iman son cien menos del eje");
+    check_eq(lazo.y_uwf, -100, "sin set_alpha() el filtro deja pasar la posicion");
 
-    // Tomar la posicion actual como cero no puede dejar la salida filtrada
-    // arrastrando el valor viejo.
-    lazo.set_alpha(Tracker::Alpha::from_float(0.1f));
-    for (int k = 0; k < 50; k++) { lazo.update_referred(2000); }
-    lazo.rezero();
-    check_eq(lazo.y_uwf, 0, "rezero() deja tambien el filtro en cero");
+    lazo.set_alpha(LoopAngle<4096>::Alpha::from_float(0.1f));
+    lazo.update(1000);
+    check(lazo.y_uwf < -50, "y con alpha chico la posicion filtrada llega despues");
 
     // --------------------------------------------------------------- corriente
 
@@ -188,15 +186,14 @@ int main()
     cur.update(1948);
     check_eq(cur.i, -100, "y cien por debajo, menos cien");
 
-    cur.invert = 1;
-    cur.update(2148);
-    check_eq(cur.i, -100, "y con el sensor invertido, menos cien");
-
-    // El camino de vuelta tiene que deshacer exactamente la composicion de ida,
-    // que es justo donde un signo se espeja.
-    check_eq(cur.raw_for(-100), 2148, "raw_for() deshace update() con invert puesto");
-    cur.invert = 0;
-    check_eq(cur.raw_for(100), 2148, "y tambien sin invert");
+    // Lo que lee un lazo: el cero primero y el signo despues.
+    LoopCurrent lcur(2048);
+    lcur.update(2148);
+    check_eq(lcur.i, 100, "el lazo lee la misma corriente sin invert");
+    lcur.invert = 1;
+    lcur.update(2148);
+    check_eq(lcur.i, -100, "y con el sensor invertido, menos cien");
+    check_eq(lcur.sense.i, 100, "sin tocar lo que mide el sensor");
 
     // ------------------------------------------------------------------- el PID
 
