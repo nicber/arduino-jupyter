@@ -365,15 +365,18 @@ class BancoSimulado:
             else:
                 self.set(nombre, valor)
 
-        theta0 = self._theta
+        theta0, w0 = self._theta, self._w
         ws, thetas, muestras = self._integrar(comandos)
         self._reloj = time.monotonic()
 
         # Cada fila lee lo que el sensor ve en su instante, que es el eje de hace
-        # RETARDO_S.
+        # RETARDO_S. Para la primera, eso es antes de que empiece la captura: el eje
+        # venía girando, así que se extrapola con la velocidad que traía en lugar de
+        # repetir el primer ángulo, que pondría una velocidad falsa en la primera fila.
         t_fin = t_periodo + PWM_T
-        tt = np.concatenate([[0.0], t_fin])
-        theta = np.interp(t - RETARDO_S, tt, np.concatenate([[theta0], thetas]))
+        antes = theta0 - w0 * RETARDO_S * CUENTAS / (2 * math.pi)
+        tt = np.concatenate([[-RETARDO_S, 0.0], t_fin])
+        theta = np.interp(t - RETARDO_S, tt, np.concatenate([[antes, theta0], thetas]))
         w = np.interp(t, t_fin, ws)
         idx = np.minimum((t / PWM_T).astype(np.int64), n - 1)
 
