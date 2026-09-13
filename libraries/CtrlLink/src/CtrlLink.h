@@ -116,6 +116,21 @@ struct CtrlChannel
     char        unit[CTRL_NAME_LEN];
 };
 
+#ifdef CTRL_PROFILE
+// Instrumentación de experimento: cuánto tarda cada mitad de la última fila, y
+// cuántos comandos se atendieron. Sólo existe compilando con -DCTRL_PROFILE.
+struct CtrlProfile
+{
+    uint16_t fmt_us;    // leer los canales y formatear en hexadecimal
+    uint16_t wr_us;     // copiar la fila al buffer de transmisión
+    bool     row;       // la última llamada a emit() llegó a armar una fila
+    uint16_t cmds;      // comandos atendidos desde el arranque
+    uint8_t  poll_tx;   // 1: emit() escribe la fila por encuesta, sin HardwareSerial
+};
+
+extern CtrlProfile g_ctrl_profile;
+#endif
+
 class CtrlLink
 {
     public:

@@ -1,0 +1,26 @@
+{
+ "sin flujo, muestreador andando, modo 0": [
+  21,
+  23
+ ],
+ "sin flujo, muestreador PAUSADO": [
+  50,
+  0
+ ],
+ "flujo dec=1, modo 0": [
+  20,
+  25
+ ],
+ "flujo dec=10, modo 0": [
+  23,
+  23
+ ],
+ "sin flujo, modo 1 (ctl en ISR, cerrada)": [
+  16,
+  27
+ ],
+ "sin flujo, modo 2 (ctl en ISR, sei)": [
+  21,
+  26
+ ]
+}

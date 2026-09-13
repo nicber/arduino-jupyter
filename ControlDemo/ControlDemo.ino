@@ -85,7 +85,11 @@
 
 // -------------------------------------------------------------------- el banco
 
+#ifdef EXP_BAUD
+static const uint32_t BAUD           = EXP_BAUD;
+#else
 static const uint32_t BAUD           = 1000000;
+#endif
 static const uint16_t SAMPLE_HZ      = 5000;
 static const int16_t  COUNTS_PER_REV = 4096;
 
@@ -333,6 +337,109 @@ static uint16_t g_last_writes   = 0;
 #  endif
 #endif
 
+#ifdef CTRL_PROFILE
+// ------------------------------------------------------------ el experimento
+//
+// Instrumentación para medir dónde se va el tiempo del lazo y qué cambia si la ley
+// de control (y la emisión) pasan a la ISR. Sólo existe compilando con
+// -DCTRL_PROFILE; el sketch normal no la ve.
+//
+// x_mode, que se puede cambiar en caliente:
+//   0  como siempre: la ISR muestrea y loop() calcula y emite
+//   1  control_step() dentro de la ISR, con las interrupciones cerradas
+//   2  control_step() dentro de la ISR, reabriéndolas antes (el patrón de Grbl)
+//   3  control_step() y emit() dentro de la ISR, cerradas
+//   4  control_step() y emit() dentro de la ISR, reabiertas
+//
+// x_cmd: 1 pone todo en cero y descongela, 2 congela para leer sin carreras.
+
+struct Stat
+{
+    uint16_t max;
+    uint32_t sum;
+    uint32_t n;
+};
+
+static volatile bool g_x_frozen = false;
+static volatile bool g_x_busy   = false;
+
+static uint8_t  g_x_mode  = 0;
+static uint8_t  g_x_cmd   = 0;
+static uint16_t g_x_ovr   = 0;      // ticks de control que encontraron la ISR ocupada
+static uint32_t g_x_loops = 0;      // pasadas de loop()
+static uint32_t g_x_hist[5];        // retardo de atención: <100, <200, <400, <800, más
+
+// Banco de la escritura serie. x_bench = N escribe N bytes dos veces: una con las
+// interrupciones cerradas --sólo la copia al buffer, porque la ISR de transmisión
+// no puede correr-- y otra abiertas, con la ISR vaciando mientras se copia. La
+// diferencia es lo que cuesta la ISR; x_b_fl es cuánto tarda en salir todo.
+static uint8_t  g_x_bench = 0;
+static uint16_t g_x_b_cli = 0;
+static uint16_t g_x_b_sei = 0;
+static uint16_t g_x_b_fl  = 0;
+static uint16_t g_x_b_pol = 0;      // los mismos N bytes por encuesta, abiertas
+
+static Stat g_x_ctl, g_x_emt, g_x_fmt, g_x_wr, g_x_pol, g_x_plc,
+            g_x_tun, g_x_mag, g_x_isr, g_x_lat, g_x_lte;
+
+static inline void stat_add(Stat& s, uint32_t us)
+{
+    if (g_x_frozen)
+    {
+        return;
+    }
+    const uint16_t v = (us > 0xFFFFu) ? 0xFFFFu : (uint16_t)us;
+    if (v > s.max)
+    {
+        s.max = v;
+    }
+    s.sum += v;
+    s.n++;
+}
+
+static void x_clear(void)
+{
+    noInterrupts();
+    Stat* all[] = { &g_x_ctl, &g_x_emt, &g_x_fmt, &g_x_wr, &g_x_pol, &g_x_plc,
+                    &g_x_tun, &g_x_mag, &g_x_isr, &g_x_lat, &g_x_lte };
+    for (uint8_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
+    {
+        memset(all[i], 0, sizeof(Stat));
+    }
+    memset(g_x_hist, 0, sizeof(g_x_hist));
+    g_x_ovr    = 0;
+    g_x_loops  = 0;
+    g_x_frozen = false;
+    interrupts();
+
+    g_clock.clear_health();
+}
+
+// En macros y no como líneas de la tabla: los tests de escritorio leen la tabla
+// como texto, sin preprocesar, y el experimento no es parte de la interfaz.
+#define X_PARAMS \
+    { "x_mode",   CTRL_U8,  &g_x_mode,    0 }, \
+    { "x_cmd",    CTRL_U8,  &g_x_cmd,     0 }, \
+    { "x_ovr",    CTRL_U16, &g_x_ovr,     0 }, \
+    { "x_loops",  CTRL_U32, &g_x_loops,   0 }, \
+    { "x_h100",   CTRL_U32, &g_x_hist[0], 0 }, \
+    { "x_h200",   CTRL_U32, &g_x_hist[1], 0 }, \
+    { "x_h400",   CTRL_U32, &g_x_hist[2], 0 }, \
+    { "x_h800",   CTRL_U32, &g_x_hist[3], 0 }, \
+    { "x_hbig",   CTRL_U32, &g_x_hist[4], 0 }, \
+    { "x_bench",  CTRL_U8,  &g_x_bench,   0 }, \
+    { "x_b_cli",  CTRL_U16, &g_x_b_cli,   0 }, \
+    { "x_b_sei",  CTRL_U16, &g_x_b_sei,   0 }, \
+    { "x_b_fl",   CTRL_U16, &g_x_b_fl,    0 }, \
+    { "x_b_pol",  CTRL_U16, &g_x_b_pol,   0 }, \
+    { "x_txpoll", CTRL_U8,  &g_ctrl_profile.poll_tx, 0 },
+
+#define X_STAT(key, var) \
+    { "x_" key,      CTRL_U16, &var.max, 0 }, \
+    { "x_" key "_s", CTRL_U32, &var.sum, 0 }, \
+    { "x_" key "_n", CTRL_U32, &var.n,   0 },
+#endif
+
 // --------------------------------------------------------------------- tablas
 
 // Cada entrada se guarda exactamente como la quiere la aritmética; la columna de
@@ -382,6 +489,21 @@ static const CtrlParam PROGMEM g_params[] =
     { "loop_div",     CTRL_U8,  &g_clock.divide,      0                 },
     { "loop_late",    CTRL_U16, &g_clock.late,        0                 },
     { "loop_missed",  CTRL_U16, &g_clock.missed,      0                 },
+
+#ifdef CTRL_PROFILE
+    X_PARAMS
+    X_STAT("ctl", g_x_ctl)
+    X_STAT("emt", g_x_emt)
+    X_STAT("fmt", g_x_fmt)
+    X_STAT("wr",  g_x_wr)
+    X_STAT("pol", g_x_pol)
+    X_STAT("plc", g_x_plc)
+    X_STAT("tun", g_x_tun)
+    X_STAT("mag", g_x_mag)
+    X_STAT("isr", g_x_isr)
+    X_STAT("lat", g_x_lat)
+    X_STAT("lte", g_x_lte)
+#endif
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
@@ -409,12 +531,83 @@ static const CtrlChannel PROGMEM g_channels[] =
 
 // Tres líneas, una por cosa que hay que hacer cada 200 us. Ninguna de las tres
 // guarda estado acá: cada módulo se lleva el suyo.
+#ifndef CTRL_PROFILE
 ISR(TIMER2_COMPA_vect)
 {
     Sensor::do_transfer();
     g_adc.on_isr();
     g_clock.on_isr();
 }
+#else
+static void control_step(void);
+
+// El Timer2 va en CTC con preescalador /32: TCNT2 cuenta de a 2 us desde el
+// instante de la comparación y vuelve a cero en 100. Leerlo al entrar dice cuánto
+// tardó la ISR en arrancar, sin el costo de un micros().
+static inline uint32_t tcnt2_us(uint8_t from, uint8_t to)
+{
+    return 2u * (uint32_t)((to >= from) ? (to - from) : (to + 100 - from));
+}
+
+ISR(TIMER2_COMPA_vect)
+{
+    const uint8_t t0 = TCNT2;
+
+    Sensor::do_transfer();
+    g_adc.on_isr();
+    const bool due = g_clock.on_isr();
+
+    const uint8_t t1 = TCNT2;
+    stat_add(g_x_lat, 2u * (uint32_t)t0);
+    stat_add(g_x_isr, tcnt2_us(t0, t1));
+
+    const uint8_t mode = g_x_mode;
+    if (!due || mode == 0)
+    {
+        return;
+    }
+
+    if (g_x_busy)
+    {
+        if (!g_x_frozen)
+        {
+            g_x_ovr++;
+        }
+        return;
+    }
+    g_x_busy = true;
+
+    const bool nest = (mode == 2 || mode == 4);
+    if (nest)
+    {
+        interrupts();
+    }
+
+    const uint32_t a = micros();
+    control_step();
+    const uint32_t b = micros();
+    if (mode >= 3)
+    {
+        CtrlLink::emit();
+    }
+    const uint32_t c = micros();
+
+    noInterrupts();
+
+    stat_add(g_x_ctl, b - a);
+    if (mode >= 3)
+    {
+        stat_add(g_x_emt, c - b);
+        if (g_ctrl_profile.row)
+        {
+            stat_add(g_x_fmt, g_ctrl_profile.fmt_us);
+            stat_add(g_x_wr,  g_ctrl_profile.wr_us);
+        }
+    }
+
+    g_x_busy = false;
+}
+#endif
 
 // ------------------------------------------------------------------- el lazo
 
@@ -554,6 +747,66 @@ static void control_step(void)
 // pasada de loop(), en lugar de vigilar parámetro por parámetro.
 static void refresh_tuning(void)
 {
+#ifdef CTRL_PROFILE
+    if (g_x_cmd == 1)
+    {
+        x_clear();
+    }
+    else if (g_x_cmd == 2)
+    {
+        g_x_frozen = true;
+    }
+    else if (g_x_cmd == 3)
+    {
+        g_clock.pause();
+    }
+    else if (g_x_cmd == 4)
+    {
+        g_clock.resume();
+    }
+
+    if (g_x_bench)
+    {
+        // Saltos de línea: la computadora descarta las líneas vacías.
+        uint8_t k_line[62];
+        const uint8_t n = (g_x_bench > 62) ? 62 : g_x_bench;
+        memset(k_line, '\n', n);
+        g_x_bench = 0;
+
+        Serial.flush();
+        noInterrupts();
+        uint32_t t0 = micros();
+        Serial.write(k_line, n);
+        uint32_t t1 = micros();
+        interrupts();
+        g_x_b_cli = (uint16_t)(t1 - t0);
+
+        Serial.flush();
+        t0 = micros();
+        Serial.write(k_line, n);
+        t1 = micros();
+        Serial.flush();
+        const uint32_t t2 = micros();
+        g_x_b_sei = (uint16_t)(t1 - t0);
+        g_x_b_fl  = (uint16_t)(t2 - t0);
+
+        // Esperar a que termine de salir el último byte, y medir la encuesta.
+        while (!(UCSR0A & _BV(UDRE0)))
+        {
+        }
+        t0 = micros();
+        for (uint8_t i = 0; i < n; i++)
+        {
+            while (!(UCSR0A & _BV(UDRE0)))
+            {
+            }
+            UDR0 = k_line[i];
+        }
+        g_x_b_pol = (uint16_t)(micros() - t0);
+    }
+    g_x_cmd = 0;
+#endif
+
     CtrlLink::set_period_us(g_clock.apply(SAMPLE_HZ));
 
     g_motor.apply();
@@ -738,6 +991,77 @@ void setup()
     CtrlLink::note(F("ControlDemo listo"));
 }
 
+#ifdef CTRL_PROFILE
+static void x_late_histogram(uint16_t us)
+{
+    if (g_x_frozen)
+    {
+        return;
+    }
+    const uint8_t bucket = (us < 100) ? 0 : (us < 200) ? 1 : (us < 400) ? 2
+                         : (us < 800) ? 3 : 4;
+    g_x_hist[bucket]++;
+}
+
+void loop()
+{
+    if (!g_x_frozen)
+    {
+        g_x_loops++;
+    }
+
+    uint32_t t;
+
+    if (g_clock.take())
+    {
+        stat_add(g_x_lte, g_clock.last);
+        x_late_histogram(g_clock.last);
+
+        const uint8_t mode = g_x_mode;
+
+        if (mode == 0)
+        {
+            t = micros();
+            control_step();
+            stat_add(g_x_ctl, micros() - t);
+        }
+
+        g_health.accumulate(Sensor::overruns(), Sensor::errors(), Sensor::present());
+
+        if (mode < 3)
+        {
+            t = micros();
+            CtrlLink::emit();
+            stat_add(g_x_emt, micros() - t);
+            if (g_ctrl_profile.row)
+            {
+                stat_add(g_x_fmt, g_ctrl_profile.fmt_us);
+                stat_add(g_x_wr,  g_ctrl_profile.wr_us);
+            }
+        }
+    }
+
+    const uint16_t writes = CtrlLink::writes();
+    if (writes != g_last_writes)
+    {
+        g_last_writes = writes;
+        t = micros();
+        refresh_tuning();
+        stat_add(g_x_tun, micros() - t);
+    }
+
+    t = micros();
+    refresh_magnet_status();
+    stat_add(g_x_mag, micros() - t);
+
+    const uint16_t cmds = g_ctrl_profile.cmds;
+    t = micros();
+    CtrlLink::poll();
+    stat_add((g_ctrl_profile.cmds != cmds) ? g_x_plc : g_x_pol, micros() - t);
+
+    reset_health_on_capture();
+}
+#else
 void loop()
 {
     if (g_clock.take())
@@ -766,3 +1090,4 @@ void loop()
     // encabezado: así la ventana empieza a contar recién cuando ya salió.
     reset_health_on_capture();
 }
+#endif

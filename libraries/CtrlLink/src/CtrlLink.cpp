@@ -26,6 +26,10 @@ uint32_t CtrlLink::m_rows      = 0;
 uint32_t CtrlLink::m_drops     = 0;
 uint16_t CtrlLink::m_writes    = 0;
 
+#ifdef CTRL_PROFILE
+CtrlProfile g_ctrl_profile = { 0, 0, false, 0, 0 };
+#endif
+
 const CtrlParam CtrlLink::k_builtin[] PROGMEM =
 {
     { "dec", CTRL_U16, (void*)&CtrlLink::m_decimate, 0 },
@@ -432,6 +436,10 @@ static char* split(char* line)
 
 void CtrlLink::handle_command(char* line)
 {
+#ifdef CTRL_PROFILE
+    g_ctrl_profile.cmds++;
+#endif
+
     if (m_cmd_overflow)
     {
         m_cmd_overflow = false;
@@ -540,6 +548,10 @@ bool CtrlLink::emit(void)
 {
     uint16_t tick = m_tick++;
 
+#ifdef CTRL_PROFILE
+    g_ctrl_profile.row = false;
+#endif
+
     if (!m_streaming)
     {
         return true;
@@ -556,6 +568,10 @@ bool CtrlLink::emit(void)
     // mientras hay flujo.
     m_dec_count = (m_decimate > 1) ? (m_decimate - 1) : 0;
 
+#ifdef CTRL_PROFILE
+    const uint32_t t_fmt = micros();
+#endif
+
     char  buf[CTRL_MAX_ROW];
     char* p = put_hex(buf, tick, 4);
 
@@ -571,10 +587,40 @@ bool CtrlLink::emit(void)
 
     uint8_t length = (uint8_t)(p - buf);
 
+#ifdef CTRL_PROFILE
+    const uint32_t t_wr = micros();
+    g_ctrl_profile.fmt_us = (uint16_t)(t_wr - t_fmt);
+    g_ctrl_profile.wr_us  = 0;
+    g_ctrl_profile.row    = true;
+#endif
+
     // Nunca bloquear el lazo de control esperando a la UART. Una fila descartada
     // deja un hueco en la secuencia de ticks, que la computadora puede ver y
     // tener en cuenta; una escritura bloqueante distorsionaría en silencio la
     // temporización del lazo.
+#ifdef CTRL_PROFILE
+    // Escritura por encuesta: esperar UDRE y escribir UDR, byte por byte, con las
+    // interrupciones abiertas. Primero se deja salir lo que HardwareSerial tenga
+    // encolado --una respuesta a un comando-- para no mezclar las dos colas.
+    if (g_ctrl_profile.poll_tx)
+    {
+        if (Serial.availableForWrite() < (int)(SERIAL_TX_BUFFER_SIZE - 1))
+        {
+            Serial.flush();
+        }
+        for (uint8_t i = 0; i < length; i++)
+        {
+            while (!(UCSR0A & _BV(UDRE0)))
+            {
+            }
+            UDR0 = (uint8_t)buf[i];
+        }
+        m_rows++;
+        g_ctrl_profile.wr_us = (uint16_t)(micros() - t_wr);
+        return true;
+    }
+#endif
+
     if (Serial.availableForWrite() < (int)length)
     {
         m_drops++;
@@ -583,6 +629,10 @@ bool CtrlLink::emit(void)
 
     Serial.write((const uint8_t*)buf, length);
     m_rows++;
+
+#ifdef CTRL_PROFILE
+    g_ctrl_profile.wr_us = (uint16_t)(micros() - t_wr);
+#endif
 
     return true;
 }

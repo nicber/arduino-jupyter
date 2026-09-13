@@ -36,10 +36,12 @@ class SampleClock
     Divider  divide;     // muestras por período de control
     Micros   late;       // peor retardo observado entre el tick y su atención
     uint16_t missed;     // períodos que el lazo nunca atendió
+    Micros   last;       // el retardo del último take(), para quien quiera su distribución
 
     constexpr SampleClock(Divider initial_divide)
         : divide(initial_divide)
         , late(0)
+        , last(0)
         , missed(0)
         , m_due(false)
         , m_fired_us(0)
@@ -126,6 +128,7 @@ class SampleClock
         missed += lost;
 
         const Micros delay = (Micros)((uint16_t)micros() - (uint16_t)fired);
+        last = delay;
         if (delay > late)
         {
             late = delay;
