@@ -20,3 +20,7 @@ notebooks/cableado*.json
 # Los binarios de los tests de escritorio.
 test/test_modulos
 libraries/*/test/test
+
+# Las mediciones que deja cada ensayo. Son datos de un banco concreto, no del
+# proyecto: cada uno guarda los suyos.
+notebooks/datos/
