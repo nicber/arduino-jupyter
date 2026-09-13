@@ -1,14 +1,15 @@
 // Comprobaciones de escritorio para los módulos que son aritmética pura: la tabla
-// de calibración, el seguimiento de ángulo y la medición de corriente.
+// de calibración, el seguimiento de ángulo, la medición de corriente y el PID.
 //
 // Que se puedan probar acá es la mitad del punto de haberlos separado. Ninguno
-// toca un registro ni pregunta nada a nadie: reciben números por update() o por
-// corrected() y devuelven números, así que un error de signo o de redondeo se encuentra
-// en un segundo en lugar de en un banco con un motor girando.
+// toca un registro ni pregunta nada a nadie: reciben números por update(), por
+// corrected() o por step() y devuelven números, así que un error de signo o de
+// redondeo se encuentra en un segundo en lugar de en un banco con un motor girando.
 //
 //   g++ -std=c++11 -O2 -Wall -Wextra \
-//       -I ../libraries/Calibracion/src \
+//       -I ../libraries/ControlMath/src -I ../libraries/Calibracion/src \
 //       -I ../libraries/AngleSensor/src -I ../libraries/Sense/src \
+//       -I ../libraries/Control/src \
 //       test_modulos.cpp -o test_modulos && ./test_modulos
 //
 // Se mantiene compilando bajo C++11, que es con lo que compila el core del AVR.
@@ -17,9 +18,12 @@
 #include <cstdint>
 #include <cmath>
 
+#include "FixedPoint.h"
+#include "FirstOrderFilter.h"
 #include "AngleLut.h"
 #include "AngleTracker.h"
 #include "CurrentSense.h"
+#include "Pid.h"
 
 static int fails = 0;
 
@@ -153,6 +157,24 @@ int main()
     check(atras.y_uw < -4096 + 200 && atras.y_uw >= -4096,
           "y una vuelta para el otro lado da una vuelta negativa");
 
+    check_eq(ang.y_uwf, ang.y_uw, "sin set_alpha() el filtro no filtra");
+
+    // Lo que lee un lazo: referido a `offset` y con el signo del eje, que es el
+    // contrario al del imán.
+    Tracker lazo;
+    lazo.offset = 1000;
+    lazo.update_referred(1000);
+    check_eq(lazo.y, 0, "la cuenta de offset se lee como cero");
+    lazo.update_referred(1100);
+    check_eq(lazo.y_uw, -100, "y cien cuentas mas del iman son cien menos del eje");
+
+    // Tomar la posicion actual como cero no puede dejar la salida filtrada
+    // arrastrando el valor viejo.
+    lazo.set_alpha(Tracker::Alpha::from_float(0.1f));
+    for (int k = 0; k < 50; k++) { lazo.update_referred(2000); }
+    lazo.rezero();
+    check_eq(lazo.y_uwf, 0, "rezero() deja tambien el filtro en cero");
+
     // --------------------------------------------------------------- corriente
 
     CurrentSense cur(2048);
@@ -165,6 +187,68 @@ int main()
 
     cur.update(1948);
     check_eq(cur.i, -100, "y cien por debajo, menos cien");
+
+    cur.invert = 1;
+    cur.update(2148);
+    check_eq(cur.i, -100, "y con el sensor invertido, menos cien");
+
+    // El camino de vuelta tiene que deshacer exactamente la composicion de ida,
+    // que es justo donde un signo se espeja.
+    check_eq(cur.raw_for(-100), 2148, "raw_for() deshace update() con invert puesto");
+    cur.invert = 0;
+    check_eq(cur.raw_for(100), 2148, "y tambien sin invert");
+
+    // ------------------------------------------------------------------- el PID
+
+    Pid pid;
+    pid.kp = Pid::Kp::from_float(1.0f).raw();
+    pid.ki = 0;
+    pid.kd = 0;
+    pid.set_alpha(Pid::Alpha::from_int(1));
+    pid.refresh(255);
+
+    check(pid.configure(1, 0, 0), "la primera configuracion reinicia");
+    check(!pid.configure(1, 0, 0), "y repetirla no");
+
+    check_eq(pid.step(10, -255, 255, 0), 10, "kp = 1 devuelve el error");
+    check_eq(pid.step(1000, -255, 255, 0), 255, "y recorta en el techo del actuador");
+    check_eq(pid.step(-1000, 0, 255, 0), 0,
+             "con un puente de un solo cuadrante el piso es cero");
+
+    // El defecto que este modulo existe para hacer imposible: cambiar la magnitud
+    // realimentada sin cambiar el controlador tiene que olvidar el integrador.
+    pid.ki = Pid::Ki::from_float(0.01f).raw();
+    pid.refresh(255);
+    pid.configure(1, 0, 0);
+    for (int k = 0; k < 200; k++) { pid.step(100, -255, 255, 0); }
+    check(pid.integral() != 0, "el integrador se carga con el error sostenido");
+
+    check(pid.configure(1, 1, 0),
+          "cambiar target sin cambiar mode tambien reinicia");
+    check_eq(pid.integral(), 0, "y deja el integrador en cero");
+
+    // La cota del integrador tiene que seguir a ki: con ki = 1 el termino integral
+    // satura el actuador con una suma de 255, asi que ahi tiene que quedarse.
+    //
+    // Con kp en cero a proposito. Con kp = 1 y un error de 1000 el actuador satura
+    // por el termino proporcional desde el primer periodo, asi que la integracion
+    // condicional no carga nunca y esto no mediria la cota sino el anti-windup.
+    pid.kp = 0;
+    pid.ki = Pid::Ki::from_float(1.0f).raw();
+    pid.refresh(255);
+    pid.configure(2, 0, 0);
+    for (int k = 0; k < 2000; k++) { pid.step(1000, -255, 255, 0); }
+    check_eq(pid.integral(), 255, "la cota del integrador sigue a ki");
+
+    // Y con ki chico manda el limite del propio tipo, no ki: la acumulacion tiene
+    // que quedar en rango le importe o no a la ganancia.
+    pid.ki = Pid::Ki::from_float(1e-6f).raw();
+    pid.refresh(255);
+    pid.configure(3, 0, 0);
+    check(pid.integral() == 0, "y reconfigurar vuelve a dejarlo en cero");
+    for (int k = 0; k < 3000; k++) { pid.step(30000, -255, 255, 0); }
+    check(pid.integral() == 3000L * 30000L,
+          "con ki chico la suma crece libre sin desbordar");
 
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;
