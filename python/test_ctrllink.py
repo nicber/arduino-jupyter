@@ -118,6 +118,66 @@ check('separacion de muestras diezmadas',
 check('la corrida diezmada no tiene huecos', df.attrs['gaps'] == 0, str(df.attrs['gaps']))
 dev.set('dec', 1)
 
+# ------------------------------------------------------ eleccion de canales
+from ctrllink import CtrlLinkError
+
+dev.ref = 2048
+df = dev.capture(0.20, canales=['u', 'y'])
+check('se emiten solo los canales pedidos', list(df.columns) == ['t', 'y', 'u'], str(list(df.columns)))
+check('y en el orden de la tabla, no el de la lista', list(df.columns)[1:] == ['y', 'u'])
+check('la fila angosta se decodifica sin huecos', len(df) > 100 and df.attrs['gaps'] == 0,
+      f'{len(df)} filas, {df.attrs["gaps"]} huecos')
+check('los valores son los de esos canales',
+      abs(df['y'].iloc[-1] - 2048 * 0.0878906) < abs(df['y'].iloc[0] - 2048 * 0.0878906) + 1e-9
+      and df['u'].abs().max() <= 255)
+check('la seleccion anterior se restituye', dev._uno_raw('chans') == 0xFFFF, str(dev._uno_raw('chans')))
+
+df = dev.capture(0.05)
+check('sin canales= salen todos', list(df.columns) == ['t', 'ref', 'y', 'e', 'u'], str(list(df.columns)))
+
+check('un canal que no existe se explica',
+      _raises(lambda: dev.capture(0.05, canales=['y', 'nada']), CtrlLinkError))
+check('y no toca la seleccion', dev._uno_raw('chans') == 0xFFFF, str(dev._uno_raw('chans')))
+
+df = dev.capture(0.05, canales='u')
+check('un solo canal puede ir como texto', list(df.columns) == ['t', 'u'], str(list(df.columns)))
+
+# La máscara se toma en `start`: un `set chans` a mitad de captura no puede cambiar
+# el ancho de las filas que ya se están leyendo con el encabezado de esta corrida.
+df = dev.capture(0.20, events=[(0.05, 'chans', 1)])
+check('cambiar chans durante el flujo no cambia la captura en curso',
+      list(df.columns) == ['t', 'ref', 'y', 'e', 'u'] and df.attrs['gaps'] == 0,
+      f'{list(df.columns)}, {df.attrs["gaps"]} huecos')
+df = dev.capture(0.05)
+check('vale para la captura siguiente', list(df.columns) == ['t', 'ref'], str(list(df.columns)))
+dev.set('chans', 0xFFFF)
+
+dfs = dev.step('ref', 1024, pre=0.05, post=0.10, back=0, canales=['y'])
+check('step acepta canales=', list(dfs.columns) == ['t', 'y'], str(list(dfs.columns)))
+check('y tambien restituye la seleccion', dev._uno_raw('chans') == 0xFFFF)
+
+dev.set('chans', 0b0101)
+df = dev.capture(0.05, canales=['u'])
+check('restituye la seleccion que habia, no todos', dev._uno_raw('chans') == 0b0101,
+      str(dev._uno_raw('chans')))
+dev.set('chans', 0xFFFF)
+
+uno_c = FakeUno()
+dev_c = connect(uno_c)
+dev_c.ser.fail_read_after = 3          # se corta en plena captura
+check('una captura con canales= interrumpida se interrumpe',
+      _raises(lambda: dev_c.capture(0.40, canales=['y']), KeyboardInterrupt))
+check('y deja la seleccion como estaba', uno_c.params['chans'][2] == 0xFFFF,
+      str(uno_c.params['chans'][2]))
+
+uno_v = FakeUno()
+del uno_v.params['chans']              # un sketch grabado antes de `chans`
+dev_v = connect(uno_v)
+check('un dispositivo sin chans lo dice en lugar de fallar raro',
+      _raises(lambda: dev_v.capture(0.05, canales=['y']), CtrlLinkError))
+check('y sin canales= sigue andando', len(dev_v.capture(0.05)) > 10)
+dev.ref = 0
+
 # ------------------------------------------- vuelta al cero del tick de 16 bits
 uno = FakeUno(start_tick=65500)
 dev2 = connect(uno)

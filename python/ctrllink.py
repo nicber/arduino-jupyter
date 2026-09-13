@@ -103,6 +103,11 @@ _HEALTH = (('missed', 'loop_missed'),
 # por derecho propio, así que esa nota tiene que ir primera. Ver
 # bench.DiagnosticoDeBanco.
 
+# Los parámetros que administra la propia biblioteca y no el sketch: aparecen en
+# `params` de cualquier dispositivo, pero no en su tabla. `dec` diezma el flujo y
+# `chans` elige qué canales van en la fila; ver capture().
+LINK_PARAMS = ('dec', 'chans')
+
 # Fracción del período de control a partir de la cual vale la pena mencionar un
 # retardo de atención, aunque todavía no se haya perdido nada.
 _LATE_WARN = 0.5
@@ -720,8 +725,18 @@ class CtrlLink:
 
     # -------------------------------------------------------------- captura
 
-    def capture(self, duration, events=(), poll=0.005, warn=True):
+    def capture(self, duration, events=(), poll=0.005, warn=True, canales=None):
         """Emite durante `duration` segundos y devuelve un DataFrame.
+
+        `canales` es la lista de canales que van en la captura, por nombre; por
+        omisión, los que el dispositivo tenga activos, que al arrancar son todos.
+        Cada canal cuesta bytes de cable y tiempo de CPU del lado del dispositivo
+        --en un UNO, del orden de 10 us por byte--, así que emitir sólo los que se
+        van a mirar es lo que permite subir la frecuencia del lazo; ver el techo
+        medido en PROTOCOL.md. Las columnas
+        salen en el orden de la tabla del dispositivo, no en el de la lista, y la
+        selección anterior se restituye al terminar, así que la celda siguiente
+        recibe lo mismo que habría recibido sin ésta.
 
         `events` es una secuencia de (retardo_s, nombre, valor): cada parámetro se
         fija esa cantidad de segundos después de que arranca el flujo. El
@@ -740,8 +755,52 @@ class CtrlLink:
         Ctrl-C—, el dispositivo queda callado igual antes de que la excepción
         llegue a la celda: ver _hold().
         """
-        with self._hold():
-            return self._capture(duration, events, poll, warn)
+        previous = None
+
+        try:
+            with self._hold():
+                previous = self._select_channels(canales)
+                df = self._capture(duration, events, poll, warn)
+        except BaseException:
+            # _hold() ya dejó el enlace limpio, así que restituir es un comando
+            # común. Si ni eso sale, la excepción que viene es la noticia.
+            if previous is not None:
+                try:
+                    self.set('chans', previous)
+                except Exception:
+                    pass
+            raise
+
+        if previous is not None:
+            self.set('chans', previous)
+
+        return df
+
+    def _select_channels(self, canales):
+        """Activa sólo `canales` y devuelve la máscara que había, o None si no se pidió nada."""
+        if canales is None:
+            return None
+
+        if isinstance(canales, str):
+            canales = [canales]
+
+        if 'chans' not in self._params:
+            raise CtrlLinkError(
+                'el dispositivo no permite elegir canales: tiene grabada una '
+                'version de CtrlLink anterior a `chans`. Volver a grabar el sketch.')
+
+        names = [c.name for c in self.channels]
+        unknown = [c for c in canales if c not in names]
+        if unknown:
+            raise CtrlLinkError(f'no hay canales llamados {unknown}; los que hay son {names}')
+
+        mask = 0
+        for name in canales:
+            mask |= 1 << names.index(name)
+
+        previous = self.get('chans')
+        self.set('chans', mask)
+        return previous
 
     def _capture(self, duration, events, poll, warn):
         pending = sorted(events, key=lambda e: e[0])
@@ -863,7 +922,9 @@ class CtrlLink:
                 f'({missed / max(rate, 1):.3f} s de tiempo de lazo): el '
                 f'muestreador volvio a pasar antes de que se atendiera el tick '
                 f'anterior, asi que esos periodos directamente no corrieron. '
-                f'Subir tickdiv, o sacarle trabajo al paso de control.')
+                f'Emitir menos canales con capture(..., canales=[...]) --cada '
+                f'fila le cuesta al lazo mas que el calculo de control--, bajar '
+                f'la frecuencia del lazo, o sacarle trabajo al paso de control.')
 
         late = df.attrs.get('maxlate')
         if late is not None and dt_us and late > dt_us * _LATE_WARN:
@@ -876,7 +937,7 @@ class CtrlLink:
             notes.append(
                 f'se descartaron {drops} fila(s) de telemetria: el dispositivo no '
                 f'tenia lugar en su buffer de transmision. Subir dec, o emitir '
-                f'menos canales.')
+                f'menos canales con capture(..., canales=[...]).')
 
         sent = df.attrs.get('rows')
         if sent and len(df) < sent:
@@ -896,14 +957,16 @@ class CtrlLink:
         fn = getattr(self._diag, metodo, None) if self._diag is not None else None
         return fn(df) if fn is not None else ()
 
-    def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True):
+    def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True, canales=None):
         """Captura una respuesta al escalón, con `t = 0` en el escalón mismo.
 
         Mantiene `pre` segundos, pone `name` en `value`, y mantiene `post`
         segundos más. Si se da `back`, el parámetro se restituye al final.
+        `canales` es como en capture().
         """
         try:
-            df = self.capture(pre + post, events=[(pre, name, value)], warn=warn)
+            df = self.capture(pre + post, events=[(pre, name, value)], warn=warn,
+                              canales=canales)
         except BaseException:
             # El escalón ya salió: interrumpir la captura no lo deshace, y dejar un
             # parámetro movido en un dispositivo que sigue corriendo no es un estado

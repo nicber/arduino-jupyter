@@ -115,8 +115,21 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `ControlDemo` corre seis canales a 500 Hz —tres int32 y tres int16, 41
-bytes por fila—, que son 20,5 kB/s, o el 21 % de un enlace de 1 Mbaud.
+sketch `ControlDemo` corre siete canales a 500 Hz —tres int32 y cuatro int16, 45
+bytes por fila—, que son 22,5 kB/s, o el 23 % de un enlace de 1 Mbaud.
+
+Pero a 1 Mbaud el cable no es lo que se acaba primero, sino la CPU del
+dispositivo. Formatear un byte, copiarlo al buffer y sacarlo por la interrupción
+de la UART le cuesta a un ATmega328P a 16 MHz del orden de 10 µs, así que una fila
+entera de `ControlDemo` pesa más que su paso de control PID. Por eso los canales
+se eligen por captura (ver `chans` más abajo). Medido en el banco, la frecuencia
+de lazo más alta sin perder períodos:
+
+| Canales emitidos | Fila | Techo |
+|---|---|---|
+| los 7 | 45 B | 1 kHz |
+| `ref`, `y_uw`, `e`, `u` | 29 B | 1250 Hz |
+| `y_uw`, `u` | 17 B | 1667 Hz |
 
 ## Protocolo de línea
 
@@ -126,9 +139,9 @@ esperar un terminador definido en lugar de adivinar con una espera fija.
 
 | Comando | Respuesta |
 |---|---|
-| `id` | `# id CtrlLink 1 <sketch> chans=<n> row=<bytes> dt_us=<n>` |
+| `id` | `# id CtrlLink 1 <sketch> chans=<n> row=<bytes> dt_us=<n>`; `row` con los canales activos |
 | `params` | un `# p <nombre> <tipo> <frac> <valor>` por parámetro |
-| `chans` | un `# c <i> <nombre> <tipo> <escala> <unidad>` por canal |
+| `chans` | un `# c <i> <nombre> <tipo> <escala> <unidad>` por canal, activo o no |
 | `get <nombre>` | `# v <nombre> <valor>` |
 | `set <nombre> <valor>` | `# v <nombre> <valor>` |
 | `start` | el encabezado del flujo, terminado en `# data`, y después las filas |
@@ -136,6 +149,17 @@ esperar un terminador definido en lugar de adivinar con una espera fija.
 
 Los tipos son `i8 u8 i16 u16 i32 u32 f32`. Una línea vacía se ignora, así que
 enviar una es una forma segura de resincronizar.
+
+Dos parámetros no son del sketch sino de la biblioteca, y aparecen en `params` de
+cualquier dispositivo:
+
+- `dec` emite una fila cada tantos períodos.
+- `chans` elige qué canales van en la fila: una máscara de 16 bits donde el bit
+  `i` es el canal `i` de `chans`. Por omisión vale 65535, todos. **Se toma en
+  `start`**: cambiarlo durante el flujo vale recién para la captura siguiente,
+  porque las filas que ya están en camino se leen con el encabezado de ésta. Un
+  `start` cuya fila no entre en el buffer de transmisión se rechaza con
+  `# err fila demasiado larga: apagar canales con chans`.
 
 El `<valor>` que va por el cable es siempre el almacenamiento crudo del
 dispositivo. `<frac>` dice cuántos bits fraccionarios lleva ese almacenamiento,
@@ -153,6 +177,8 @@ potencia de dos —grados por cuenta, miliamperes por LSB— es un canal, y un c
 tiene una.
 
 ### Flujo
+
+El encabezado lista sólo los canales activos, en el orden de la tabla:
 
 ```
 # begin
@@ -205,10 +231,13 @@ engancha a un sketch que ya está corriendo, sin resetear nada.
 
 - Los parámetros son atributos, siempre en unidades reales: `dev.pid_kp = 2.5`,
   `print(dev.pid_kp)`. `dev.params` los lee todos de vuelta.
-- `dev.capture(duration, events=[(retardo, nombre, valor), ...])` → DataFrame.
-- `dev.step(nombre, valor, pre=0.1, post=0.9, back=None)` → DataFrame con `t = 0`
-  en el escalón. Si se interrumpe, `back` se restituye igual: del otro lado del
-  cable puede haber un motor empujando contra un tope.
+- `dev.capture(duration, events=[(retardo, nombre, valor), ...], canales=None)`
+  → DataFrame. `canales=['y_uw', 'u']` emite sólo esos, fijando `chans` antes de
+  arrancar y restituyendo la selección anterior al terminar, aunque la captura se
+  interrumpa. Las columnas salen en el orden de la tabla del dispositivo.
+- `dev.step(nombre, valor, pre=0.1, post=0.9, back=None, canales=None)` →
+  DataFrame con `t = 0` en el escalón. Si se interrumpe, `back` se restituye
+  igual: del otro lado del cable puede haber un motor empujando contra un tope.
 - `dev.resync()` deja el enlace en un estado conocido. Se llama sola cuando hace
   falta; está expuesta para forzarla a mano después de algo que el módulo no vio
   pasar.
@@ -252,9 +281,11 @@ void loop() {
 desde el mismo contexto que los escribe: `loop()`, no una ISR. Los nombres tienen
 12 caracteres como máximo, que es lo que permite ponerles un prefijo de módulo: una
 tabla de tres docenas de parámetros planos no dice quién es dueño de cuál, y
-`pid_kp` contra `ang_offset` contra `mot_top` lo dice sin ir a leer el sketch. Una tabla de canales que produzca una fila más larga
-que el buffer de transmisión es rechazada por `begin()`, en lugar de descartar
-todas las muestras en silencio.
+`pid_kp` contra `ang_offset` contra `mot_top` lo dice sin ir a leer el sketch. La
+tabla de canales admite hasta 16 entradas, una por bit de `chans`, y puede
+declarar más de lo que entra en una fila: lo que tiene que entrar en el buffer de
+transmisión es la selección activa, y `start` la rechaza si no, en lugar de
+descartar todas las muestras en silencio.
 
 ## Medido
 

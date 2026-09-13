@@ -36,9 +36,10 @@ def main():
 
     tablas = leer_tablas()
 
-    # El enlace administra `dec` por su cuenta, así que no está en la tabla del
-    # sketch pero sí es un parámetro que se ve desde Python.
-    de_la_placa = {e['nombre'] for e in tablas['params']} | {'dec'}
+    # El enlace administra `dec` y `chans` por su cuenta, así que no están en la
+    # tabla del sketch pero sí son parámetros que se ven desde Python.
+    from ctrllink import LINK_PARAMS
+    de_la_placa = {e['nombre'] for e in tablas['params']} | set(LINK_PARAMS)
     del_catalogo = catalogo.nombres_conocidos()
 
     faltan = sorted(de_la_placa - del_catalogo)

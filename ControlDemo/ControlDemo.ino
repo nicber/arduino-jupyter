@@ -52,10 +52,19 @@
 // compensarlo; ver PROTOCOL.md. Los comandos son raros y diminutos, así que eso
 // no cuesta nada.
 //
-// La tabla de canales por omisión son 45 bytes por fila, o el 23 % del enlace a
-// 500 Hz, que es el "bastante por debajo de la mitad" que le gusta a este
-// protocolo. Bajar `loop_div` a 5 devuelve el lazo a 1 kHz y lleva la fila al
-// 45 %, que ya es demasiado: ahí conviene subir `dec` o sacar un canal.
+// La tabla de canales entera son 45 bytes por fila, o el 23 % del enlace a 500 Hz,
+// que es el "bastante por debajo de la mitad" que le gusta a este protocolo. Pero
+// antes que el cable se acaba la CPU: formatear una fila y sacarla por la UART le
+// cuesta a esta placa más que el paso PID. Por eso la computadora elige qué canales
+// emitir en cada captura --`chans`, o `capture(..., canales=[...])` del lado de
+// Python--. Medido en el banco con el PID corriendo, la frecuencia más alta sin
+// perder períodos es:
+//
+//   los 7 canales, 45 bytes                  1 kHz    (loop_div = 5)
+//   ref, y_uw, e, u, 29 bytes                1250 Hz  (loop_div = 4)
+//   y_uw, u, 17 bytes                        1667 Hz  (loop_div = 3)
+//
+// y a 1 kHz el peor retardo de atención baja de ~880 us con todos a ~300 con dos.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el

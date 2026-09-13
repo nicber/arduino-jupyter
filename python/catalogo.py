@@ -82,6 +82,7 @@ _CATALOGO = {
 
     # Del enlace y no del sketch: éste lo administra CtrlLink.
     'dec':         ('perilla', 'períodos',    'emitir una fila cada tantos períodos, para no saturar el cable'),
+    'chans':       ('perilla', 'bits',        'qué canales van en la fila, uno por bit; mejor capture(..., canales=[...])'),
 }
 
 # El título de cada grupo, en el orden en que conviene leerlos: primero lo que se

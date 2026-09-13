@@ -21,6 +21,8 @@ bool     CtrlLink::m_usable    = false;
 uint16_t CtrlLink::m_tick      = 0;
 uint16_t CtrlLink::m_decimate  = 1;
 uint16_t CtrlLink::m_dec_count = 0;
+uint16_t CtrlLink::m_chan_mask   = 0xFFFF;
+uint16_t CtrlLink::m_chan_active = 0;
 uint32_t CtrlLink::m_dt_us     = 0;
 uint32_t CtrlLink::m_rows      = 0;
 uint32_t CtrlLink::m_drops     = 0;
@@ -28,7 +30,8 @@ uint16_t CtrlLink::m_writes    = 0;
 
 const CtrlParam CtrlLink::k_builtin[] PROGMEM =
 {
-    { "dec", CTRL_U16, (void*)&CtrlLink::m_decimate, 0 },
+    { "dec",   CTRL_U16, (void*)&CtrlLink::m_decimate,  0 },
+    { "chans", CTRL_U16, (void*)&CtrlLink::m_chan_mask, 0 },
 };
 
 // ------------------------------------------------------------------ auxiliares
@@ -132,16 +135,28 @@ uint8_t CtrlLink::hex_width(uint8_t type)
     }
 }
 
-uint8_t CtrlLink::row_width(void)
+// Los bits de la máscara que corresponden a un canal que existe. Los de más arriba
+// se ignoran, así que `set chans 65535` es "todos" cualquiera sea la tabla.
+uint16_t CtrlLink::all_channels(void)
 {
-    uint8_t width = 4 + 1;  // tick, fin de linea
+    return (m_channel_count >= 16) ? 0xFFFF : (uint16_t)((1u << m_channel_count) - 1);
+}
+
+// De 16 bits y no de 8: con dieciséis canales de 32 bits una fila son 133
+// caracteres, y eso tiene que poder rechazarse en lugar de dar la vuelta.
+uint8_t CtrlLink::row_width(uint16_t mask)
+{
+    uint16_t width = 4 + 1;  // tick, fin de linea
 
     for (uint8_t i = 0; i < m_channel_count; i++)
     {
-        width += hex_width(pgm_read_byte(&m_channels[i].type));
+        if (mask & (1u << i))
+        {
+            width += hex_width(pgm_read_byte(&m_channels[i].type));
+        }
     }
 
-    return width;
+    return (width > 255) ? 255 : (uint8_t)width;
 }
 
 void CtrlLink::print_name(const char* pgm_name)
@@ -245,7 +260,7 @@ void CtrlLink::cmd_id(void)
     Serial.print(F(" chans="));
     Serial.print(m_channel_count);
     Serial.print(F(" row="));
-    Serial.print(row_width());
+    Serial.print(row_width(m_chan_mask & all_channels()));
     Serial.print(F(" dt_us="));
     Serial.println(m_dt_us);
     Serial.println(F("# ok"));
@@ -354,7 +369,15 @@ void CtrlLink::cmd_start(void)
 {
     if (!m_usable)
     {
-        error(F("fila demasiado larga"));
+        error(F("demasiados canales"));
+        return;
+    }
+
+    const uint16_t active = m_chan_mask & all_channels();
+
+    if (row_width(active) > CTRL_MAX_ROW)
+    {
+        error(F("fila demasiado larga: apagar canales con chans"));
         return;
     }
     if (m_decimate == 0)
@@ -362,9 +385,10 @@ void CtrlLink::cmd_start(void)
         m_decimate = 1;
     }
 
-    m_rows      = 0;
-    m_drops     = 0;
-    m_dec_count = 0;
+    m_rows        = 0;
+    m_drops       = 0;
+    m_dec_count   = 0;
+    m_chan_active = active;
 
     Serial.println(F("# begin"));
 
@@ -379,6 +403,11 @@ void CtrlLink::cmd_start(void)
 
     for (uint8_t i = 0; i < m_channel_count; i++)
     {
+        if (!(active & (1u << i)))
+        {
+            continue;
+        }
+
         Serial.print(F("# col "));
         print_name(m_channels[i].name);
         Serial.write(' ');
@@ -492,11 +521,11 @@ bool CtrlLink::begin(uint32_t baud,
         ;  // inofensivo en el UNO, necesario en placas con USB nativo
     }
 
-    m_usable = (row_width() <= CTRL_MAX_ROW);
+    m_usable = (channel_count <= CTRL_MAX_CHANNELS);
 
     if (!m_usable)
     {
-        error(F("la tabla de canales genera una fila mas larga que el buffer de transmision"));
+        error(F("la tabla tiene mas canales de los que entran en chans"));
     }
 
     return m_usable;
@@ -561,6 +590,11 @@ bool CtrlLink::emit(void)
 
     for (uint8_t i = 0; i < m_channel_count; i++)
     {
+        if (!(m_chan_active & (1u << i)))
+        {
+            continue;
+        }
+
         uint8_t type = pgm_read_byte(&m_channels[i].type);
         p = put_hex(p,
                     read_value((const void*)pgm_read_word(&m_channels[i].addr), type),

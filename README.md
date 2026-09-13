@@ -394,8 +394,8 @@ control tanto como a la medición.
 | `bringup` dice «no se pudo evaluar» | falta el sensor del que esa verificación depende; arreglar primero el que sí falla |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
-| se pierden períodos de control | subir `loop_div`, o sacarle trabajo al paso de control |
-| se descartan filas de telemetría | subir `dec`, o emitir menos canales |
+| se pierden períodos de control | emitir sólo los canales que se van a mirar, con `dev.capture(..., canales=['y_uw', 'u'])`: formatear y enviar la fila entera le cuesta al lazo más que el paso de control. Con dos canales el lazo llega a 1667 Hz (`loop_div = 3`); con los siete, a 1 kHz. Si no alcanza, subir `loop_div` |
+| se descartan filas de telemetría | subir `dec`, o emitir menos canales con `canales=` |
 
 Toda captura verifica su propia salud y avisa por `stderr` si el lazo perdió
 períodos o si se perdieron filas: una serie temporal a la que le faltan muestras

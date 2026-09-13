@@ -139,8 +139,9 @@ def main():
     from banco_simulado import BancoSimulado
     import bench
 
-    # Los parámetros que la placa declara, más el que administra el enlace.
-    parametros = {e['nombre'] for e in leer_tablas()['params']} | {'dec'}
+    # Los parámetros que la placa declara, más los que administra el enlace.
+    from ctrllink import LINK_PARAMS
+    parametros = {e['nombre'] for e in leer_tablas()['params']} | set(LINK_PARAMS)
 
     # Y lo que un banco sabe hacer, de las dos clases: el simulado es el que corre
     # sin cable, y Bench el que corre con él. Un nombre que exista en una sola

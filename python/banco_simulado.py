@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 import catalogo
+from ctrllink import CtrlLinkError
 
 CUENTAS = 4096
 GRADOS_POR_CUENTA = 360.0 / CUENTAS
@@ -115,6 +116,7 @@ class BancoSimulado:
         self.board_bus = 0
         self.cur_ma_lsb = CANALES['i'].scale
         self.dec = 1
+        self.chans = 0xFFFF
 
         self.dt = self.loop_div / 5000.0
         self.info = 'CtrlLink 1 ControlDemo (SIMULADO) chans=7 dt_us=2000'
@@ -377,7 +379,7 @@ class BancoSimulado:
 
     # ---------------------------------------------------------- la captura
 
-    def capture(self, duration, events=(), poll=0.005, warn=True):
+    def capture(self, duration, events=(), poll=0.005, warn=True, canales=None):
         t = np.arange(0, float(duration), self.dt)
 
         # Sólo lazo abierto: el notebook de calibración mide con el motor a
@@ -409,6 +411,15 @@ class BancoSimulado:
             'ref': refs,
         })
 
+        if canales is not None:
+            canales = [canales] if isinstance(canales, str) else list(canales)
+            desconocidos = [c for c in canales if c not in CANALES]
+            if desconocidos:
+                raise CtrlLinkError(f'no hay canales llamados {desconocidos}; '
+                                    f'los que hay son {list(CANALES)}')
+            # En el orden de la tabla, como los entrega la placa.
+            df = df[['t'] + [c for c in CANALES if c in canales and c in df.columns]]
+
         df.attrs.update(tick=np.arange(len(t), dtype=np.int64) * self.loop_div,
                         dec=self.loop_div, dt_us=self.dt*1e6, marks=[], notes=[],
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
@@ -418,9 +429,9 @@ class BancoSimulado:
 
         return df
 
-    def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True):
+    def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True, canales=None):
         antes = getattr(self, name)
-        df = self.capture(pre + post, events=[(pre, name, value)])
+        df = self.capture(pre + post, events=[(pre, name, value)], canales=canales)
         df['t'] -= pre
         setattr(self, name, antes if back is None else back)
         return df

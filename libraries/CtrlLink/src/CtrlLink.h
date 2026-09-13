@@ -11,8 +11,8 @@
 //                       de telemetría en hexadecimal de ancho fijo y mayúsculas,
 //                       con el nibble más significativo primero.
 //
-// Una fila es el contador de ticks de 16 bits seguido de los canales declarados,
-// sin separadores:
+// Una fila es el contador de ticks de 16 bits seguido de los canales activos, sin
+// separadores:
 //
 //   0412 CDB9 0C80 0076
 //   tick ref   y    u          ->  "0412CDB90C800076\n"
@@ -22,8 +22,13 @@
 // estructurado de numpy. Nada en la fila es de ancho variable y nada hay que
 // separarlo en tokens.
 //
+// Qué canales van en la fila lo decide la computadora con el parámetro incorporado
+// `chans`, una máscara con un bit por canal en el orden de la tabla. Se toma al
+// arrancar el flujo y no durante: cambiar el ancho de la fila a mitad de camino
+// dejaría a la computadora leyendo filas con el formato del encabezado anterior.
+//
 // Ancho de banda: el puerto serie usa 10 bits por byte, así que el enlace mueve
-// baud/10 bytes por segundo. Una fila cuesta 4 + suma(anchos de canal) + 1
+// baud/10 bytes por segundo. Una fila cuesta 4 + suma(anchos de canal activo) + 1
 // bytes. A 1 Mbaud una fila de 4 canales int16 son 21 bytes, así que un lazo de
 // 1 kHz usa el 21 % del enlace. Conviene mantener la utilización bastante por
 // debajo de la mitad: emit() nunca bloquea, descarta una fila en su lugar, y una
@@ -67,16 +72,19 @@ static const uint8_t CTRL_NAME_LEN = 12;
 // incluidos.
 static const uint8_t CTRL_CMD_LEN = 40;
 
-// Techo de 4 + suma(anchos de canal) + 1. Una fila nunca puede ser más larga que
-// el buffer de transmisión, porque availableForWrite() nunca informa más de
+// Techo de 4 + suma(anchos de canal activo) + 1. Una fila nunca puede ser más larga
+// que el buffer de transmisión, porque availableForWrite() nunca informa más de
 // SERIAL_TX_BUFFER_SIZE - 1 libres y emit() se niega a escribir sin lugar: una
 // fila demasiado larga descartaría todas las muestras y no enviaría ninguna.
-// begin() rechaza una tabla de canales así en lugar de fallar en silencio.
+// `start` rechaza una selección de canales así en lugar de fallar en silencio.
 //
 // Son 63 bytes en un UNO, o sea hasta 14 canales int16 o 7 float. Además de
 // entrar, importa quedarse bastante por debajo del límite: una fila cercana al
 // tamaño del buffer sólo sale cuando el buffer está casi vacío.
 static const uint8_t CTRL_MAX_ROW = SERIAL_TX_BUFFER_SIZE - 1;
+
+// Un bit de `chans` por canal.
+static const uint8_t CTRL_MAX_CHANNELS = 16;
 
 // Una variable que la computadora puede escribir. `addr` apunta a RAM que
 // pertenece al sketch; el enlace convierte entre el texto del cable y `type` a
@@ -124,8 +132,10 @@ class CtrlLink
     // computadora para que pueda convertir números de tick en segundos. Las
     // tablas siguen perteneciendo a quien llama y tienen que vivir en PROGMEM.
     //
-    // Devuelve false si la tabla de canales produjera una fila más larga que
-    // CTRL_MAX_ROW; el enlace igual funciona, pero el flujo queda deshabilitado.
+    // Devuelve false si la tabla tiene más de CTRL_MAX_CHANNELS canales, que es lo
+    // que entra en la máscara; el enlace igual funciona, pero el flujo queda
+    // deshabilitado. Que la fila entre en CTRL_MAX_ROW se verifica en cada `start`,
+    // con los canales que estén activos.
     static bool begin(uint32_t baud,
                       const CtrlParam* params, uint8_t param_count,
                       const CtrlChannel* channels, uint8_t channel_count,
@@ -195,13 +205,14 @@ class CtrlLink
     static void error(const __FlashStringHelper* reason);
 
     static uint8_t hex_width(uint8_t type);
-    static uint8_t row_width(void);
+    static uint8_t row_width(uint16_t mask);
+    static uint16_t all_channels(void);
 
     // Parámetros que el propio enlace administra. Se buscan antes que la tabla
     // del sketch y se listan junto con ella, así que la computadora los descubre
     // de la misma manera.
     static const CtrlParam k_builtin[];
-    static const uint8_t   K_BUILTIN_COUNT = 1;
+    static const uint8_t   K_BUILTIN_COUNT = 2;
 
     static const CtrlParam*   m_params;
     static const CtrlChannel* m_channels;
@@ -215,10 +226,12 @@ class CtrlLink
     static bool    m_cmd_overflow;
 
     static bool     m_streaming;
-    static bool     m_usable;      // la fila entra en CTRL_MAX_ROW
+    static bool     m_usable;      // la tabla de canales entra en la máscara
     static uint16_t m_tick;
     static uint16_t m_decimate;    // emitir una fila cada m_decimate ticks
     static uint16_t m_dec_count;   // ticks que faltan saltear antes de la próxima fila
+    static uint16_t m_chan_mask;   // canales pedidos por la computadora, bit i = canal i
+    static uint16_t m_chan_active; // los que tomó el último `start`
     static uint32_t m_dt_us;
     static uint32_t m_rows;
     static uint32_t m_drops;

@@ -11,7 +11,7 @@ import numpy as np
 # nombre -> (tipo de cable, bits fraccionarios, valor crudo almacenado). `kq` y
 # `alpha` se guardan en punto fijo tal como ControlDemo guarda sus ganancias, así
 # que la conversión de la computadora se ejercita en lugar de darse por buena.
-PARAMS = {'dec': ('u16', 0, 1), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
+PARAMS = {'dec': ('u16', 0, 1), 'chans': ('u16', 0, 0xFFFF), 'kp': ('f32', 0, 0.5), 'ki': ('f32', 0, 0.0),
           'ref': ('i16', 0, 0), 'mode': ('u8', 0, 0),
           'kq': ('i32', 22, 0), 'alpha': ('i32', 16, 65536),
           # Contadores de salud, con los nombres que les pone ControlDemo. La
@@ -47,6 +47,9 @@ class FakeUno:
         # igual los encuentre distintos de cero al final.
         self.unhealthy = unhealthy or {}
         self.drops = drops
+        # Los canales que tomó el último `start`. CtrlLink la toma ahí y no la
+        # vuelve a mirar durante el flujo.
+        self.active = list(range(len(CHANS)))
 
     def println(self, s=''):
         self.out += (s + '\r\n').encode()   # println de Arduino agrega CRLF
@@ -100,9 +103,12 @@ class FakeUno:
             self.rows = 0
             self.produced = 0
             self.println('# begin')
+            mask = self.params.get('chans', ('u16', 0, 0xFFFF))[2]   # sin chans: todos
+            self.active = [i for i in range(len(CHANS)) if mask & (1 << i)]
             self.println(f'# rate dt_us=1000 dec={self.params["dec"][2]}')
             self.println('# col tick u16 1 tick')
-            for name, type_, scale, unit in CHANS:
+            for i in self.active:
+                name, type_, scale, unit = CHANS[i]
                 self.println(f'# col {name} {type_} {scale:.7f} {unit}')
             self.println('# data')
             self.streaming = True
@@ -135,8 +141,9 @@ class FakeUno:
             err = ref - self.y
             u = max(-255, min(255, err // 4))
             if self.tick % dec == 0:
+                values = (ref, self.y, err, u)
                 row = ''.join(f'{v & 0xFFFF:04X}'
-                              for v in (self.tick, ref, self.y, err, u))
+                              for v in (self.tick, *(values[i] for i in self.active)))
                 self.out += (row + '\n').encode()  # las filas usan LF pelado
                 self.rows += 1
             self.tick = (self.tick + 1) & 0xFFFF

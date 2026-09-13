@@ -54,8 +54,9 @@ def main():
     # Lo primero es que la placa declare lo que el golden dice que declara. Si esto
     # falla, todo lo que sigue está midiendo otra cosa.
     from test_tablas import leer_tablas
+    from ctrllink import LINK_PARAMS
 
-    esperados = {e['nombre'] for e in leer_tablas()['params']} | {'dec'}
+    esperados = {e['nombre'] for e in leer_tablas()['params']} | set(LINK_PARAMS)
     check('la placa declara los parametros que el sketch define',
           set(dev.params) == esperados,
           f'sobran {sorted(set(dev.params) - esperados)}, '
