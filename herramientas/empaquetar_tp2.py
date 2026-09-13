@@ -36,9 +36,14 @@ INCLUIR = [
     'notebooks/calibracion.ipynb',
     'Docs/CALIBRACION_AS5600.md',
     'herramientas/verificar.py',
+    '.vscode/extensions.json',      # abrir la carpeta en VS Code y que ofrezca todo
+    '.vscode/settings.json',
+    '.vscode/tasks.json',
+    '.vscode/c_cpp_properties.json',
 ]
 
-# Adentro de lo incluido, lo que igual sobra.
+# Adentro de lo incluido, lo que igual sobra. Se busca en la ruta con una / adelante,
+# así que '/.vscode/' saca la de cada sketch; la de la raíz entra por su nombre.
 EXCLUIR = ('/.vscode/', '/examples/', '.gitignore', '.gitmodules')
 
 
@@ -53,7 +58,7 @@ def archivos():
     elegidos = []
     for ruta in todos:
         entra = any(ruta == i or (i.endswith('/') and ruta.startswith(i)) for i in INCLUIR)
-        sobra = any(e in f'/{ruta}' for e in EXCLUIR)
+        sobra = ruta not in INCLUIR and any(e in f'/{ruta}' for e in EXCLUIR)
         if entra and not sobra:
             elegidos.append(ruta)
 

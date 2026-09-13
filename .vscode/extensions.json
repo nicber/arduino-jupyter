@@ -1,0 +1,28 @@
+{
+    // Lo que conviene tener para trabajar en este proyecto. VS Code las ofrece al
+    // abrir la carpeta.
+    "recommendations": [
+        // C++ de los sketches y las bibliotecas (IntelliSense contra el core AVR).
+        "ms-vscode.cpptools",
+
+        // Python del lado de la computadora, y los notebooks.
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-python.pylint",
+        "ms-toolsai.jupyter",
+
+        // El monitor serie, para mirar la placa sin abrir el IDE de Arduino.
+        "ms-vscode.vscode-serial-monitor",
+
+        // dyc.yml, los .md y la hoja de datos del AS5600.
+        "redhat.vscode-yaml",
+        "yzhang.markdown-all-in-one",
+        "tomoki1207.pdf"
+    ],
+    "unwantedRecommendations": [
+        // Genera su propio c_cpp_properties.json en cada sketch y pisa el de acá.
+        "vsciot-vscode.vscode-arduino",
+        "vscode-arduino.vscode-arduino-community"
+    ]
+}

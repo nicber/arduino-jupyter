@@ -1,0 +1,86 @@
+{
+    "env": {
+        "avrCore": "arduino/hardware/avr/1.8.8",
+        "avrGcc": "arduino/tools/avr-gcc/7.3.0-atmel3.6.1-arduino7",
+        "projectIncludes": [
+            "${workspaceFolder}/libraries/*/src",
+            "${workspaceFolder}/libraries/nI2C"
+        ],
+        "avrDefines": [
+            "F_CPU=16000000L",
+            "ARDUINO=10607",
+            "ARDUINO_AVR_UNO",
+            "ARDUINO_ARCH_AVR",
+            "__AVR_ATmega328P__"
+        ]
+    },
+    "configurations": [
+        {
+            "name": "UNO (Windows)",
+            "includePath": [
+                "${projectIncludes}",
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrCore}/cores/arduino",
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrCore}/variants/standard",
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrCore}/libraries/**",
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrGcc}/avr/include",
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrGcc}/lib/gcc/avr/7.3.0/include"
+            ],
+            "forcedInclude": [
+                "${env:LOCALAPPDATA}/Arduino15/packages/${avrCore}/cores/arduino/Arduino.h"
+            ],
+            "defines": ["${avrDefines}"],
+            "compilerPath": "${env:LOCALAPPDATA}/Arduino15/packages/${avrGcc}/bin/avr-g++.exe",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "windows-gcc-x86"
+        },
+        {
+            "name": "UNO (macOS)",
+            "includePath": [
+                "${projectIncludes}",
+                "${env:HOME}/Library/Arduino15/packages/${avrCore}/cores/arduino",
+                "${env:HOME}/Library/Arduino15/packages/${avrCore}/variants/standard",
+                "${env:HOME}/Library/Arduino15/packages/${avrCore}/libraries/**",
+                "${env:HOME}/Library/Arduino15/packages/${avrGcc}/avr/include",
+                "${env:HOME}/Library/Arduino15/packages/${avrGcc}/lib/gcc/avr/7.3.0/include"
+            ],
+            "forcedInclude": [
+                "${env:HOME}/Library/Arduino15/packages/${avrCore}/cores/arduino/Arduino.h"
+            ],
+            "defines": ["${avrDefines}"],
+            "compilerPath": "${env:HOME}/Library/Arduino15/packages/${avrGcc}/bin/avr-g++",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "macos-gcc-x86"
+        },
+        {
+            "name": "UNO (Linux)",
+            "includePath": [
+                "${projectIncludes}",
+                "${env:HOME}/.arduino15/packages/${avrCore}/cores/arduino",
+                "${env:HOME}/.arduino15/packages/${avrCore}/variants/standard",
+                "${env:HOME}/.arduino15/packages/${avrCore}/libraries/**",
+                "${env:HOME}/.arduino15/packages/${avrGcc}/avr/include",
+                "${env:HOME}/.arduino15/packages/${avrGcc}/lib/gcc/avr/7.3.0/include"
+            ],
+            "forcedInclude": [
+                "${env:HOME}/.arduino15/packages/${avrCore}/cores/arduino/Arduino.h"
+            ],
+            "defines": ["${avrDefines}"],
+            "compilerPath": "${env:HOME}/.arduino15/packages/${avrGcc}/bin/avr-g++",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "linux-gcc-x86"
+        },
+        {
+            // Para test/test_modulos.cpp y libraries/*/test: aritmética pura, en la
+            // computadora, con el g++ o el clang del sistema.
+            "name": "Pruebas de escritorio",
+            "includePath": ["${projectIncludes}"],
+            "defines": [],
+            "cStandard": "c11",
+            "cppStandard": "c++11"
+        }
+    ],
+    "version": 4
+}

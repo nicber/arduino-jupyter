@@ -3,7 +3,12 @@
 __pycache__/
 *.pyc
 build/
-.vscode/
+**/.vscode/*
+# La configuración compartida del proyecto, en la raíz, sí va.
+!/.vscode/extensions.json
+!/.vscode/settings.json
+!/.vscode/tasks.json
+!/.vscode/c_cpp_properties.json
 
 # La calibración medida en un banco concreto. Es un dato de ese banco, no del
 # proyecto: cada uno guarda la suya.

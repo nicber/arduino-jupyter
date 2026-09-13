@@ -1,0 +1,50 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Lo mismo que el paso 5 del README: entorno, compilación, pruebas y notebooks.
+            "label": "Verificar la instalación",
+            "type": "process",
+            "command": "${command:python.interpreterPath}",
+            "args": ["herramientas/verificar.py"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Correr la prueba de Python abierta",
+            "type": "process",
+            "command": "${command:python.interpreterPath}",
+            "args": ["${file}"],
+            "options": { "cwd": "${workspaceFolder}/python" },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            // Con las mismas banderas que sync_board(), sin grabar. Usa el
+            // arduino-cli que trae el IDE 2 si no hay uno en el PATH.
+            "label": "Compilar Banco",
+            "type": "process",
+            "command": "${command:python.interpreterPath}",
+            "args": [
+                "-c",
+                "import subprocess, sys, bench; sys.exit(subprocess.call([bench._arduino_cli(), 'compile', '--fqbn', bench.FQBN, '--libraries', 'libraries', *sum((['--build-property', p] for p in bench.BUILD_PROPERTIES), []), 'Banco']))"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": { "PYTHONPATH": "${workspaceFolder}/python" }
+            },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            // Necesita un g++ para la computadora (no el avr-g++ del IDE).
+            "label": "Pruebas C++ de escritorio",
+            "type": "shell",
+            "command": "g++ -std=c++11 -O2 -Wall -Wextra -I ../libraries/ControlMath/src -I ../libraries/Calibracion/src -I ../libraries/AngleSensor/src -I ../libraries/Sense/src -I ../libraries/Control/src test_modulos.cpp -o test_modulos && ./test_modulos",
+            "options": { "cwd": "${workspaceFolder}/test" },
+            "group": "test",
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}

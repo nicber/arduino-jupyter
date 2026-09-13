@@ -1,0 +1,44 @@
+{
+    // El entorno de conda del curso, donde lo crea el README.
+    "python.defaultInterpreterPath": "C:\\envs\\dyc\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    // Las pruebas y los notebooks importan bench, ensayo, calib... desde python/.
+    "python.analysis.extraPaths": ["${workspaceFolder}/python"],
+    "terminal.integrated.env.windows": { "PYTHONPATH": "${workspaceFolder}\\python" },
+    "terminal.integrated.env.osx": { "PYTHONPATH": "${workspaceFolder}/python" },
+    "terminal.integrated.env.linux": { "PYTHONPATH": "${workspaceFolder}/python" },
+    "jupyter.notebookFileRoot": "${fileDirname}",
+
+    // Los sketches son C++ para el AVR.
+    "files.associations": {
+        "*.ino": "cpp"
+    },
+    "C_Cpp.default.cppStandard": "c++11",
+    "C_Cpp.autoAddFileAssociations": false,
+
+    // Todo el proyecto está en UTF-8, con acentos en comentarios y mensajes.
+    "files.encoding": "utf8",
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true,
+    "[markdown]": {
+        "files.trimTrailingWhitespace": false
+    },
+
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true
+    },
+    "search.exclude": {
+        "build": true,
+        "dist": true,
+        "libraries/nI2C": true,
+        "Docs/*.pdf": true
+    },
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/dist/**": true
+    },
+
+    // El enlace va a 1 Mbaud.
+    "vscode-serial-monitor.customBaudRates": [1000000]
+}
