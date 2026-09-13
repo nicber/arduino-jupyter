@@ -22,13 +22,17 @@ t, w = ensayo.velocidad(df)                                 # rad/s, derivada de
 ensayo.guardar(df, 'datos/escalon_40_80.csv')               # t, u, theta, omega, i
 ```
 
-Lo que se puede hacer, y es lo que recorre el notebook:
+Lo que recorre `notebooks/hardware.ipynb`:
 
-- verificar el equipo parte por parte, y saber cuál falla si algo falla;
-- medir la **curva estática**: la ganancia, la zona muerta, y cuánto se dobla;
-- aplicar **escalones** de PWM y medir la constante de tiempo, para arriba y para abajo;
+- cómo está armado el banco, y verificar el equipo parte por parte;
 - mirar la **corriente**, y decidir si el canal la resuelve;
-- **guardar cada ensayo** en un archivo con las unidades de un modelo.
+- **la API para el TP2**, con un ejemplo que se puede correr para cada cosa:
+  aplicar un comando, capturar, un **escalón** desde un régimen, una **serie de
+  escalones** o una escalera, la **velocidad** a partir del ángulo, y **guardar
+  cada ensayo** en un archivo con las unidades de un modelo.
+
+La identificación en sí --el modelo, el ajuste, la validación-- es el trabajo del
+TP y no está en el notebook.
 
 En la placa no hay ley de control ni filtros: el comando va derecho al actuador y
 el ángulo vuelve tal como lo entregó el sensor. Todo lo que se hace con la
@@ -58,8 +62,14 @@ muestra en clase.
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
 
-**El actuador de este banco es un transistor a masa con su diodo de rueda
-libre**, gobernado desde el pin 9. Es un solo cuadrante, y eso se nota en todo lo
+**No todos los bancos tienen el mismo actuador.** Algunos tienen un **puente en H**
+(L298N, configuración **B** del notebook), que acciona en los dos sentidos con un
+comando de -255 a 255. Otros tienen un **transistor a masa con su diodo de rueda
+libre** (configuración **B′**), gobernado sólo desde el pin 9. La celda de la
+sección 2.2 de `hardware.ipynb` dice cuál tiene cada banco. El sketch y el notebook
+son los mismos para los dos.
+
+Con el transistor, el actuador es de un solo cuadrante, y eso se nota en todo lo
 que se mide:
 
 - **empuja y no frena**: con el comando en cero, o más bajo, el eje sólo lo frena
@@ -72,8 +82,9 @@ que se mide:
   velocidades medias, y eso dobla la curva estática: la ganancia cae varias veces
   entre un comando bajo y uno alto.
 
-El sketch sirve igual para un puente en H: `ENA` lleva la magnitud e `IN1`/`IN2`
-el sentido, y el comando va de -255 a 255. Si un comando positivo hace bajar el
+Con el puente en H, `ENA` lleva la magnitud e `IN1`/`IN2` el sentido, y un comando
+negativo hace girar el motor para el otro lado. Con el comando en cero el puente
+también queda abierto, así que el eje tampoco frena solo. Si un comando positivo hace bajar el
 ángulo medido, eso es de qué lado están los cables del motor y de qué lado mira el
 imán: `ensayo.signo()` lo detecta y `ensayo.normalizar()` lo aplica.
 
