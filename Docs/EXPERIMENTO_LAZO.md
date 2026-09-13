@@ -8,6 +8,17 @@ siempre. Los datos crudos están en `Docs/experimento_lazo/`, y los scripts en
 
 Todos los tiempos están en µs. Donde hay dos números son promedio/máximo.
 
+> **Corrección (13/09/2026).** La instrumentación pesa: cada `micros()` y cada
+> estadística de la ISR se suman al período, así que los tiempos absolutos de este
+> informe están inflados y **la conclusión de que 1 kHz no entra es falsa para el
+> firmware normal**. Con `ControlDemo` sin `-DCTRL_PROFILE`, PID activo y los 7
+> canales, 1 kHz no pierde ningún período (peor retardo ~880 µs), en tres corridas
+> de 3 s. Lo que sigue en pie son las proporciones: la fila pesa más que el PID, el
+> costo es lineal en bytes, enviar desde una ISR no ahorra, y la pérdida de bytes
+> de comando es del muestreador. Medido después, en la rama
+> `canales-configurables`, la frecuencia más alta sin perder períodos es 1 kHz con
+> los 7 canales, 1250 Hz con 4 y 1667 Hz con 2.
+
 ## La pregunta
 
 ¿Conviene pasar la ley de control a la ISR y dejar la telemetría en `loop()`? ¿El
