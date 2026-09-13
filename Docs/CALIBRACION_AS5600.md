@@ -455,11 +455,6 @@ banco. Porque:
 - Y para el aula, que es donde esto se usa: dos bancos son dos archivos, no dos
   placas con memoria distinta.
 
-Para un tablero que se enciende solo y nadie conecta a una computadora,
-`calib.escribir_header()` genera `Banco/Calibracion.h` y el sketch lo toma
-con `__has_include`. Ahí la calibración sí queda adentro de la placa, pero a la
-vista en el código y no escondida en una memoria.
-
 ### Protocolo: ningún comando nuevo
 
 Cargar la tabla no necesitó tocar el protocolo. Alcanzan dos parámetros:
@@ -497,7 +492,6 @@ Más dos parámetros de operación:
 | La tendencia se come el primer armónico | `A_1` chico y con barra de error grande | ≥20 vueltas por ventana de ajuste |
 | Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `ang_cal` en 0 y en 1: es el chequeo, y es barato |
 | Medir con el eje todavía girando por inercia | el sentido informado es el de la medición anterior | esperar a que el eje pare de verdad y verificarlo; ver `ensayo.esperar_quieto()` |
-| Una calibración compilada que quedó de otro banco | el dispositivo arranca con `cal = 1` y una tabla ajena | `escribir_header()` no se llama solo; borrar `Calibracion.h` cuando deje de corresponder |
 
 ## 9. Dónde está cada cosa
 
@@ -507,7 +501,7 @@ Este plan está implementado. El reparto:
 |---|---|
 | `Banco/Banco.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, el filtro del sensor, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
-| `python/calib.py` | ajuste, compuertas, tabla, archivo, header |
+| `python/calib.py` | ajuste, compuertas, tabla, archivo |
 | `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
 | `python/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
 | `notebooks/calibracion.ipynb` | los experimentos en orden de clase |

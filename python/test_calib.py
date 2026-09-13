@@ -210,14 +210,6 @@ with tempfile.TemporaryDirectory() as carpeta:
     except ValueError as exc:
         check('un archivo editado se rechaza', 'suma de verificaci' in str(exc), str(exc))
 
-    header = cal.escribir_header(os.path.join(carpeta, 'Calibracion.h'))
-    texto = open(header).read()
-    check('el header declara la tabla en PROGMEM',
-          'static const int16_t CAL_LUT[64] PROGMEM' in texto)
-    check('el header trae los 64 valores',
-          texto.count(',') >= calib.LUT_SIZE, f'{texto.count(",")} comas')
-    check('el header dice de donde salio', 'banco de prueba' in texto)
-
 
 # -------------------------------------------------- contra el dispositivo
 

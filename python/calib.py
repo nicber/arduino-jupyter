@@ -563,32 +563,6 @@ class Calibracion:
 
         return cal
 
-    def escribir_header(self, ruta='Banco/Calibracion.h'):
-        """Genera el header que deja la calibración compilada adentro del sketch.
-
-        Es el camino para un tablero que se enciende solo y nadie conecta a un
-        notebook. El sketch lo toma con __has_include, así que basta con que el
-        archivo exista.
-        """
-        filas = []
-        for i in range(0, LUT_SIZE, 8):
-            filas.append('    ' + ', '.join(f'{v:6d}' for v in self.lut[i:i+8]) + ',')
-
-        with open(ruta, 'w') as f:
-            f.write('// Generado por python/calib.py. No editar a mano.\n')
-            f.write(f'//\n// Banco:  {self.banco or "sin identificar"}\n')
-            f.write(f'// Medida: {self.creada}\n')
-            if self.armonicos:
-                picos = ', '.join(f'A{k}={A:.2f} cuentas' for k, (A, _) in
-                                  sorted(self.armonicos.items()))
-                f.write(f'// Ajuste: {picos}\n')
-            f.write('//\n// Entradas en octavos de cuenta, indexadas por el ángulo crudo.\n\n')
-            f.write('static const int16_t CAL_LUT[64] PROGMEM =\n{\n')
-            f.write('\n'.join(filas))
-            f.write('\n};\n')
-
-        return ruta
-
     # ---------------------------------------------------------------- placa
 
     def aplicar(self, dev, verificar=True):

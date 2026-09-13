@@ -332,15 +332,6 @@ static uint16_t g_last_writes   = 0;
 //     montaje, que se aplica en silencio.
 //   - Y para el aula: la corrección se prende y se apaga con `ang_cal` mientras el
 //     motor gira. Eso es lo que hace que se pueda mostrar.
-//
-// Para dejarla fija en un tablero que se enciende solo,
-// `calib.escribir_header()` genera Calibracion.h y este sketch lo toma si está.
-#if defined(__has_include)
-#  if __has_include("Calibracion.h")
-#    include "Calibracion.h"
-#    define TIENE_CALIBRACION 1
-#  endif
-#endif
 
 // --------------------------------------------------------------------- tablas
 
@@ -717,15 +708,6 @@ void setup()
     // El puente: deja ENA abierto y las dos entradas de sentido en bajo, que es el
     // estado del que parte write().
     g_motor.begin();
-
-    // Si el proyecto trae una calibración compilada, entra acá y queda activa desde
-    // el arranque. Sin ella la tabla es toda ceros y `ang_cal` arranca en 0: un
-    // dispositivo sin calibrar tiene que decir que no está calibrado, no corregir
-    // con lo que haya quedado.
-#ifdef TIENE_CALIBRACION
-    memcpy_P(g_lut.entry, CAL_LUT, sizeof(g_lut.entry));
-    g_cal = 1;
-#endif
 
     CtrlLink::set_id(F("ControlDemo"));
     CtrlLink::begin(BAUD,

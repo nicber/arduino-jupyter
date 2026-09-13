@@ -267,9 +267,7 @@ dueña de la tabla es la computadora, que la empuja al conectarse:
 `sync_board_cal()` es `sync_board()` más la calibración de este banco. Una
 calibración es una propiedad de *este banco* --este imán, en este eje-- y no del
 programa, y el caso feo no es la tabla que falta, es la tabla vieja de otro
-montaje aplicándose en silencio. Para un tablero que se enciende solo,
-`cal.escribir_header()` genera `Banco/Calibracion.h` y el sketch lo toma en la
-próxima compilación.
+montaje aplicándose en silencio.
 
 El filtro lento del AS5600 va en 2x, 0,286 ms de retardo en lugar de los 2,2 ms
 de fábrica, y el sketch lo escribe al arrancar. No es una perilla: ese retardo se

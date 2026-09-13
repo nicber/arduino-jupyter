@@ -158,14 +158,7 @@ static uint16_t g_last_writes   = 0;
 // y quien tiene la tabla es la computadora, que la empuja al conectarse --ver
 // python/calib.py--: una calibración es una propiedad del banco --este imán, en
 // este eje-- y no del programa, y una tabla vieja aplicándose en silencio es peor
-// que ninguna. Para dejarla fija en un tablero que se enciende solo,
-// `calib.escribir_header()` genera Calibracion.h y este sketch lo toma si está.
-#if defined(__has_include)
-#  if __has_include("Calibracion.h")
-#    include "Calibracion.h"
-#    define TIENE_CALIBRACION 1
-#  endif
-#endif
+// que ninguna.
 
 // --------------------------------------------------------------------- tablas
 
@@ -360,11 +353,6 @@ void setup()
 
     // El actuador: ENA abierto y las dos entradas de sentido en bajo.
     g_motor.begin();
-
-#ifdef TIENE_CALIBRACION
-    memcpy_P(g_lut.entry, CAL_LUT, sizeof(g_lut.entry));
-    g_cal = 1;
-#endif
 
     CtrlLink::set_id(F("Banco"));
     CtrlLink::begin(BAUD,
