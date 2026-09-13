@@ -108,11 +108,15 @@ def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=1):
     w = np.diff(theta) / dt
     n = max(1, int(round(ventana / dt)))
     if n > 1:
-        # Los extremos se rellenan con el valor del borde y no con ceros: un
-        # promedio contra ceros hunde las puntas de la serie, y las puntas son
-        # justo de donde salen los regímenes de un escalón.
-        pad = np.pad(w, (n // 2, n - 1 - n // 2), mode='edge')
-        w = np.convolve(pad, np.ones(n) / n, mode='valid')
+        # En los extremos la ventana se achica a las muestras que hay. Ni ceros
+        # --hunden las puntas, y de ahí salen los regímenes de un escalón-- ni
+        # repetir la primera derivada, que es una sola muestra con todo su ruido y
+        # con una ventana larga termina pesando en decenas de filas.
+        suma = np.concatenate([[0.0], np.cumsum(w)])
+        k = np.arange(len(w))
+        desde = np.clip(k - n // 2, 0, len(w))
+        hasta = np.clip(k - n // 2 + n, 0, len(w))
+        w = (suma[hasta] - suma[desde]) / (hasta - desde)
     return t[1:], w
 
 
