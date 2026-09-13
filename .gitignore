@@ -20,3 +20,6 @@ libraries/*/test/test
 # Las mediciones que deja cada ensayo. Son datos de un banco concreto, no del
 # proyecto: cada uno guarda los suyos.
 notebooks/datos/
+
+# Lo que arma herramientas/empaquetar_tp2.py.
+dist/

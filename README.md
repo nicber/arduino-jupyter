@@ -236,7 +236,11 @@ git clone --recurse-submodules https://github.com/nicber/arduino-jupyter.git
 cd arduino-jupyter
 ```
 
-No sirve el botón *Download ZIP* de GitHub: el ZIP no trae la biblioteca `nI2C`,
+**Si la cátedra entregó `arduino-jupyter-tp2.zip`**, en lugar de lo de arriba alcanza
+con descomprimirlo en `C:\envs`, de modo que quede `C:\envs\arduino-jupyter`, y
+después `cd C:\envs\arduino-jupyter`. El zip trae todo lo necesario para el TP2.
+
+No sirve el botón *Download ZIP* de GitHub: ese ZIP no trae la biblioteca `nI2C`,
 y sin ella no compila nada. Si el proyecto ya se había descargado sin
 `--recurse-submodules`, se completa entrando a la carpeta y corriendo
 `git submodule update --init`.
@@ -244,11 +248,14 @@ y sin ella no compila nada. Si el proyecto ya se había descargado sin
 ### 5. Probar la instalación, sin la placa
 
 ```bash
-python python\test_ctrllink.py
+python herramientas\verificar.py
 ```
 
-Tiene que terminar con `0 falla(s)`. Si dice `ModuleNotFoundError`, el entorno no
-está activado: volver al paso 3.
+Verifica que estén todos los paquetes, que el programa de la placa compile (no
+graba nada), que pasen las pruebas de Python y que los notebooks corran contra el
+banco simulado. La primera vez tarda un par de minutos. Tiene que terminar con
+`las ... verificaciones pasaron`; si algo falla, dice qué. Si dice que faltan
+paquetes, el entorno no está activado: volver al paso 3.
 
 ### 6. Abrir el notebook
 
@@ -447,6 +454,9 @@ python/test_*.py         pruebas, no necesitan hardware ni compilar
                          (test_notebooks.py además corre los notebooks simulados)
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/               los notebooks: hardware y calibración
+herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
+herramientas/empaquetar_tp2.py   arma dist/arduino-jupyter-tp2.zip, lo necesario para el TP2
+dyc.yml                  el entorno de conda del curso
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
 ```
