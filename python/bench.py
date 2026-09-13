@@ -48,9 +48,12 @@ UPLOAD_FQBNS = [
 ]
 
 _HERE     = Path(__file__).resolve().parent.parent
-SKETCH    = _HERE / 'Banco'
 LIBRARIES = _HERE / 'libraries'
 BUILD_DIR = _HERE / 'build'
+
+# El sketch que se graba si no se pide otro. `sync_board(sketch=...)` acepta el
+# nombre de una carpeta del repositorio --'Banco', 'ControlDemo'-- o una ruta.
+SKETCH    = _HERE / 'Banco'
 
 # La calibración del sensor de este banco. No entra en el repositorio --es un dato
 # del banco y no del proyecto-- y la ruta se resuelve desde este archivo, así que
@@ -470,7 +473,23 @@ class Bench:
 
 # ------------------------------------------------------- compilación y carga
 
-def _sources_hash():
+def _sketch_dir(sketch=None):
+    """La carpeta del sketch: `SKETCH` si no se pide otro, una carpeta del
+    repositorio si se da un nombre, o la ruta tal cual si se da una ruta.
+    """
+    if sketch is None:
+        ruta = SKETCH
+    elif isinstance(sketch, Path) or '/' in sketch or '\\' in sketch:
+        ruta = Path(sketch).resolve()
+    else:
+        ruta = _HERE / sketch
+
+    if not (ruta / f'{ruta.name}.ino').exists():
+        raise ValueError(f'no hay ningun sketch en {ruta}: falta {ruta.name}.ino')
+    return ruta
+
+
+def _sources_hash(sketch):
     """Huella digital de todo aquello a partir de lo cual se construye el sketch.
 
     Por contenido y no por marca de tiempo: un checkout de git reescribe las
@@ -481,7 +500,7 @@ def _sources_hash():
     """
     digest = hashlib.sha256()
     digest.update(repr(BUILD_PROPERTIES).encode())
-    files = sorted(list(SKETCH.glob('*.ino')) + list(SKETCH.glob('*.h')) +
+    files = sorted(list(sketch.glob('*.ino')) + list(sketch.glob('*.h')) +
                    [p for p in LIBRARIES.rglob('*') if p.suffix in ('.h', '.cpp', '.c')])
     for path in files:
         digest.update(path.name.encode())
@@ -527,7 +546,7 @@ def _save_state(state):
     (BUILD_DIR / 'sync-state.json').write_text(json.dumps(state, indent=1))
 
 
-def _upload(port, state, say):
+def _upload(port, state, say, sketch, build):
     """Carga el binario, averiguando sola con qué bootloader habla esta placa.
 
     Devuelve el FQBN que anduvo, y lo deja anotado en el estado para la próxima
@@ -546,7 +565,7 @@ def _upload(port, state, say):
                 f'{nombre} ...')
         try:
             _run(['arduino-cli', 'upload', '--fqbn', fqbn, '-p', port,
-                  '--input-dir', str(BUILD_DIR), str(SKETCH)], 'cargar')
+                  '--input-dir', str(build), str(sketch)], 'cargar')
         except RuntimeError as exc:
             fallas.append((fqbn, exc))
             continue
@@ -582,7 +601,8 @@ def _wait_for_port(hint=None, timeout=2.0):
             time.sleep(0.3)
 
 
-def sync_board(port=None, force_compile=False, force_upload=False, verbose=True):
+def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
+               sketch=None):
     """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
 
     Compila sólo cuando algún archivo fuente cambió de verdad, carga sólo cuando
@@ -592,6 +612,10 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
     motivo de llamarlo al principio de cada celda.
 
     force_compile y force_upload saltean cada uno su propia verificación.
+
+    `sketch` elige qué se graba: el nombre de una carpeta del repositorio
+    --'ControlDemo'-- o una ruta. Por omisión `SKETCH`. Cada sketch compila en su
+    propia carpeta de `build/`, así que alternar entre dos no recompila ninguno.
     """
     global _link
 
@@ -599,23 +623,32 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         if verbose:
             print(message)
 
+    sketch = _sketch_dir(sketch)
+    build = BUILD_DIR / sketch.name
+
     state = _load_state()
-    hex_file = BUILD_DIR / f'{SKETCH.name}.ino.hex'
-    sources = _sources_hash()
+    hex_file = build / f'{sketch.name}.ino.hex'
+    sources = _sources_hash(sketch)
     notes = []
 
-    if force_compile or not hex_file.exists() or state.get('sources') != sources:
+    # Antes había una sola huella para un solo sketch; un estado de entonces se
+    # descarta y cuesta una compilación.
+    if not isinstance(state.get('sources'), dict):
+        state['sources'] = {}
+
+    if (force_compile or not hex_file.exists()
+            or state['sources'].get(sketch.name) != sources):
         build_flags = []
         for prop in BUILD_PROPERTIES:
             build_flags += ['--build-property', prop]
 
         _run(['arduino-cli', 'compile', '--fqbn', FQBN,
               '--libraries', str(LIBRARIES),
-              '--build-path', str(BUILD_DIR)] +
+              '--build-path', str(build)] +
              build_flags +
-             [str(SKETCH)], 'compilar')
+             [str(sketch)], 'compilar')
         notes.append('compilado')
-        state['sources'] = sources
+        state['sources'][sketch.name] = sources
         _save_state(state)
 
     binary = hashlib.sha256(hex_file.read_bytes()).hexdigest()
@@ -637,7 +670,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True)
         if _link is not None:
             _link.close()
             _link = None
-        perfil = _upload(port, state, say)
+        perfil = _upload(port, state, say, sketch, build)
         notes.append('cargado' if perfil == UPLOAD_FQBNS[0][0] else
                      f'cargado como {dict(UPLOAD_FQBNS)[perfil]}')
         uploaded[port] = binary
