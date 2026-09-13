@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -508,6 +510,32 @@ def _sources_hash(sketch):
     return digest.hexdigest()
 
 
+def _arduino_cli():
+    """La ruta del Arduino CLI: el del PATH si hay uno, y si no el que trae el IDE.
+
+    El IDE 2 compila con un arduino-cli propio, guardado adentro de su instalación
+    y fuera del PATH. Buscarlo ahí es lo que permite que alcance con instalar el
+    IDE, sin tocar variables de entorno. Los dos comparten los cores instalados,
+    así que el core de AVR que baja el IDE sirve igual.
+    """
+    found = shutil.which('arduino-cli')
+    if found:
+        return found
+
+    backend = Path('resources', 'app', 'lib', 'backend', 'resources')
+    candidates = [Path('/Applications/Arduino IDE.app/Contents/Resources/app/lib/'
+                       'backend/resources/arduino-cli')]
+    for var, sub in (('LOCALAPPDATA', Path('Programs', 'arduino-ide')),
+                     ('ProgramFiles', Path('Arduino IDE'))):
+        if os.environ.get(var):
+            candidates.append(Path(os.environ[var]) / sub / backend / 'arduino-cli.exe')
+
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return 'arduino-cli'        # que _run() explique que no está
+
+
 def _run(argv, what):
     """Corre una herramienta de compilación y devuelve su salida, o explica por qué no pudo.
 
@@ -521,16 +549,20 @@ def _run(argv, what):
                               encoding='utf-8', errors='replace')
     except FileNotFoundError:
         raise RuntimeError(
-            f'{argv[0]} no se encontro en el PATH, asi que no se puede {what} el '
-            f'sketch.\n'
-            f'Instalar el Arduino CLI y asegurarse de que la terminal que arranco '
-            f'este kernel lo vea: en Windows eso normalmente significa reabrir la '
-            f'terminal despues de instalarlo, porque el PATH se lee una sola vez '
+            f'no se encontro arduino-cli, asi que no se puede {what} el sketch.\n'
+            f'Instalar el Arduino IDE (https://www.arduino.cc/en/software) y abrirlo '
+            f'una vez. Si esta instalado en un lugar poco comun, instalar tambien el '
+            f'Arduino CLI y reiniciar el editor, porque el PATH se lee una sola vez '
             f'al arrancar.'
         ) from None
 
     if done.returncode:
-        raise RuntimeError(f'fallo al {what}:\n{(done.stdout + done.stderr).strip()}')
+        output = (done.stdout + done.stderr).strip()
+        if 'platform not installed' in output:
+            output += ('\n\nFalta el soporte para placas AVR. Abrir el Arduino IDE, '
+                       'ir a Herramientas > Placa > Gestor de placas, buscar '
+                       '"Arduino AVR Boards" e instalarlo.')
+        raise RuntimeError(f'fallo al {what}:\n{output}')
     return done.stdout + done.stderr
 
 
@@ -564,7 +596,7 @@ def _upload(port, state, say, sketch, build):
             say(f'  no era {dict(UPLOAD_FQBNS)[fallas[-1][0]]}; probando '
                 f'{nombre} ...')
         try:
-            _run(['arduino-cli', 'upload', '--fqbn', fqbn, '-p', port,
+            _run([_arduino_cli(), 'upload', '--fqbn', fqbn, '-p', port,
                   '--input-dir', str(build), str(sketch)], 'cargar')
         except RuntimeError as exc:
             fallas.append((fqbn, exc))
@@ -642,7 +674,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
         for prop in BUILD_PROPERTIES:
             build_flags += ['--build-property', prop]
 
-        _run(['arduino-cli', 'compile', '--fqbn', FQBN,
+        _run([_arduino_cli(), 'compile', '--fqbn', FQBN,
               '--libraries', str(LIBRARIES),
               '--build-path', str(build)] +
              build_flags +

@@ -113,11 +113,12 @@ informa `sensor: no contesta`.
 
 ### Software
 
-- [Arduino CLI](https://arduino.github.io/arduino-cli/) en el `PATH`, con el core
-  de AVR: `arduino-cli core install arduino:avr`
-- Python 3.9 o posterior
+- El [Arduino IDE 2](https://www.arduino.cc/en/software), con el soporte para
+  placas AVR. El notebook compila y graba solo con el compilador que trae el IDE,
+  así que el IDE hace falta instalado pero no abierto.
+- El entorno de conda **`dyc`** del curso, más `git`.
 
-No hace falta el IDE de Arduino: el notebook compila y graba solo.
+Cómo instalar las dos cosas está en [*Puesta en marcha*](#puesta-en-marcha).
 
 ### Clones del UNO
 
@@ -150,68 +151,148 @@ registros que sí lo hacen, para que Vcc sea Vcc en las dos.
 
 ## Puesta en marcha
 
-**1. Clonar, con los submódulos.** La biblioteca I2C `nI2C` es un submódulo, y sin
-ella no compila nada:
+Esta guía está pensada para quien nunca usó una terminal, git ni un Arduino. Se
+probó en Windows 11 con Miniforge, el Arduino IDE 2.3 y un clon del UNO con
+LGT8F328P. Supone que Miniforge (o Miniconda, o Anaconda: los comandos son los
+mismos) ya está instalado.
 
+Se hace una sola vez. Lleva unos veinte minutos, casi todos de descarga.
+
+### 1. Instalar el Arduino IDE
+
+1. Descargarlo de <https://www.arduino.cc/en/software> (*Windows, Win 10 and
+   newer, 64 bits*) e instalarlo con las opciones que vienen marcadas.
+2. Abrirlo una vez. La primera vez descarga sus herramientas y suele ofrecer
+   instalar **Arduino AVR Boards** y algunos drivers: aceptar todo.
+3. Verificar que quedó el soporte para el UNO: menú **Herramientas → Placa →
+   Gestor de placas**, buscar `Arduino AVR Boards` y, si dice *Instalar*,
+   instalarlo.
+4. Enchufar la placa por USB y mirar **Herramientas → Puerto**: tiene que aparecer
+   un `COM3`, `COM4` o parecido. Si no aparece nada, ver *Problemas frecuentes*
+   más abajo.
+5. **Cerrar el IDE.** El notebook usa el mismo puerto, y un puerto serie sólo lo
+   puede tener abierto un programa a la vez.
+
+No hace falta tocar el `PATH` ni instalar nada más de Arduino.
+
+### 2. Crear el entorno `dyc`
+
+Todos los comandos que siguen se escriben en el **Miniforge Prompt** (o
+*Anaconda Prompt*), que se encuentra escribiendo `miniforge` en el menú Inicio.
+Cada línea se escribe y se confirma con Enter.
+
+El entorno se crea en `C:\envs\dyc` y no en la carpeta del usuario, a propósito:
+si el nombre de usuario de Windows tiene espacios o acentos --`C:\Users\Juan
+Pérez`--, algunas herramientas fallan con rutas así.
+
+La lista de paquetes del entorno está en [`dyc.yml`](dyc.yml), en este
+repositorio. La primera línea la descarga a *Descargas*, y la segunda crea el
+entorno a partir de ella:
+
+```bash
+curl -L -o "%USERPROFILE%\Downloads\dyc.yml" https://raw.githubusercontent.com/nicber/arduino-jupyter/main/dyc.yml
+conda env create -f "%USERPROFILE%\Downloads\dyc.yml" -p C:\envs\dyc
 ```
-git clone --recurse-submodules git@github.com:nicber/arduino-jupyter.git
+
+Las comillas van: son las que hacen que funcione aunque el nombre de usuario
+tenga espacios. Tarda varios minutos. Si el entorno ya se había creado antes,
+este paso se saltea.
+
+### 3. Activar el entorno e instalar `git`
+
+```bash
+conda activate C:\envs\dyc
+conda install -c conda-forge git
+```
+
+Cuando pregunte `Proceed ([y]/n)?`, escribir `y` y Enter. `git` es lo único que
+le falta a `dyc` para este proyecto, y sirve para descargarlo en el paso
+siguiente.
+
+Después de `conda activate`, la línea empieza con `(C:\envs\dyc)`. **Si no
+empieza así, el entorno no está activado**, y lo que se instale o se corra va a
+parar a otro Python. `conda activate C:\envs\dyc` hay que repetirlo cada vez que
+se abre el Miniforge Prompt.
+
+### 4. Descargar el proyecto
+
+Esto lo baja a `C:\envs`, al lado del entorno, también fuera de la carpeta del
+usuario:
+
+```bash
+cd C:\envs
+git clone --recurse-submodules https://github.com/nicber/arduino-jupyter.git
 cd arduino-jupyter
 ```
 
-Si el repositorio ya estaba clonado sin submódulos:
+No sirve el botón *Download ZIP* de GitHub: el ZIP no trae la biblioteca `nI2C`,
+y sin ella no compila nada. Si el proyecto ya se había descargado sin
+`--recurse-submodules`, se completa entrando a la carpeta y corriendo
 `git submodule update --init`.
 
-**2. Armar el entorno de Python.**
+### 5. Probar la instalación, sin la placa
 
-```
-python3 -m venv .venv
-./.venv/bin/pip install -r python/requirements.txt jupyterlab ipykernel
-./.venv/bin/python -m ipykernel install --user --name arduino-control \
-    --display-name "Arduino Control (.venv)"
+```bash
+python python\test_ctrllink.py
 ```
 
-En Windows, las mismas líneas con `.venv\Scripts\pip` y `.venv\Scripts\python`.
+Tiene que terminar con `0 falla(s)`. Si dice `ModuleNotFoundError`, el entorno no
+está activado: volver al paso 3.
 
-**3. Probar sin placa.** Las pruebas del lado computadora corren contra una
-simulación del dispositivo fiel byte a byte, así que no hace falta hardware para
-verificar que la instalación quedó bien:
+### 6. Abrir el notebook
 
-```
-./.venv/bin/python python/test_ctrllink.py
-```
+Cada vez que se quiera trabajar, en un Miniforge Prompt nuevo:
 
-**4. Verificar el sensor**, antes de meter el motor en el medio. Se graba el
-sketch de puesta en marcha y se abre el monitor serie a **115200**:
-
-```
-arduino-cli compile -b arduino:avr:uno --libraries ./libraries AS5600_Bringup
-arduino-cli upload  -b arduino:avr:uno --libraries ./libraries -p <puerto> AS5600_Bringup
+```bash
+conda activate C:\envs\dyc
+cd C:\envs\arduino-jupyter
+jupyter lab notebooks\hardware.ipynb
 ```
 
-Vuelca la configuración del AS5600 y después el ángulo a 5 Hz. Lo que hay que
-mirar es `STATUS=[MD -- --]`, que es imán detectado y AGC en rango, y que el
-ángulo siga al imán al girarlo. `AS5600_Loop5k` es el paso siguiente y opcional:
-muestrea a 5 kHz e informa la frecuencia efectiva. `Puente_Bringup` hace lo propio
-con el actuador, sin usar el sensor.
+Se abre JupyterLab en el navegador. **La ventana negra del Miniforge Prompt tiene
+que quedar abierta** mientras se usa: cerrarla cierra Jupyter.
 
-**5. Abrir el notebook.**
+### 7. Correr el notebook con la placa
 
-```
-./.venv/bin/jupyter lab notebooks/hardware.ipynb
-```
+Enchufar la placa y correr las celdas **en orden**, de arriba hacia abajo
+(Shift+Enter corre una celda y pasa a la siguiente). La primera celda:
 
-Corre igual sin la placa: si no encuentra el banco cae en uno simulado y lo
-dice, así que sirve para mostrarlo en clase con el cable desenchufado.
+- **verifica el entorno**: si falta algún paquete, avisa cuál y casi siempre
+  quiere decir que Jupyter se abrió sin activar `dyc` (volver al paso 6);
+- **compila** el programa de la placa, lo que la primera vez tarda uno o dos
+  minutos;
+- lo **graba** en la placa, sin que haga falta elegir el puerto;
+- y se conecta. Si todo anduvo, dice algo como
+  `COM3: CtrlLink 1 Banco ...  (compilado, cargado como clon con bootloader viejo)`.
 
-Elegir el kernel *Arduino Control (.venv)* y correr las celdas en orden. La
-primera compila y graba `Banco` sola; la placa se encuentra sin nombrar ningún
-puerto. `dev.bringup()` verifica el equipo subsistema por subsistema y es lo que
-conviene correr ante cualquier duda.
+Con un clon, que la primera grabación tarde medio minuto más es normal: prueba
+primero como UNO original y después como clon, y a partir de ahí recuerda cuál
+anduvo. El aviso `sin calibracion del sensor` también es normal.
 
-`sync_board()` recompila si se editó el sketch, graba si cambió el binario y
-reabre el enlace, lo que resetea la placa. Ese reset devuelve la placa a los
-valores del sketch; lo que no es genérico --la calibración del sensor-- lo
-repone la computadora; ver *Calibrar el sensor*.
+Sin la placa enchufada el notebook también corre, sobre un banco simulado, y lo
+dice en la primera celda.
+
+`dev.bringup()` verifica el equipo parte por parte, y es lo que conviene correr
+ante cualquier duda. Cada vez que se conecta, `sync_board()` recompila si se editó
+el sketch, graba si cambió el binario y reabre el enlace, lo que resetea la placa
+a los valores del sketch; la calibración del sensor la repone la computadora (ver
+*Calibrar el sensor*).
+
+> ⚠️ **Varias celdas hacen girar el motor.** Antes de correrlas, revisar que el
+> eje esté libre y que no haya nada cerca.
+
+### Problemas frecuentes
+
+| Qué pasa | Qué hacer |
+|---|---|
+| La primera celda dice `Faltan paquetes` | Jupyter se abrió sin activar el entorno. Cerrar JupyterLab y el Miniforge Prompt, y repetir el paso 6. El mensaje dice con qué Python está corriendo: tiene que ser `C:\envs\dyc\python.exe` |
+| `conda activate` dice que el entorno no existe | Falta el paso 2, o se creó en otro lugar. `conda env list` muestra dónde están los entornos |
+| La placa no aparece en **Herramientas → Puerto** del IDE | Probar otro cable: muchos cables USB sólo dan alimentación y no llevan datos. Si la placa tiene un chip CH340 (dice *CH340* cerca del USB), instalar su driver desde <https://www.wch-ic.com/downloads/CH341SER_EXE.html> y reenchufar |
+| «no se pudo abrir el puerto» | Otro programa lo tiene abierto: el Monitor Serie del IDE, el IDE mismo, u otro notebook. Cerrarlos, o reiniciar el kernel (menú **Kernel → Restart Kernel**) |
+| «Falta el soporte para placas AVR» | Hacer el paso 1.3: instalar *Arduino AVR Boards* desde el Gestor de placas del IDE |
+| «no se encontro arduino-cli» | El IDE no está instalado, o se instaló en una carpeta poco común. Reinstalarlo con las opciones por omisión |
+| «se encontraron varios puertos serie USB» | Hay más de una placa, o algún otro aparato USB-serie, enchufado. Desenchufar lo que sobra |
+| Un gráfico tira un error sobre DLL, o el kernel se muere sin avisar | El Python de `dyc` se está usando sin activar el entorno. Repetir el paso 6 |
 
 ---
 
@@ -279,7 +360,8 @@ identificaría después como un tiempo muerto del motor.
 
 | Síntoma | Dónde mirar |
 |---|---|
-| `sync_board()` no encuentra `arduino-cli` | está en el `PATH`? En Windows hay que reabrir la terminal después de instalarlo: el `PATH` se lee una sola vez al arrancar |
+| `sync_board()` no encuentra `arduino-cli` | busca primero en el `PATH` y después adentro del Arduino IDE 2, instalado en su lugar por omisión. Reinstalar el IDE con las opciones por omisión |
+| la primera celda dice `Faltan paquetes` | el kernel no es el entorno `dyc`; el mensaje dice cuál es. Ver el paso 6 de *Puesta en marcha* |
 | «no se pudo abrir el puerto» | algo más lo tiene tomado: el monitor serie del IDE, o un kernel de una sesión anterior. Un puerto serie es exclusivo |
 | «no se encontro ningun puerto serie USB» | placa desenchufada, o cable de sólo alimentación |
 | el monitor serie muestra basura, o `sync_board()` no encuentra el sketch que acaba de grabar | la placa no está corriendo a 16 MHz. Los sketches lo corrigen solos al arrancar; si el sketch grabado es de antes de eso, recompilar |
@@ -347,6 +429,7 @@ python/bench.py          compilación, conexión y verificación de este equipo
 python/ensayo.py         esperar al eje, la velocidad, las unidades y el archivo
 python/catalogo.py       qué significa cada parámetro, y cómo mostrarlo
 python/calib.py          calibración del AS5600: medición, decisión y tabla
+python/entorno.py        que el notebook corra en el entorno dyc, y qué hacer si no
 python/banco_simulado.py un banco de mentira que sigue al de verdad, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware ni compilar

@@ -1,0 +1,26 @@
+name: dyc
+channels:
+  - conda-forge
+dependencies:
+  - bokeh
+  - control
+  - ipympl
+  - jupyterlab
+  - jupytext
+  - jupyter_bokeh
+  - jupyterlab_launcher
+  - matplotlib
+  - myst-nb
+  - numpy
+  - pandas
+  - pip
+  - pylint
+  - pyserial
+  - python
+  - scipy
+  - slycot
+  - sphinx
+  - sympy
+  - pip:
+    - jupyter-http-over-ws
+    - tclab
