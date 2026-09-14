@@ -120,8 +120,7 @@ inline uint16_t adc_full_scale()
 // una de las dos en volts-- hay que medirla una vez con un tester, porque acá
 // adentro no hay ninguna tensión conocida contra la cual calibrar.
 //
-// Con AVcc medido, la referencia interna vale AVcc * cuentas / fondo de escala, y
-// ese número es el que va en ADC_REF_MV. El error de ganancia que corrige no es
+// Con AVcc medido, la referencia interna vale AVcc * cuentas / fondo de escala. El error de ganancia que corrige no es
 // chico: el bandgap está especificado entre 1,0 y 1,2 V, o sea +/-10 % de chip a
 // chip, y va derecho a los miliamperes que se informan.
 //
@@ -136,7 +135,8 @@ inline uint16_t adc_full_scale()
 //
 // La referencia del clon se resuelve con el core lgt8fx, que la declara por
 // nombre (INTERNAL1V024, INTERNAL2V048, INTERNAL4V096) en lugar de dejarla
-// adivinar. Ver el comentario de ADC_REF_MV en ControlDemo.ino.
+// adivinar. Ningún sketch mide la corriente contra una referencia interna: ver
+// Sense/RowAdc.h.
 inline uint16_t adc_bandgap()
 {
     return adc_once(_BV(REFS0) | 0x0E);

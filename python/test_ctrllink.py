@@ -437,6 +437,20 @@ check('el promedio no cambia una velocidad constante',
 check('el promedio es centrado: una rampa de velocidad no se atrasa',
       abs(ensayo.velocidad(pd.DataFrame({'t': _t, 'y_uw': 360.0 * _t ** 2}),
                            ventana=0.05)[1][250] - 2 * np.pi * 2 * _tv[250]) < 0.05)
+_rampa = pd.DataFrame({'t': _t, 'y_uw': np.rad2deg(50.0 * _t ** 2)})
+_tr, _wr = ensayo.velocidad(_rampa, ventana=0)
+check('la diferencia central no atrasa: en una rampa de velocidad da 2at en t',
+      np.allclose(_wr[:-1], 100.0 * _tr[:-1]), str(np.abs(_wr[:-1] - 100.0 * _tr[:-1]).max()))
+_hueco = _rampa.drop(index=300).reset_index(drop=True)
+_th, _wh = ensayo.velocidad(_hueco, ventana=0)
+check('una fila perdida no se convierte en un pico: se divide por el tiempo real',
+      np.abs(_wh[5:-5] - 100.0 * _th[5:-5]).max() < 0.2)
+import warnings as _warnings
+with _warnings.catch_warnings(record=True) as _avisos:
+    _warnings.simplefilter('always')
+    _v1 = ensayo.normalizar(_df.assign(y_uw=-_df['y_uw']), ventana=0, signo_banco=-1)
+check('signo_banco de la v1 se acepta, avisando, y se aplica',
+      any(a.category is FutureWarning for a in _avisos) and np.allclose(_v1['omega'], 2 * np.pi))
 _df['y_uw'] = -_df['y_uw']
 _n = ensayo.normalizar(_df, ventana=0)
 check('normalizar no toca el signo: ya viene resuelto de la placa',

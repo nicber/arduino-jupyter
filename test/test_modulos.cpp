@@ -171,6 +171,17 @@ int main()
     check_eq(lazo.track.y_uw, -100, "y cien cuentas mas del iman son cien menos del eje");
     check_eq(lazo.y_uwf, -100, "sin set_alpha() el filtro deja pasar la posicion");
 
+    // Con el ángulo ya desenrollado, un período del lazo puede abarcar varias vueltas
+    // sin que se pierdan: update() desenrollaría media vuelta como mucho.
+    LoopAngle<4096> rapido;
+    rapido.offset = 1000;
+    rapido.update_unwrapped(1000);
+    check_eq(rapido.track.y_uw, 0, "desenrollado afuera: la cuenta de offset es cero");
+    rapido.update_unwrapped(1000 + 3 * 4096 + 100);
+    check_eq(rapido.track.y_uw, -(3L * 4096 + 100),
+             "y tres vueltas en un periodo son tres vueltas, con el signo del eje");
+    check_eq(rapido.track.y, -100, "adentro de la vuelta, las mismas cien cuentas");
+
     lazo.set_alpha(LoopAngle<4096>::Alpha::from_float(0.1f));
     lazo.update(1000);
     check(lazo.y_uwf < -50, "y con alpha chico la posicion filtrada llega despues");

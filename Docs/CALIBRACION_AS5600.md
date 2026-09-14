@@ -222,7 +222,7 @@ ondulación de conmutación sí existe.
 
 Restricción de muestreo: a 500 Hz de telemetría hacen falta al menos 40 muestras
 por vuelta para el octavo armónico con margen, o sea `ω ≤ 12,5 rev/s`. Si el
-motor no baja de ahí, poner `loop_div = 5` (1 kHz) y sacar canales de la tabla
+motor no baja de ahí, poner `loop_div = 5` (filas a 1 kHz) y sacar canales de la tabla
 para que la fila entre en el enlace.
 
 > **G1 — ¿hay algo que corregir?** Si la suma de los armónicos aceptados da menos

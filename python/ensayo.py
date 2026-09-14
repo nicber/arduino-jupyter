@@ -20,6 +20,7 @@ segundos, por ciento de PWM, radianes, radianes por segundo y amperes. Es lo que
 espera cualquier herramienta de identificación, y lo que se puede leer dentro de
 un año sin acordarse de nada de esto.
 """
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -69,29 +70,55 @@ def esperar_quieto(dev, quieto=0.5, ventana=0.3, limite=60.0):
             return esperado
 
 
-def velocidad(df, ventana=0.02, canal='y_uw'):
+def _signo_viejo(signo_banco, funcion):
+    """El signo_banco de la v1: se acepta, avisando, para que el código viejo corra."""
+    if signo_banco is None:
+        return 1
+    warnings.warn(
+        f'{funcion}(signo_banco=...) es de la v1 del banco y ya no hace falta: la '
+        f'placa publica el angulo con el signo del banco (ang_inv, que mide '
+        f'bringup()). Se aplica igual, pero con signo_banco={signo_banco} y la placa '
+        f'ya corregida el angulo queda dado vuelta dos veces. Sacarlo.',
+        FutureWarning, stacklevel=3)
+    return signo_banco
+
+
+def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=None):
     """(t, omega): radianes por segundo, derivando el ángulo y promediando.
 
-    La derivada es la diferencia hacia atrás dividida por el período, que es lo
-    que uno escribiría en un microcontrolador. Después se promedia sobre
-    `ventana` segundos, con un promedio móvil centrado: no atrasa la señal --un
-    filtro causal atrasaría, y ese atraso se confundiría con un tiempo muerto del
-    motor-- pero sí redondea las esquinas de un escalón, así que la ventana tiene
-    que ser corta contra la constante de tiempo que se quiere ver. Y no es
-    causal: sirve para procesar una captura, no para un lazo.
+    La derivada es la diferencia central, (theta[k+1] - theta[k-1]) dividida por
+    el tiempo real entre esas dos filas, y va asignada a t[k]: no atrasa, y una
+    fila perdida no se convierte en un pico. Después se promedia sobre `ventana`
+    segundos, con un promedio móvil centrado de un número impar de muestras: no
+    atrasa la señal --un filtro causal atrasaría, y ese atraso se confundiría con
+    un tiempo muerto del motor-- pero sí redondea las esquinas de un escalón, así
+    que la ventana tiene que ser corta contra la constante de tiempo que se quiere
+    ver. Y no es causal: sirve para procesar una captura, no para un lazo.
 
     Con `ventana = 0` no se promedia, y se ve la cuantización desnuda: una cuenta
-    del sensor por período, a 500 Hz, son 0,77 rad/s. Devuelve una muestra menos
-    que la captura.
+    del sensor en dos períodos, a 500 Hz, son 0,38 rad/s. Devuelve una muestra
+    menos que la captura, alineada con t[1:]; en la última fila, que no tiene
+    siguiente, la diferencia es hacia atrás.
 
     El signo ya viene resuelto de la placa: un comando positivo sube el ángulo.
-    Ver `bringup()`.
+    Ver `bringup()`. `signo_banco` es de la v1 y se acepta con un aviso.
+
+    Cambio respecto de la v1: la v1 derivaba hacia atrás y dividía por el período
+    típico, así que la velocidad salía atrasada una muestra (2 ms a 500 Hz).
     """
     t = df['t'].to_numpy(dtype=float)
-    theta = np.deg2rad(df[canal].to_numpy(dtype=float))
-    dt = _dt(t)
-    w = np.diff(theta) / dt
-    n = max(1, int(round(ventana / dt)))
+    theta = _signo_viejo(signo_banco, 'velocidad') * np.deg2rad(df[canal].to_numpy(dtype=float))
+
+    if len(t) < 2:
+        return t[1:], np.zeros(0)
+
+    w = np.empty(len(t) - 1)
+    if len(t) > 2:
+        w[:-1] = (theta[2:] - theta[:-2]) / (t[2:] - t[:-2])
+    w[-1] = (theta[-1] - theta[-2]) / (t[-1] - t[-2])
+
+    n = max(1, int(round(ventana / _dt(t))))
+    n += (n + 1) % 2                                    # impar: centrado de verdad
     if n > 1:
         # En los extremos la ventana se achica a las muestras que hay. Ni ceros
         # --hunden las puntas, y de ahí salen los regímenes de un escalón-- ni
@@ -100,19 +127,23 @@ def velocidad(df, ventana=0.02, canal='y_uw'):
         suma = np.concatenate([[0.0], np.cumsum(w)])
         k = np.arange(len(w))
         desde = np.clip(k - n // 2, 0, len(w))
-        hasta = np.clip(k - n // 2 + n, 0, len(w))
+        hasta = np.clip(k + n // 2 + 1, 0, len(w))
         w = (suma[hasta] - suma[desde]) / (hasta - desde)
     return t[1:], w
 
 
-def normalizar(df, ventana=0.02):
+def normalizar(df, ventana=0.02, signo_banco=None):
     """La captura en las unidades de un modelo: t [s], u [%], theta [rad], omega [rad/s], i [A].
 
     La velocidad sale de `velocidad()` con la misma `ventana`, y la primera fila
-    --que no tiene velocidad-- se descarta.
+    --que no tiene velocidad-- se descarta. `signo_banco` es de la v1 y se acepta
+    con un aviso.
     """
-    t, w = velocidad(df, ventana=ventana)
-    theta = np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
+    signo = _signo_viejo(signo_banco, 'normalizar')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', FutureWarning)
+        t, w = velocidad(df, ventana=ventana, signo_banco=signo_banco)
+    theta = signo * np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
 
     return pd.DataFrame({
         't':     t,
@@ -123,14 +154,15 @@ def normalizar(df, ventana=0.02):
     })
 
 
-def guardar(df, ruta, ventana=0.02):
+def guardar(df, ruta, ventana=0.02, signo_banco=None):
     """Escribe la captura como CSV con las columnas de `normalizar()`. Devuelve la ruta.
 
     Una captura que ya está normalizada --tiene `omega`-- se escribe tal cual.
     """
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    datos = df if 'omega' in df else normalizar(df, ventana=ventana)
+    datos = df if 'omega' in df else normalizar(df, ventana=ventana,
+                                                 signo_banco=signo_banco)
     datos[COLUMNAS].to_csv(ruta, index=False, float_format='%.6g')
     return ruta
 

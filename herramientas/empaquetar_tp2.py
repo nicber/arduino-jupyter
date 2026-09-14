@@ -30,6 +30,9 @@ INCLUIR = [
     'Banco/',                       # el sketch que graba el notebook
     'AS5600_Bringup/',              # verificación del sensor, si algo falla
     'Puente_Bringup/',              # verificación del actuador, si algo falla
+    'AdcFase/',                     # el experimento de la medición de corriente,
+    'herramientas/adc_fase.py',     # que el README cita como fuente de los números
+    'test/',                        # las pruebas de los módulos, que corre tasks.json
     'libraries/',
     'python/',
     'notebooks/hardware.ipynb',

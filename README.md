@@ -34,14 +34,38 @@ Lo que recorre `notebooks/hardware.ipynb`:
 La identificación en sí --el modelo, el ajuste, la validación-- es el trabajo del
 TP y no está en el notebook.
 
-En la placa no hay ley de control ni filtros: el comando va derecho al actuador y
-el ángulo vuelve tal como lo entregó el sensor. Todo lo que se hace con la
-medición --derivar, filtrar, ajustar-- pasa del lado de la computadora, donde se
-ve y se puede cambiar. Un filtro en la placa se confunde con la planta que se está
-midiendo, y por eso no hay ninguno. Lo único que la placa sabe del cableado es lo
+En la placa no hay ley de control, y el ángulo no tiene ningún filtro: el comando
+va derecho al actuador y el ángulo vuelve tal como lo entregó el sensor. Todo lo que
+se hace con la medición --derivar, filtrar, ajustar-- pasa del lado de la
+computadora, donde se ve y se puede cambiar. Un filtro en la placa se confunde con
+la planta que se está midiendo. La única excepción es la corriente, que se promedia
+en la placa por una razón que se explica más abajo, con un retardo fijo y
+declarado. Lo único que la placa sabe del cableado es lo
 que se le dice al conectar: si el actuador acciona en los dos sentidos (`bidir`) y
 los signos del imán y del sensor de corriente, que mide `bringup()`. Los detalles del
 enlace están en [`PROTOCOL.md`](PROTOCOL.md).
+
+### Cambios respecto de la v1
+
+Si hay código escrito contra la primera versión del banco:
+
+- **`signo_banco` ya no hace falta.** La placa publica el ángulo y la corriente con
+  el signo del banco (`ang_inv`, `cur_inv`), que mide `bringup()` y guarda en
+  `notebooks/cableado.json`. `ensayo.velocidad()`, `normalizar()` y `guardar()`
+  siguen aceptando `signo_banco=` con un `FutureWarning`, pero con la placa ya
+  corregida un `signo_banco=-1` da vuelta el signo otra vez: sacarlo.
+  `ensayo.signo()` no existe más.
+- **`ensayo.velocidad()` ya no atrasa una muestra.** La v1 derivaba hacia atrás; ahora
+  es una diferencia central sobre el tiempo real entre filas. Un modelo ajustado con
+  la v1 puede tener 2 ms de tiempo muerto de más.
+- **`sync_board(bidir=...)`** declara el actuador; con `bidir=False` un comando
+  negativo sale como cero.
+- **Canal nuevo `y_rep`**, y parámetros nuevos de la corriente (`cur_filas`,
+  `cur_sagc`, `cur_sagd`, `cur_notch`, `cur_red`, `cur_notchr`) con sus calibraciones
+  `dev.calibrar_caida()` y `dev.calibrar_red()`.
+- **El PWM va a 1050 Hz** y no a 1 kHz.
+- **El ángulo se desenrolla en la placa a 5 kHz**: antes se desenrollaba por fila y
+  con `loop_div` 25 o 50 la velocidad salía mal por encima de ~600 rad/s.
 
 ---
 
@@ -60,7 +84,7 @@ muestra en clase.
 | AS5600 SCL | A5 | |
 | AS5600 VDD / GND | 5V / GND | |
 | Salida del ACS712 | A0 | opcional |
-| `ENA` del puente, o la puerta del transistor (PWM, 1 kHz) | 9 | |
+| `ENA` del puente, o la puerta del transistor (PWM, 1050 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
 
@@ -102,7 +126,7 @@ cualquier banco.
 ratiométrico: reposa en la mitad de su alimentación para poder bajar cuando la
 corriente cambia de sentido, así que contra la referencia interna de 1,1 V
 satura en reposo. Contra Vcc reposa en media escala por construcción. Lo que se
-paga es resolución: con 185 mV/A son 6,6 mA por cuenta en el clon y 26 en el UNO,
+paga es resolución: con 185 mV/A son 6,8 mA por cuenta en el clon y 27 en el UNO,
 que cuenta de a cuatro.
 
 **Cada fila de corriente es un promedio.** Adentro de un período de PWM la
@@ -111,19 +135,36 @@ cristal: una conversión por fila cae siempre en la misma fase y se desvía de l
 media hasta 300 mA. Así que el ADC corre libre (a /32 en el clon, /128 en el UNO),
 la placa suma todas sus conversiones y publica el promedio de las últimas
 `cur_filas` filas: 10 por omisión, 20 ms, que anulan el PWM y los 50/100 Hz de la
-red y dejan unos 5 mA de ruido, con un retardo fijo de ~10 ms. Es el único filtro de
-la placa, y está porque lo que saca no se puede sacar de filas que ya lo traen
-plegado. Todo esto se midió con el sketch `AdcFase` y `herramientas/adc_fase.py`.
+red y dejan unos 5 mA de ruido. **Eso atrasa la corriente ~10 ms** (media ventana)
+respecto del ángulo y del comando, y redondea sus escalones en 20 ms: al ajustar
+un modelo eléctrico, o se tiene en cuenta ese retardo, o se baja `cur_filas`. Con
+`cur_filas = 1` la corriente no atrasa, pero trae la red; `cur_notch = 3` la saca
+con un notch en la frecuencia de la red y sus armónicos, que `dev.calibrar_red()`
+mide sin carga. Es el único filtro de la placa, y está porque lo que saca no se puede
+sacar de filas que ya lo traen plegado. Todo esto se midió con el sketch `AdcFase` y
+`herramientas/adc_fase.py`, que vienen en el zip.
+
+**El PWM corre la lectura.** La corriente de base del transistor sale de la misma
+placa y hunde su alimentación, que es la referencia del ADC: con el motor quieto y
+el comando al 30 % se leen ~160 mA que no existen. `cur_sagc` y `cur_sagd` lo
+compensan en función del ciclo de trabajo, y `dev.calibrar_caida()` los mide **con
+la fuente del motor apagada** --si el eje gira, aborta sin tocar nada--. Se guardan
+en `cableado.json` y los carga cada conexión. La compensación es aproximada: con el
+motor andando pueden quedar decenas de mA de error en régimen (se midió hasta
+-100 mA), así que la corriente sirve para ver la forma de un transitorio más que
+para medir un valor absoluto. Tampoco se puede verificar desde acá con la fuente
+prendida y el eje trabado. La solución de fondo es de hardware: un MOSFET de compuerta lógica
+(IRLB8721, IRLZ44N) en lugar del BD139, que casi no le pide corriente a la placa.
 La escala en mA sigue sin verificar con un tester: ver la nota al pie de la sección
 4 de `hardware.ipynb`.
 
-Dos números que conviene verificar una vez por banco, los dos en el sketch:
-
-- `SENSE_MV_PER_A`. La sensibilidad del sensor, que es lo único que convierte
-  cuentas en amperes. `bringup()` calibra el cero, que tiene una condición
-  conocida --el actuador abierto--, pero para la ganancia haría falta una
-  corriente conocida. Un tester en serie con el motor, una vez, alcanza.
-- `ADC_REF_MV`. Vcc, que se mide una vez con un tester.
+Un número que conviene verificar una vez por banco, en el sketch:
+`SENSE_MV_PER_A`, la sensibilidad del sensor, que es lo único que convierte cuentas
+en amperes. `bringup()` calibra el cero, que tiene una condición conocida --el
+actuador abierto--, pero para la ganancia haría falta una corriente conocida. Un
+tester en serie con el motor, una vez, alcanza. La escala supone Vcc = 5 V; no hay
+una constante para corregirla porque la referencia es la misma alimentación que
+se hunde con el PWM.
 
 El AS5600 necesita un imán **magnetizado diametralmente** girando sobre el chip,
 a un par de milímetros. Las plaquetas de AS5600 traen su propio regulador y los
@@ -345,8 +386,10 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `mot_bidir` | 1 con puente en H, 0 con un solo cuadrante; lo fija `sync_board(bidir=...)` |
 | `ang_inv`, `cur_inv` | los signos del banco; los mide `bringup()` y los carga `sync_board()` |
 | `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
-| `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
+| `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
+| `cur_sagc`, `cur_sagd` | compensación de la caída de Vcc con el PWM; `calibrar_caida()` los mide con la fuente del motor apagada |
+| `cur_notch`, `cur_red`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), la frecuencia en centésimas de Hz (la mide `calibrar_red()`) y el radio del polo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |
@@ -435,19 +478,21 @@ de servir; y el ADC, que se maneja directamente, así que no hay que llamar a
 `analogRead()`. El Timer0 queda intacto: `millis()` y el PWM de los pines 5 y 6
 andan como siempre.
 
-**El PWM va a 1 kHz**, y es `PWM_TOP` en el sketch. En abstracto conviene modular
+**El PWM va a 1050 Hz**, y es `PWM_TOP` en el sketch. En abstracto conviene modular
 más rápido, fuera del rango audible. Pero un L298N alimentado con 5 V no lo
 tolera: es un puente de Darlington bipolares, cae unos 2 V y tarda unos 2 µs en
 conmutar, y a 20 kHz lo que se pierde en cada transición se lleva una fracción
 grande de un tiempo de encendido que ya venía escaso. Medido: **a 20 kHz el motor
-no arranca y a 1 kHz anda**. Con un transistor MOSFET o un puente MOSFET lo
-correcto sería subirla: 400 son 20 kHz.
+no arranca y a 1 kHz anda**. Y 1050 Hz y no 1 kHz justo para que el PWM no quede
+en fase con el muestreo y lo que queda de su rizado se pliegue a 50 Hz, donde la
+ventana de 20 ms de la corriente tiene un cero. Con un transistor MOSFET o un
+puente MOSFET lo correcto sería subirla: 400 son 20 kHz.
 
 **Si el banco vuelve a tener un L298N**, conviene accionarlo frenando en lugar de
 soltando: `ENA` en alto y el PWM sobre la entrada del sentido, con la otra en cero,
 de modo que en la parte baja del ciclo el puente cortocircuita el motor en vez de
 abrirlo. Eso deja la planta lineal con un solo comando. Lo que no conviene es
-modular bipolar a 1 kHz.
+modular bipolar a 1050 Hz.
 
 ---
 
@@ -456,7 +501,6 @@ modular bipolar a 1 kHz.
 ```
 Banco/                   el banco: PWM afuera, ángulo y corriente adentro, telemetría
 AS5600_Bringup/          verificación del sensor, con volcado de configuración
-AS5600_Loop5k/           prueba de muestreo a 5 kHz
 Puente_Bringup/          verificación del accionamiento, sin usar el sensor
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/Actuator/      el puente en H, o el transistor desde ENA
@@ -468,6 +512,7 @@ libraries/AS5600Async/   lectura asincrónica del AS5600
 libraries/AS5600Regs/    el mapa de registros, sin ningún transporte
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 libraries/BoardStart/    el reloj, el ADC y el destrabe del bus, antes de todo lo demás
+AdcFase/                 el experimento con el que se decidió cómo medir la corriente
 test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y verificación de este equipo
@@ -482,6 +527,7 @@ python/test_*.py         pruebas, no necesitan hardware ni compilar
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/               los notebooks: hardware y calibración
 herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
+herramientas/adc_fase.py         el lado computadora de AdcFase
 herramientas/empaquetar_tp2.py   arma dist/arduino-jupyter-tp2.zip, lo necesario para el TP2
 dyc.yml                  el entorno de conda del curso
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones

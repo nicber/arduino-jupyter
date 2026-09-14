@@ -65,7 +65,7 @@ ISR(TIMER2_COMPA_vect)
 }
 
 static const uint32_t BAUD    = 1000000;
-static const uint16_t PWM_TOP = 8000;       // 1 kHz, como Banco
+static const uint16_t PWM_TOP = 8000;       // 1 kHz, como Banco antes de pasar a 1050 Hz
 static const uint16_t MAX_N   = 128;   // el I2C del AS5600 también quiere RAM
 
 typedef HBridge<9, 6, 7> Motor;

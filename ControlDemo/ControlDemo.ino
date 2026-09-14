@@ -95,6 +95,7 @@
 #include <FirstOrderFilter.h>
 
 #include <AngleLut.h>
+#include <AngleTracker.h>
 #include <SensorHealth.h>
 #include <MainsNotch.h>
 #include <RowAdc.h>
@@ -217,6 +218,7 @@ static MainsNotch   g_notch;
 static LoopCurrent  g_current(SENSE_ZERO);
 static Lut          g_lut;
 static Angle        g_angle;
+static AngleTracker<COUNTS_PER_REV> g_turns;    // la cuenta cruda, desenrollada en la ISR
 static SensorHealth g_health;
 static Pid          g_pid;
 static Setpoint     g_set(MODE_OPEN, TARGET_POSITION);
@@ -255,6 +257,7 @@ static BoardFacts g_board = { ADC_FULL, 0, 0, 0 };
 // Lo que la ISR congela en el tick de cada período, y el contador de muestras del
 // AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
 static volatile uint16_t g_tick_raw    = 0;
+static volatile int32_t  g_tick_raw_uw = 0;
 static volatile uint8_t  g_tick_fresh  = 0;
 static uint16_t          g_isr_samples = 0;
 
@@ -405,10 +408,16 @@ ISR(TIMER2_COMPA_vect)
 
     Sensor::do_transfer();
 
+    // Desenrollar sobre cada muestra y no una vez por período: con `loop_div` alto,
+    // media vuelta por período es poco. Ver Banco.ino.
+    const uint16_t counts = Sensor::counts();
+    g_turns.update((int16_t)counts);
+
     if (g_clock.on_isr())
     {
-        g_tick_raw   = Sensor::counts();
-        g_tick_fresh = fresh;
+        g_tick_raw    = counts;
+        g_tick_raw_uw = g_turns.y_uw;
+        g_tick_fresh  = fresh;
         g_adc.close_row();
     }
 }
@@ -486,11 +495,13 @@ static bool apply_sensor_filter(void)
 static void measure(void)
 {
     uint16_t raw16;
+    int32_t  raw_uw;
     uint8_t  fresh;
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
-        raw16 = g_tick_raw;
-        fresh = g_tick_fresh;
+        raw16  = g_tick_raw;
+        raw_uw = g_tick_raw_uw;
+        fresh  = g_tick_fresh;
     }
     g_y_rep = !fresh;
 
@@ -511,7 +522,9 @@ static void measure(void)
     const Lut::Counts raw = (Lut::Counts)raw16;
 
     g_y_raw = (uint16_t)raw;
-    g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
+    const int32_t corrected_uw = raw_uw
+        + (g_cal ? Angle::Tracker::wrapped_error(g_lut.corrected(raw), raw) : 0);
+    g_angle.update_unwrapped(corrected_uw);
 }
 
 // El despacho de la realimentación: sobre qué magnitud medida cierra el lazo.

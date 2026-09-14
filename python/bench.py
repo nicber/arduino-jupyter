@@ -117,6 +117,19 @@ _RESIDUO_MAX = 3.0
 _link = None
 
 
+# Cuánto del principio de una captura no se usa para medir la corriente en reposo.
+# Arrancar el flujo son unas líneas de encabezado de golpe por el puerto serie, y el
+# tráfico corre la lectura (ver zero_current()); con capturas de pocas décimas de
+# segundo eso pesa en el promedio.
+_ARRANQUE_S = 0.1
+
+
+def _sin_arranque(df):
+    """La captura sin sus primeros `_ARRANQUE_S` segundos."""
+    t = df['t'].to_numpy()
+    return df[t >= t[0] + _ARRANQUE_S] if len(t) else df
+
+
 def leer_cableado(ruta=CABLEADO):
     """Los signos guardados por `bringup()`, como dict, o None si no hay."""
     try:
@@ -293,7 +306,7 @@ class Bench:
         """
         self.ctl_uff = 0
 
-    def zero_current(self, seconds=0.3, canales=None):
+    def zero_current(self, seconds=0.6, canales=None):
         """Toma la corriente que se mida ahora como el cero. Devuelve `cur_zero`.
 
         Con el actuador abierto no circula corriente, así que lo que marque el
@@ -311,7 +324,7 @@ class Bench:
         self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
         return self.cur_zero
 
-    def _reposo_de_corriente(self, seconds=0.3, canales=None):
+    def _reposo_de_corriente(self, seconds=0.6, canales=None):
         """La cuenta del ADC con el actuador abierto, promediada.
 
         `i` se publica como `s * (adc - cur_zero)`, con `s` el signo de `cur_inv`,
@@ -321,7 +334,8 @@ class Bench:
         """
         self.rest()
         df = self.capture(seconds, warn=False, canales=canales)
-        return self.cur_zero + self._signo_corriente() * df['i'].mean() / self.channel('i').scale
+        return self.cur_zero + self._signo_corriente() * _sin_arranque(df)['i'].mean() \
+            / self.channel('i').scale
 
     def _signo_corriente(self):
         """-1 si la placa publica la corriente dada vuelta (`cur_inv`)."""
@@ -330,13 +344,12 @@ class Bench:
     def _tiron(self, u, seconds=0.4):
         """`u` sobre el actuador por un instante, desde el eje quieto.
 
-        Devuelve (vueltas, captura). Espera primero a que el eje pare: con el
-        actuador abierto el motor no frena, y midiendo enseguida lo que se mide es
-        el giro anterior. Las vueltas van con signo.
+        Devuelve (vueltas, captura), con `t = 0` en el comando. Espera primero a que
+        el eje pare: con el actuador abierto el motor no frena, y midiendo enseguida
+        lo que se mide es el giro anterior. Las vueltas van con signo.
         """
         ensayo.esperar_quieto(self, limite=15.0)
-        self.ctl_uff = u
-        df = self.capture(seconds, warn=False)
+        df = self.step('ctl_uff', u, pre=0.05, post=seconds, back=0, warn=False)
         self.rest()
 
         return (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0, df
@@ -453,7 +466,9 @@ class Bench:
         """Mide cuánto sube la lectura de corriente con el PWM sin corriente en el motor.
 
         **Con la fuente del motor apagada**, o el motor desconectado: si circula
-        corriente, se la calibra como si fuera error.
+        corriente, se la calibra como si fuera error. Si el eje gira durante la
+        medición se aborta y no se toca nada. Lo que no se puede detectar desde acá
+        es la fuente prendida con el eje trabado.
 
         Mientras el transistor conduce, su corriente de base carga la alimentación
         del micro, y como el ADC mide contra ella la lectura sube. Sin corriente en
@@ -464,22 +479,32 @@ class Bench:
         import numpy as np
 
         lsb = self.channel('i').scale
+        antes = (self.cur_sagc, self.cur_sagd)
         self.cur_sagc = self.cur_sagd = 0
         self.rest()
         time.sleep(0.3)
 
         def cuentas():
-            df = self.capture(seconds, warn=False, canales=['i'])
+            df = _sin_arranque(self.capture(seconds, warn=False, canales=['y_uw', 'i']))
+            vueltas = abs(df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
+            if vueltas > _GIRO_MINIMO:
+                raise RuntimeError(
+                    f'el eje giro {vueltas:.1f} vueltas con el PWM: la fuente del motor '
+                    f'esta prendida. Apagarla (o desconectar el motor) y volver a correr '
+                    f'calibrar_caida(); la compensacion queda como estaba.')
             return self.cur_zero + self._signo_corriente() * df['i'].mean() / lsb
 
-        base = cuentas()
         D, e = [], []
         try:
+            base = cuentas()
             for u in us:
                 self.ctl_uff = u
                 time.sleep(0.3)
                 D.append(u / 255.0)
                 e.append((cuentas() - base) / base * 10000)
+        except BaseException:
+            self.cur_sagc, self.cur_sagd = antes
+            raise
         finally:
             self.rest()
 
@@ -622,7 +647,7 @@ class Bench:
             # si importa, es algo del montaje que conviene ver en este residuo.
             ensayo.esperar_quieto(self, limite=15.0)
             self.zero_current()
-            zeroed  = self.capture(0.3, warn=False)
+            zeroed  = _sin_arranque(self.capture(0.6, warn=False))
             rest_ma = zeroed['i'].mean()
             noise   = zeroed['i'].std()
 
@@ -683,8 +708,9 @@ class Bench:
         finally:
             self.mot_bidir = int(bidir)
 
-        pico = df_pos['i'].abs().max()
-        i_pos = df_pos['i'].mean()
+        post = df_pos[df_pos['t'] >= 0]
+        pico = post['i'].abs().max()
+        i_pos = _arranque_menos_final(df_pos)
 
         evidence = ([f'{abs(v_pos):.2f} vueltas'] if present else []) + \
                    ([f'{pico:.0f} mA de pico'] if sensed else [])
@@ -736,9 +762,12 @@ class Bench:
         if 'ang_inv' in antes:
             medidos['ang_inv'] = int(v_pos < 0)
 
-        # La media de todo el tirón y no el pico, que con el sensor al revés también
-        # es grande. Tiene que despegarse de lo que puede dar el residuo del cero.
-        umbral = max(3 * lsb, 5 * noise / max(len(df_pos), 1) ** 0.5)
+        # No la media del tirón, que mezcla la corriente del motor con lo que corre
+        # la lectura el propio PWM --la caída de AVCC, y si `calibrar_caida()` no
+        # corrió todavía eso son cientos de mA--. El arranque contra el final: los
+        # dos con el mismo comando, así que el artefacto es el mismo, pero al
+        # arrancar el motor pide mucha más corriente que cuando ya giró.
+        umbral = max(3 * lsb, 5 * noise * (2 / max(len(df_pos) / 4, 1)) ** 0.5)
         mide_i = sensed and abs(i_pos) > umbral
         if 'cur_inv' in antes:
             medidos['cur_inv'] = int(i_pos < 0) if mide_i else antes['cur_inv']
@@ -749,7 +778,7 @@ class Bench:
 
         v_pos, df_pos = self._tiron(u)
         v_neg, df_neg = self._tiron(-u)
-        i_pos = df_pos['i'].mean()
+        i_pos = _arranque_menos_final(df_pos)
 
         # Sin `ang_inv` la placa no da vuelta el ángulo, así que sólo se exige que gire.
         sube = v_pos > _GIRO_MINIMO if 'ang_inv' in medidos else abs(v_pos) > _GIRO_MINIMO
@@ -757,10 +786,11 @@ class Bench:
         report('signos', ok,
                ', '.join(f'{n} = {v}' for n, v in medidos.items())
                + ('' if mide_i else ' (la corriente no se despega del cero: sin medir)')
-               + f'; +u da {v_pos:+.2f} vueltas y {i_pos:+.0f} mA de media. '
+               + f'; +u da {v_pos:+.2f} vueltas, y la corriente arranca {i_pos:+.0f} mA '
+               f'por encima de donde termina. '
                f'Guardados en {CABLEADO.name}')
 
-        u_neg = df_neg['u'].min()
+        u_neg = df_neg[df_neg['t'] >= 0.01]['u'].min()
         if bidir:
             gira_al_reves = (v_neg < -_GIRO_MINIMO if 'ang_inv' in medidos else
                              (v_neg > 0) != (v_pos > 0) and abs(v_neg) > _GIRO_MINIMO)
@@ -778,6 +808,22 @@ class Bench:
             cur_inv_medido=bool(cur_medido),
             invierte_con_u_negativo=None if invierte is None else bool(invierte),
             placa=self.info)
+
+
+def _arranque_menos_final(df):
+    """La corriente al arrancar menos la del final de un tirón con `t = 0` en el comando.
+
+    Con el mismo comando en las dos ventanas, lo que el PWM le hace a la lectura se
+    cancela, y queda la corriente del motor: grande al arrancar, chica cuando ya
+    gira. Positiva si el canal tiene el signo bien.
+    """
+    t, i = df['t'].to_numpy(), df['i'].to_numpy()
+    fin = t.max()
+    arranque = i[(t > 0.01) & (t < 0.10)]
+    final = i[t > fin - 0.10]
+    if not len(arranque) or not len(final):
+        return 0.0
+    return float(arranque.mean() - final.mean())
 
 
 def _actualizar_cableado(**campos):

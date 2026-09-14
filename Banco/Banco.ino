@@ -5,7 +5,7 @@
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
 // Medición de corriente (opcional): ACS712 en A0
-// Actuador: ENA -> 9 (PWM, 1 kHz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
+// Actuador: ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9.
 //
 // Acá no hay ley de control: `ctl_uff` va derecho al actuador. Todo lo que se hace
@@ -39,7 +39,7 @@
 //   g_notch    el notch de la red             Sense/MainsNotch.h
 //   g_current  la corriente                   Sense/CurrentSense.h
 //   g_lut      la corrección del ángulo       Calibracion/AngleLut.h
-//   g_angle    el ángulo desenrollado         AngleSensor/AngleTracker.h
+//   g_turns    el ángulo desenrollado         AngleSensor/AngleTracker.h
 //   g_health   qué se le puede creer al sensor  AngleSensor/SensorHealth.h
 //   g_motor    el actuador                    Actuator/HBridge.h
 //
@@ -55,6 +55,13 @@
 // es un error de velocidad que no se ve en ninguna parte. Congelado, el ángulo
 // tiene un retardo fijo de un tick (200 us): es la transferencia que lanzó el tick
 // anterior; y la ventana de la corriente termina en el tick.
+//
+// Y el ángulo se desenrolla en la ISR, sobre cada muestra de 5 kHz, y no una vez por
+// fila: desenrollar sólo vale mientras el eje gire menos de media vuelta entre dos
+// lecturas. Por fila, con `loop_div = 25` (200 Hz) eso son 628 rad/s, y un motor a
+// 700 rad/s daba la velocidad con el signo cambiado sin ningún aviso. A 5 kHz el
+// límite son 15 700 rad/s. La tabla de calibración se aplica en la fila, como una
+// corrección chica sobre lo ya desenrollado.
 //
 // El puerto serie va a 1 Mbaud. En un AVR de 16 MHz ése es un divisor exacto
 // (UBRR=1), a diferencia de 115200, que queda 2,1 % desviado. Los bytes entrantes
@@ -103,10 +110,10 @@ static const uint8_t MOTOR_IN1_PIN = 6;     // IN1
 static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 
 // El TOP del Timer1, phase-correct con preescalador 1: f = 16 MHz / (2 * TOP), o
-// sea 1 kHz. Es lo que tolera un L298N alimentado con 5 V: un puente de Darlington
+// sea ~1 kHz. Es lo que tolera un L298N alimentado con 5 V: un puente de Darlington
 // bipolares cae unos 2 V y tarda unos 2 us en conmutar, y a 20 kHz lo que se pierde
 // en cada transición se lleva una fracción grande de un tiempo de encendido que ya
-// venía escaso. Medido en este banco: a 20 kHz el motor no arranca y a 1 kHz anda.
+// venía escaso. Medido en este banco: a 20 kHz el motor no arranca y a ~1 kHz anda.
 //
 // Y no 1 kHz justo, sino 1050 Hz (TOP = 7619), por dos razones. Una: a 1 kHz el PWM
 // queda enganchado en fase con el muestreador de 5 kHz, que sale del mismo cristal;
@@ -159,7 +166,7 @@ static Adc          g_adc;
 static WindowMean   g_window(CURRENT_ROWS);
 static CurrentSense g_current(SENSE_ZERO);
 static Lut          g_lut;
-static Angle        g_angle;
+static Angle        g_turns;      // la cuenta cruda, desenrollada en la ISR
 static SensorHealth g_health;
 static Motor        g_motor(PWM_TOP);
 
@@ -204,6 +211,7 @@ static MainsNotch g_notch;
 // Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
 // AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
 static volatile uint16_t g_tick_raw     = 0;
+static volatile int32_t  g_tick_raw_uw  = 0;
 static volatile uint8_t  g_tick_fresh   = 0;
 static uint16_t          g_isr_samples  = 0;
 
@@ -287,10 +295,15 @@ ISR(TIMER2_COMPA_vect)
 
     Sensor::do_transfer();
 
+    // Una vuelta de desenrollado por muestra. Una muestra repetida no avanza nada.
+    const uint16_t counts = Sensor::counts();
+    g_turns.update((Angle::Counts)counts);
+
     if (g_clock.on_isr())
     {
-        g_tick_raw   = Sensor::counts();
-        g_tick_fresh = fresh;
+        g_tick_raw    = counts;
+        g_tick_raw_uw = g_turns.y_uw;
+        g_tick_fresh  = fresh;
         g_adc.close_row();
     }
 }
@@ -346,10 +359,10 @@ static bool apply_sensor_filter(void)
 // Toma lo que la ISR congeló en el tick y pone el comando sobre el actuador, una
 // vez por fila.
 //
-// La corrección de la tabla se aplica sobre la cuenta cruda y antes de desenrollar,
-// porque la tabla se indexa con el ángulo de adentro de la vuelta. El signo va al
-// final, sobre lo ya desenrollado: la tabla y el desenrollado hablan del imán, y el
-// signo, del banco.
+// El ángulo llega desenrollado desde la ISR. La corrección de la tabla se indexa con
+// la cuenta cruda de adentro de la vuelta y se suma como diferencia --unas pocas
+// cuentas, sin vuelta de por medio--. El signo va al final: la tabla y el
+// desenrollado hablan del imán, y el signo, del banco.
 //
 // La corriente es el promedio de todas las conversiones de las últimas `cur_filas`
 // filas, en cuentas. Cada fila se compensa antes, con el ciclo de trabajo que estuvo
@@ -358,12 +371,14 @@ static bool apply_sensor_filter(void)
 static void step(void)
 {
     uint16_t raw;
+    int32_t  raw_uw;
     uint8_t  fresh;
 
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
-        raw   = g_tick_raw;
-        fresh = g_tick_fresh;
+        raw    = g_tick_raw;
+        raw_uw = g_tick_raw_uw;
+        fresh  = g_tick_fresh;
     }
 
     uint32_t sum;
@@ -381,8 +396,10 @@ static void step(void)
 
     g_y_raw = raw;
     g_y_rep = !fresh;
-    g_angle.update(g_cal ? g_lut.corrected((Lut::Counts)raw) : (Lut::Counts)raw);
-    g_y_uw = g_ang_inv ? -g_angle.y_uw : g_angle.y_uw;
+    const int32_t uw = raw_uw
+        + (g_cal ? Angle::wrapped_error(g_lut.corrected((Lut::Counts)raw), (Angle::Counts)raw)
+                 : 0);
+    g_y_uw = g_ang_inv ? -uw : uw;
 
     g_motor.write(g_uff);
 }

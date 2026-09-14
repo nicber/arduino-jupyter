@@ -1,7 +1,7 @@
 // El promedio de todas las conversiones de las últimas `rows` filas.
 //
 // Es el filtro de la corriente, y vive en la placa a propósito: la computadora
-// recibe una fila cada 2 ms, y lo que hay que sacar --el rizado de 1 kHz del PWM y
+// recibe una fila cada 2 ms, y lo que hay que sacar --el rizado de ~1 kHz del PWM y
 // los 50 y 100 Hz que se meten desde la red, de 88 y 56 mA medidos en reposo-- no se
 // puede sacar de filas que ya vienen con eso plegado. Un promedio de caja de
 // 20 ms tiene ceros exactos en 50, 100, 150 Hz... y en cada armónico del PWM, y

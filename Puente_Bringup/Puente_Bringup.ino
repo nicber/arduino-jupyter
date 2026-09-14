@@ -27,7 +27,7 @@
 static const uint8_t  PWM_PIN = 9;      // ENA del L298N, OC1A
 static const uint8_t  IN1_PIN = 6;
 static const uint8_t  IN2_PIN = 7;
-static const uint16_t PWM_TOP = 8000;   // 1 kHz phase-correct, como Banco
+static const uint16_t PWM_TOP = 8000;   // 1 kHz phase-correct (Banco usa 7619, 1050 Hz)
 
 typedef HBridge<PWM_PIN, IN1_PIN, IN2_PIN> Motor;
 
