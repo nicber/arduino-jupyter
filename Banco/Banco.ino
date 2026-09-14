@@ -9,16 +9,34 @@
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9.
 //
 // Acá no hay ley de control: `ctl_uff` va derecho al actuador. Todo lo que se hace
-// con la medición --elegir el signo, derivar la velocidad, filtrar, ajustar un
-// modelo-- pasa del lado de la computadora, donde se ve y se puede cambiar sin
-// recompilar. Un filtro en la placa se identifica después como si fuera un polo
-// del motor, y por eso no hay ninguno.
+// con la medición --derivar la velocidad, filtrar, ajustar un modelo-- pasa del
+// lado de la computadora, donde se ve y se puede cambiar sin recompilar. Un filtro
+// en la placa se identifica después como si fuera un polo del motor, y por eso el
+// ángulo no tiene ninguno.
+//
+// La corriente es la excepción, y no por gusto: lo que hay que sacarle --el rizado
+// del PWM y los 50 y 100 Hz de la red-- ya no se puede sacar de filas de 2 ms, que lo
+// traen plegado. Así que cada fila publica el promedio de todas las conversiones de
+// su ventana, y la ventana abarca `cur_filas` filas: una caja con retardo conocido,
+// que con 10 filas a 500 Hz (20 ms) anula la red y el PWM. Para mirar un transitorio
+// con una ventana corta, `cur_notch` saca la red con un notch en 50 Hz y sus
+// armónicos. Ver Sense/RowAdc.h, Sense/WindowMean.h y Sense/MainsNotch.h.
+//
+// Lo que sí vive acá son las tres cosas que se fijan con cables: cuántos
+// cuadrantes tiene el actuador (`mot_bidir`) y de qué lado miran el imán y el
+// sensor de corriente (`ang_inv`, `cur_inv`). La placa arranca sin saberlas y la
+// computadora las fija al conectarse; bringup() mide los signos y verifica el
+// actuador. Con eso un comando positivo sube el ángulo y la corriente en cualquier
+// banco, y un lazo que se cierre después ve lo mismo que la telemetría.
 //
 // Este archivo no hace casi nada por sí mismo: arma los módulos y publica sus
 // parámetros. Cada cosa que se puede medir o accionar tiene un dueño:
 //
 //   g_clock    el reloj del muestreo          Sampler/SampleClock.h
-//   g_adc      el conversor corriendo libre   Sense/FreeAdc.h
+//   g_adc      el conversor corriendo libre   Sense/RowAdc.h
+//   g_sag      la caída de la referencia      Sense/SupplySag.h
+//   g_window   el promedio de la corriente    Sense/WindowMean.h
+//   g_notch    el notch de la red             Sense/MainsNotch.h
 //   g_current  la corriente                   Sense/CurrentSense.h
 //   g_lut      la corrección del ángulo       Calibracion/AngleLut.h
 //   g_angle    el ángulo desenrollado         AngleSensor/AngleTracker.h
@@ -30,6 +48,13 @@
 // omisión vale 500 Hz. El muestreo mantiene un período rígido aunque el resto
 // fluctúe; `loop_late` informa cuánta fluctuación hubo y `loop_missed` cuenta los
 // períodos que se saltearon del todo.
+//
+// El ángulo y la corriente de una fila se congelan en la ISR, en el tick mismo, y
+// no cuando loop() llega a atenderlo. Si no, una fila atendida tarde llevaría la
+// marca de su tick con una medición de hasta `loop_late` después, y eso al derivar
+// es un error de velocidad que no se ve en ninguna parte. Congelado, el ángulo
+// tiene un retardo fijo de un tick (200 us): es la transferencia que lanzó el tick
+// anterior; y la ventana de la corriente termina en el tick.
 //
 // El puerto serie va a 1 Mbaud. En un AVR de 16 MHz ése es un divisor exacto
 // (UBRR=1), a diferencia de 115200, que queda 2,1 % desviado. Los bytes entrantes
@@ -44,6 +69,8 @@
 // llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
 // 5 y 6 andan como siempre.
 
+#include <util/atomic.h>
+
 #include <nI2C.h>
 
 #include <AS5600.h>
@@ -55,7 +82,10 @@
 #include <AngleTracker.h>
 #include <SensorHealth.h>
 #include <CurrentSense.h>
-#include <FreeAdc.h>
+#include <RowAdc.h>
+#include <MainsNotch.h>
+#include <SupplySag.h>
+#include <WindowMean.h>
 #include <HBridge.h>
 #include <SampleClock.h>
 
@@ -78,10 +108,15 @@ static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 // en cada transición se lleva una fracción grande de un tiempo de encendido que ya
 // venía escaso. Medido en este banco: a 20 kHz el motor no arranca y a 1 kHz anda.
 //
-// 1 kHz además entra dos veces justas en cada fila de 500 Hz, así que el
-// muestreador toma siempre las mismas fases de la ondulación de corriente: un
-// sesgo fijo en `i` en lugar de un batido lento.
-static const uint16_t PWM_TOP = 8000;
+// Y no 1 kHz justo, sino 1050 Hz (TOP = 7619), por dos razones. Una: a 1 kHz el PWM
+// queda enganchado en fase con el muestreador de 5 kHz, que sale del mismo cristal;
+// a 1050 Hz la fase avanza 0,21 de período por tick y recorre el período entero cada
+// ~19 ms. La otra: lo que queda del rizado del PWM después de promediar cada fila se
+// pliega contra las filas a 1050 - 1000 = 50 Hz, y sus armónicos a 100 y 150 Hz, que
+// es donde la ventana de 20 ms de la corriente tiene ceros exactos --20 ms son 21
+// períodos justos--. Con 1010 Hz, en cambio, el pliegue caía en 10 Hz y se veía
+// como un ripple de ~15 mA en la corriente de régimen.
+static const uint16_t PWM_TOP = 7619;
 
 // Medición de corriente en A0. Nada de este bloque mueve el motor: sólo fija las
 // unidades que se le informan a la computadora.
@@ -91,21 +126,20 @@ static const uint16_t PWM_TOP = 8000;
 // cierra con lo que mide un tester en serie con el motor: un divisor en la salida
 // divide el cero y la sensibilidad a la vez.
 //
-// Contra Vcc, que es donde un sensor bipolar y ratiométrico reposa en media escala
-// solo. Se paga en resolución: un LSB son 1,2 mV en 12 bits, y con 185 mV/A eso
-// son 6,6 mA por cuenta --26 en el UNO, que cuenta de a cuatro--. Un motor chico,
-// de decenas de mA en régimen, queda en pocas cuentas: el canal sirve para ver el
-// arranque y comparar picos, y hay que medir su ruido antes de creerle algo más.
-//
-// Todo cuenta en 12 bits en las dos placas del banco: la lectura del UNO se corre
-// dos bits para arriba adentro de FreeAdc. Vcc son los 5006 mV medidos con un
-// tester en el UNO de este banco.
+// Contra AVCC, que se cae mientras el transistor conduce: la corriente de base (unos
+// 18 mA con 220 ohm) carga la alimentación del micro y la lectura sube un 2,2 %,
+// unos 500 mA aparentes sin corriente en el motor. Se compensa con el ciclo de
+// trabajo, que la placa conoce: ver Sense/SupplySag.h, y `cur_sagc` / `cur_sagd`, que
+// se calibran con la fuente del motor apagada. Una cuenta son 1,25 mV en A0 en las
+// dos placas, y con 185 mV/A eso son 6,8 mA --27 en el UNO, que cuenta de a
+// cuatro--. El ruido es mucho más grande que eso: 120 mA RMS por conversión,
+// medidos en el clon, y por eso se promedia.
 static const uint8_t  SENSE_CHANNEL    = 0;
 static const float    SENSE_MV_PER_A   = 185.0f;
-static const float    ADC_REF_MV       = 5006.0f;
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
-static const float    SENSE_MA_PER_LSB = 1000.0f * (ADC_REF_MV / ADC_FULL) / SENSE_MV_PER_A;
+static const float    SENSE_MA_PER_LSB =
+    (float)RowAdc<SENSE_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
 
 // ------------------------------------------------------------------ los módulos
 
@@ -113,11 +147,16 @@ typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
 typedef AngleTracker<COUNTS_PER_REV>                           Angle;
 typedef HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN>   Motor;
-typedef FreeAdc<SENSE_CHANNEL>                                 Adc;
+typedef RowAdc<SENSE_CHANNEL>                                  Adc;
+
+// Filas en la ventana de la corriente, por omisión: 10 filas de 2 ms son 20 ms, un
+// período entero de la red de 50 Hz y veinte del PWM.
+static const uint8_t CURRENT_ROWS = 10;
 
 // 10 muestras de 5 kHz por fila son 500 Hz.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
+static WindowMean   g_window(CURRENT_ROWS);
 static CurrentSense g_current(SENSE_ZERO);
 static Lut          g_lut;
 static Angle        g_angle;
@@ -135,9 +174,38 @@ static Motor::Command g_uff = 0;
 // se lo baja al mínimo al arrancar y no se lo vuelve a tocar.
 static const uint8_t SENSOR_FILTER = Sensor::SF_2X;
 
-// La cuenta cruda del sensor, sin corregir. Es lo que indexa la tabla de
-// calibración, así que es lo que la computadora necesita para calcularla.
+// La cuenta cruda del sensor, sin corregir y sin el signo del banco. Es lo que
+// indexa la tabla de calibración, así que es lo que la computadora necesita para
+// calcularla.
 static uint16_t g_y_raw = 0;
+
+// Lo que se publica: el ángulo desenrollado y la corriente, con el signo del banco.
+static int32_t g_y_uw = 0;
+static int16_t g_i    = 0;
+
+// 1 si la cuenta de esta fila repite la anterior: la transferencia del AS5600 que
+// tenía que traerla no terminó a tiempo (un desborde). Derivada, esa fila da una
+// velocidad falsa, y sin la marca no hay manera de saber cuál es.
+static uint8_t g_y_rep = 0;
+
+// Los signos del banco: 1 si un comando positivo, sin corregir, hace bajar el
+// ángulo o sale como corriente negativa. Los mide bringup().
+static uint8_t g_ang_inv = 0;
+static uint8_t g_cur_inv = 0;
+
+// La compensación de la caída de AVCC con el ciclo de trabajo. Arranca en cero, sin
+// compensar: los números son del cableado de cada banco y los carga la computadora.
+static SupplySag g_sag;
+
+// El notch de la red sobre la corriente, fila por fila. Arranca apagado: con la
+// ventana de 20 ms por omisión no hace falta. Ver Sense/MainsNotch.h.
+static MainsNotch g_notch;
+
+// Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
+// AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
+static volatile uint16_t g_tick_raw     = 0;
+static volatile uint8_t  g_tick_fresh   = 0;
+static uint16_t          g_isr_samples  = 0;
 
 // Prende y apaga la corrección en caliente, que es lo que permite medir cuánto
 // sirve en lugar de suponerlo.
@@ -166,6 +234,9 @@ static const CtrlParam PROGMEM g_params[] =
 {
     { "ctl_uff",     CTRL_I16, &g_uff,               0 },
 
+    { "mot_bidir",   CTRL_U8,  &g_motor.bidir,       0 },
+
+    { "ang_inv",     CTRL_U8,  &g_ang_inv,           0 },
     { "ang_cal",     CTRL_U8,  &g_cal,               0 },
     { "ang_lutw",    CTRL_U32, &g_lutw,              0 },
     { "ang_lutsum",  CTRL_U16, &g_lutsum,            0 },
@@ -177,6 +248,13 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_buserr",  CTRL_U16, &g_health.errors,     0 },
 
     { "cur_zero",    CTRL_I16, &g_current.zero,      0 },
+    { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
+    { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
+    { "cur_sagc",    CTRL_U16, &g_sag.fixed,         0 },
+    { "cur_sagd",    CTRL_U16, &g_sag.slope,         0 },
+    { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0 },
+    { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
+    { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
 
     { "loop_div",    CTRL_U8,  &g_clock.divide,      0 },
     { "loop_late",   CTRL_U16, &g_clock.late,        0 },
@@ -190,18 +268,38 @@ static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
 static const CtrlChannel PROGMEM g_channels[] =
 {
     { "y_raw", CTRL_U16, &g_y_raw,        COUNTS_TO_DEG,    "deg" },
-    { "y_uw",  CTRL_I32, &g_angle.y_uw,   COUNTS_TO_DEG,    "deg" },
+    { "y_uw",  CTRL_I32, &g_y_uw,         COUNTS_TO_DEG,    "deg" },
+    { "y_rep", CTRL_U8,  &g_y_rep,        1.0f,             ""    },
     { "u",     CTRL_I16, &g_motor.u,      1.0f,             "pwm" },
-    { "i",     CTRL_I16, &g_current.i,    SENSE_MA_PER_LSB, "mA"  },
+    { "i",     CTRL_I16, &g_i,            SENSE_MA_PER_LSB, "mA"  },
 };
 
 // ----------------------------------------------------------------------- la ISR
 
 ISR(TIMER2_COMPA_vect)
 {
+    // Antes de lanzar la transferencia de este tick: si el contador no avanzó
+    // desde el tick anterior, la que se lanzó entonces no terminó, y la cuenta que
+    // hay es la de antes.
+    const uint16_t samples = Sensor::samples();
+    const uint8_t  fresh   = (samples != g_isr_samples);
+    g_isr_samples = samples;
+
     Sensor::do_transfer();
-    g_adc.on_isr();
-    g_clock.on_isr();
+
+    if (g_clock.on_isr())
+    {
+        g_tick_raw   = Sensor::counts();
+        g_tick_fresh = fresh;
+        g_adc.close_row();
+    }
+}
+
+// El ADC corre libre, sin relación con el muestreador: cada conversión se suma a la
+// fila en curso. Ver Sense/RowAdc.h.
+ISR(ADC_vect)
+{
+    g_adc.on_conversion();
 }
 
 // ------------------------------------------------------------------- el paso
@@ -245,18 +343,46 @@ static bool apply_sensor_filter(void)
     return queued;
 }
 
-// Lee los sensores y pone el comando sobre el actuador, una vez por fila.
+// Toma lo que la ISR congeló en el tick y pone el comando sobre el actuador, una
+// vez por fila.
 //
 // La corrección de la tabla se aplica sobre la cuenta cruda y antes de desenrollar,
-// porque la tabla se indexa con el ángulo de adentro de la vuelta.
+// porque la tabla se indexa con el ángulo de adentro de la vuelta. El signo va al
+// final, sobre lo ya desenrollado: la tabla y el desenrollado hablan del imán, y el
+// signo, del banco.
+//
+// La corriente es el promedio de todas las conversiones de las últimas `cur_filas`
+// filas, en cuentas. Cada fila se compensa antes, con el ciclo de trabajo que estuvo
+// aplicado mientras duró --el de la escritura anterior, que es el que todavía está
+// puesto--, y el cero se resta después, sobre el promedio.
 static void step(void)
 {
-    g_current.update(g_adc.read());
+    uint16_t raw;
+    uint8_t  fresh;
 
-    const Lut::Counts raw = (Lut::Counts)Sensor::counts();
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        raw   = g_tick_raw;
+        fresh = g_tick_fresh;
+    }
 
-    g_y_raw = (uint16_t)raw;
-    g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
+    uint32_t sum;
+    uint16_t n;
+    g_adc.row(sum, n);
+
+    const Motor::Command applied = g_motor.u;
+    const uint16_t duty = (uint16_t)(applied < 0 ? -applied : applied);
+    sum = g_sag.correct(sum, duty, (uint16_t)Motor::MAX);
+
+    g_current.update(g_window.push(sum, n));
+
+    const int16_t i = g_notch.step(g_current.i);
+    g_i = g_cur_inv ? (int16_t)-i : i;
+
+    g_y_raw = raw;
+    g_y_rep = !fresh;
+    g_angle.update(g_cal ? g_lut.corrected((Lut::Counts)raw) : (Lut::Counts)raw);
+    g_y_uw = g_ang_inv ? -g_angle.y_uw : g_angle.y_uw;
 
     g_motor.write(g_uff);
 }
@@ -268,6 +394,11 @@ static void refresh_tuning(void)
     CtrlLink::set_period_us(g_clock.apply(SAMPLE_HZ));
 
     g_lut.apply(g_lutw);
+
+    g_window.apply();
+
+    // Con la frecuencia de las filas de ahora: `loop_div` también la mueve.
+    g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
     // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
     // describe lo que hay, y la computadora verifica 64 entradas con una lectura.
@@ -362,7 +493,7 @@ void setup()
 
     refresh_tuning();
 
-    g_adc.begin(adc_full, ADC_FULL);
+    g_adc.begin(adc_full);
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 

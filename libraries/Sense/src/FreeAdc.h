@@ -19,6 +19,7 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#include <util/atomic.h>
 
 template <uint8_t Channel>
 class FreeAdc
@@ -68,14 +69,16 @@ class FreeAdc
     }
 
     // La última conversión, leída sin que la ISR pueda caer en el medio de los dos
-    // bytes.
+    // bytes. Restituye el estado de las interrupciones en lugar de prenderlas, así
+    // que también se puede llamar desde una ISR.
     Counts read(void) const
     {
         Counts value;
 
-        noInterrupts();
-        value = m_latest;
-        interrupts();
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+        {
+            value = m_latest;
+        }
 
         return value;
     }

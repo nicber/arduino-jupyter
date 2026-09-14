@@ -50,7 +50,11 @@ class LoopDrive
     // escritura de cualquier parámetro, y el puente sólo rearranca el temporizador
     // si de verdad cambió: un barrido de ganancia no tiene por qué sacudirlo. Lo
     // que quedó puesto vuelve a `top`, así la computadora ve el piso aplicado.
-    void apply(void) { top = m_bridge.set_top(top); }
+    void apply(void)
+    {
+        top = m_bridge.set_top(top);
+        m_bridge.bidir = bidir;
+    }
 
     // `invert` reconcilia dos convenciones de signo que se fijan con cables: la
     // del motor en las salidas del puente, y la de lo que mire el sensor. Si no

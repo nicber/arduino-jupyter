@@ -5,7 +5,8 @@ notebook contenga un experimento y nada más.
 
     from bench import *
 
-    dev = sync_board()
+    BIDIR = False                                              # qué actuador tiene este banco
+    dev = sync_board(bidir=BIDIR)
     dev.ctl_uff = 100                                          # un comando sobre el actuador
     df = dev.step('ctl_uff', 200, pre=0.3, post=1.2, back=0)   # un escalón, t = 0 en el escalón
 
@@ -14,8 +15,13 @@ y reabre el enlace, lo que resetea la placa. Todas las celdas lo llaman, así qu
 cada celda arranca desde los valores por omisión del propio sketch y ninguna
 depende de que se haya corrido la de arriba.
 
-Lo que se hace con una captura --elegir el signo, derivar la velocidad, pasar a
-unidades de un modelo, guardarla-- no está acá: está en `ensayo.py`.
+La placa arranca sin saber nada del cableado, así que al conectar se le dice: si
+el actuador acciona en los dos sentidos (`bidir`, que lo sabe quien armó el banco),
+los signos del imán y del sensor de corriente (que midió `bringup()` y quedaron
+en `CABLEADO`) y el cero de la corriente, que se mide ahí mismo.
+
+Lo que se hace con una captura --derivar la velocidad, pasar a unidades de un
+modelo, guardarla-- no está acá: está en `ensayo.py`.
 """
 
 from __future__ import annotations
@@ -34,7 +40,8 @@ import catalogo
 import ensayo
 from ctrllink import CtrlLink, CtrlLinkError, find_port
 
-__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError', 'CALIBRACION']
+__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError', 'CALIBRACION',
+           'CABLEADO']
 
 FQBN = 'arduino:avr:uno'
 
@@ -61,6 +68,12 @@ SKETCH    = _HERE / 'Banco'
 # del banco y no del proyecto-- y la ruta se resuelve desde este archivo, así que
 # no depende de desde dónde se corra el notebook. Ver sync_board_cal().
 CALIBRACION = _HERE / 'notebooks' / 'calibracion.json'
+
+# Los signos de este banco: de qué lado miran el imán y el sensor de corriente. Los
+# mide `bringup()` y los carga `sync_board()`. Tampoco entra en el repositorio, por
+# lo mismo que la calibración. `bidir` no está acá: no se mide, lo declara quien
+# conecta, y `bringup()` verifica que sea cierto.
+CABLEADO = _HERE / 'notebooks' / 'cableado.json'
 
 # El core de AVR compila con `-Os` --optimizar por tamaño--, y este sketch quiere
 # ciclos y no bytes: el muestreador de 5 kHz y la telemetría comparten el tiempo
@@ -102,6 +115,14 @@ _GIRO_MINIMO = 0.05   # vueltas
 _RESIDUO_MAX = 3.0
 
 _link = None
+
+
+def leer_cableado(ruta=CABLEADO):
+    """Los signos guardados por `bringup()`, como dict, o None si no hay."""
+    try:
+        return json.loads(Path(ruta).read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 # ------------------------------------------------------- el diagnóstico del banco
@@ -272,35 +293,205 @@ class Bench:
         """
         self.ctl_uff = 0
 
-    def zero_current(self, seconds=0.3):
+    def zero_current(self, seconds=0.3, canales=None):
         """Toma la corriente que se mida ahora como el cero. Devuelve `cur_zero`.
 
         Con el actuador abierto no circula corriente, así que lo que marque el
         sensor es su offset: el suyo propio, más la tolerancia de su alimentación y
-        la de cualquier divisor que haya en el medio. `i` se lee como
-        `adc - cur_zero`, así que sumarle la lectura actual pone el cero sobre la
-        cuenta actual. Deja el motor en reposo, que es la condición bajo la cual la
-        medición significa algo.
+        la de cualquier divisor que haya en el medio. Deja el motor en reposo, que
+        es la condición bajo la cual la medición significa algo.
+
+        `canales` tiene que ser el mismo que va a usar el ensayo. El cero depende
+        de cuánta telemetría sale: transmitir le carga la alimentación a la placa
+        --el LED de TX, el conversor USB-serie-- y medido en el banco la corriente
+        leída se corre unos -5,6 mA por cada 1000 bytes/s, casi 60 mA entre emitir
+        todos los canales y emitir uno solo. Por omisión, todos, que es lo que emite
+        `capture()` si no se le pide otra cosa.
         """
-        self.rest()
-        df = self.capture(seconds, warn=False)
-        self.cur_zero = round(self.cur_zero + df['i'].mean() / self.channel('i').scale)
+        self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
         return self.cur_zero
 
-    def _tiron(self, u, seconds=0.4):
-        """`u` sobre el actuador por un instante, desde el eje quieto. Devuelve (vueltas, mA de pico).
+    def _reposo_de_corriente(self, seconds=0.3, canales=None):
+        """La cuenta del ADC con el actuador abierto, promediada.
 
-        Espera primero a que el eje pare: con el actuador abierto el motor no
-        frena, y midiendo enseguida lo que se mide es el giro anterior. Las vueltas
-        van con signo.
+        `i` se publica como `s * (adc - cur_zero)`, con `s` el signo de `cur_inv`,
+        así que la cuenta cruda se reconstruye deshaciendo las dos cosas. No
+        importa si el eje sigue girando por inercia: con el actuador abierto la
+        fuerza contraelectromotriz no encuentra camino y no circula corriente.
         """
-        ensayo.esperar_quieto(self, limite=10.0)
+        self.rest()
+        df = self.capture(seconds, warn=False, canales=canales)
+        signo = -1 if self.cur_inv else 1
+        return self.cur_zero + signo * df['i'].mean() / self.channel('i').scale
+
+    def _tiron(self, u, seconds=0.4):
+        """`u` sobre el actuador por un instante, desde el eje quieto.
+
+        Devuelve (vueltas, captura). Espera primero a que el eje pare: con el
+        actuador abierto el motor no frena, y midiendo enseguida lo que se mide es
+        el giro anterior. Las vueltas van con signo.
+        """
+        ensayo.esperar_quieto(self, limite=15.0)
         self.ctl_uff = u
         df = self.capture(seconds, warn=False)
         self.rest()
 
-        vueltas = (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
-        return vueltas, df['i'].abs().max()
+        return (df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0, df
+
+    # ------------------------------------------------------- el cableado
+
+    def configurar(self, bidir=None, cableado=CABLEADO, cero=True, say=print):
+        """Le dice a la placa lo que no puede saber sola. Lo llama `sync_board()`.
+
+        `bidir` es qué actuador tiene el banco, y lo declara quien lo conecta: un
+        puente en H acciona en los dos sentidos, un transistor en uno. Sin
+        declararlo la placa queda en un solo cuadrante, que nunca invierte un motor
+        que no lo esperaba. Los signos salen de `cableado`, que escribe
+        `bringup()`. `cero` mide el cero de la corriente, que cada reset pierde.
+        """
+        params = self.link._params
+
+        if 'mot_bidir' in params:
+            if bidir is None:
+                say('  OJO: no se declaro bidir, asi que el actuador queda en un solo '
+                    'cuadrante y un comando negativo sale como cero. Conectar con '
+                    'sync_board(bidir=True) o bidir=False.')
+            else:
+                self.mot_bidir = int(bool(bidir))
+
+        guardado = leer_cableado(cableado) or {}
+
+        if 'cur_sagd' in params:
+            if 'cur_sagd' in guardado:
+                self.cur_sagc = int(guardado['cur_sagc'])
+                self.cur_sagd = int(guardado['cur_sagd'])
+                say(f'  caida de AVCC compensada: {self.cur_sagc / 100:.2f} % mientras '
+                    f'conmuta + {self.cur_sagd / 100:.2f} % a fondo')
+            else:
+                say('  sin compensar la caida de AVCC con el PWM: la corriente lee de mas '
+                    'mientras el transistor conduce. Con la fuente del motor APAGADA, '
+                    'correr dev.calibrar_caida().')
+
+        if 'cur_red' in params and 'cur_red' in guardado:
+            self.cur_red = int(guardado['cur_red'])
+            say(f'  la red vista desde la placa: {self.cur_red / 100:.2f} Hz (para el notch, '
+                f'cur_notch)')
+
+        if 'ang_inv' in params:
+            if 'ang_inv' not in guardado:
+                say(f'  sin signos medidos ({Path(cableado).name} no los tiene): el '
+                    f'angulo y la corriente van con el signo del cableado. Correr '
+                    f'dev.bringup().')
+            else:
+                self.ang_inv = int(guardado['ang_inv'])
+                self.cur_inv = int(guardado['cur_inv'])
+                say(f'  signos del banco: ang_inv = {self.ang_inv}, cur_inv = '
+                    f'{self.cur_inv} ({Path(cableado).name})')
+
+        # Contra un riel no hay un offset que medir sino una entrada al aire, y
+        # "calibrarla" dejaría un canal que informa ceros perfectos. Eso lo explica
+        # bringup(); acá sólo no se toca.
+        if cero and 'cur_zero' in params:
+            adc = self._reposo_de_corriente()
+            if _ADC_RAIL <= adc <= _ADC_FULL - _ADC_RAIL:
+                self.cur_zero = round(adc)
+
+    def calibrar_red(self, segundos=20.0, armonicos=3, guardar=True):
+        """Mide la frecuencia de la red tal como la ve la placa y se la pone al notch.
+
+        Con el motor quieto y sin comando: lo que se mida es la corriente en reposo,
+        que es donde los tonos de la red se ven solos. Se captura sin notch y sin
+        promediar filas, y se busca la frecuencia que junta más energía en la
+        fundamental y sus `armonicos` a la vez, sobre el tiempo de la propia placa:
+        la red medida con el cristal del clon no da 50 Hz, y eso es lo que el notch
+        necesita. Devuelve (Hz, amplitudes en mA de cada armónico).
+        """
+        import numpy as np
+
+        ensayo.esperar_quieto(self, limite=40.0)
+        antes = (self.cur_filas, self.cur_notch)
+        self.cur_filas, self.cur_notch = 1, 0
+        try:
+            time.sleep(0.2)
+            df = self.capture(segundos, warn=False, canales=['i'])
+        finally:
+            self.cur_filas, self.cur_notch = antes
+
+        t = df['t'].to_numpy(dtype=float)
+        x = df['i'].to_numpy(dtype=float)
+        x = x - x.mean()
+
+        def energia(f):
+            return sum(abs(np.sum(x * np.exp(-2j * np.pi * k * f * t))) ** 2
+                       for k in range(1, armonicos + 1))
+
+        # Grueso de a 0,01 Hz alrededor de 50, fino de a 0,001 alrededor del máximo.
+        grilla = np.arange(49.0, 51.0, 0.01)
+        f = grilla[int(np.argmax([energia(g) for g in grilla]))]
+        fina = np.arange(f - 0.01, f + 0.01, 0.001)
+        f = float(fina[int(np.argmax([energia(g) for g in fina]))])
+
+        amplitudes = [2 * abs(np.sum(x * np.exp(-2j * np.pi * k * f * t))) / len(x)
+                      for k in range(1, armonicos + 1)]
+        print(f'red vista desde la placa: {f:.3f} Hz; tonos de '
+              + ', '.join(f'{a:.1f} mA' for a in amplitudes)
+              + f' en {", ".join(f"{k * f:.1f}" for k in range(1, armonicos + 1))} Hz')
+
+        self.cur_red = int(round(f * 100))
+        if guardar:
+            _actualizar_cableado(cur_red=self.cur_red)
+        return f, amplitudes
+
+    def calibrar_caida(self, us=(40, 80, 120, 160, 200, 230, 255), seconds=1.0, guardar=True):
+        """Mide cuánto sube la lectura de corriente con el PWM sin corriente en el motor.
+
+        **Con la fuente del motor apagada**, o el motor desconectado: si circula
+        corriente, se la calibra como si fuera error.
+
+        Mientras el transistor conduce, su corriente de base carga la alimentación
+        del micro, y como el ADC mide contra ella la lectura sube. Sin corriente en
+        el motor todo lo que se lea es eso. Se ajusta la recta
+        `e(D) = sagc · [0 < D < 1] + sagd · D` en partes por diez mil, se la pone en
+        la placa y se la guarda en `CABLEADO`. Devuelve (sagc, sagd).
+        """
+        import numpy as np
+
+        lsb = self.channel('i').scale
+        self.cur_sagc = self.cur_sagd = 0
+        self.rest()
+        time.sleep(0.3)
+
+        def cuentas():
+            df = self.capture(seconds, warn=False, canales=['i'])
+            return self.cur_zero + (-1 if self.cur_inv else 1) * df['i'].mean() / lsb
+
+        base = cuentas()
+        D, e = [], []
+        try:
+            for u in us:
+                self.ctl_uff = u
+                time.sleep(0.3)
+                D.append(u / 255.0)
+                e.append((cuentas() - base) / base * 10000)
+        finally:
+            self.rest()
+
+        D, e = np.array(D), np.array(e)
+        conmuta = D < 1.0
+        A = np.column_stack([conmuta.astype(float), D])
+        sagc, sagd = np.linalg.lstsq(A, e, rcond=None)[0]
+        resto = e - A @ [sagc, sagd]
+        sagc, sagd = int(round(max(sagc, 0))), int(round(max(sagd, 0)))
+
+        print(f'caida de AVCC: {sagc / 100:.2f} % mientras conmuta + {sagd / 100:.2f} % a '
+              f'fondo (residuo del ajuste {np.abs(resto).max():.0f} por diez mil)')
+        for d, x in zip(D, e):
+            print(f'  {d:4.0%}: {x / 100:+.2f} %')
+
+        self.cur_sagc, self.cur_sagd = sagc, sagd
+        if guardar:
+            _actualizar_cableado(cur_sagc=sagc, cur_sagd=sagd)
+        return sagc, sagd
 
     # ------------------------------------------------------- puesta en marcha
 
@@ -312,9 +503,11 @@ class Bench:
         paso se calibra-- y el actuador. Conviene correrlo primero, y después de
         cualquier cambio en el cableado.
 
-        No corrige signos: un comando positivo que hace bajar el ángulo es de qué
-        lado están dos cables, y en lazo abierto se resuelve al procesar. Ver
-        `ensayo.signo()`.
+        Con el motor, además, mide los signos del banco --de qué lado miran el imán
+        y el sensor de corriente--, se los pone a la placa y los guarda en
+        `CABLEADO`, de donde los carga `sync_board()`. Y verifica que el actuador
+        haga lo que dice `mot_bidir`: con un puente, un comando negativo invierte
+        el giro; con uno solo cuadrante, sale como cero.
         """
         results = []
 
@@ -418,6 +611,9 @@ class Bench:
                    + ('' if min(up, down) >= _ADC_HEADROOM else
                       '  -- el reposo esta muy cerca del tope: sin lugar para medir'))
 
+            # Con el eje quieto, aunque con el actuador abierto no debería importar:
+            # si importa, es algo del montaje que conviene ver en este residuo.
+            ensayo.esperar_quieto(self, limite=15.0)
             self.zero_current()
             zeroed  = self.capture(0.3, warn=False)
             rest_ma = zeroed['i'].mean()
@@ -437,40 +633,140 @@ class Bench:
         if not motor:
             report('motor', None, 'omitido (motor=False)')
         else:
-            print(f'  esperando a que el eje pare y accionando con u = {u:+} '
-                  f'durante 0,4 s ...')
-            vueltas, pico = self._tiron(u)
-
-            evidence = ([f'{abs(vueltas):.2f} vueltas'] if present else []) + \
-                       ([f'{pico:.0f} mA de pico'] if sensed else [])
-
-            if not evidence:
-                report('motor', None, 'no se puede evaluar: no hay sensor de '
-                                      'angulo ni medicion de corriente')
-            else:
-                report('motor',
-                       (present and abs(vueltas) > _GIRO_MINIMO) or
-                       (sensed and pico > abs(rest_ma) + 5 * noise),
-                       ', '.join(evidence))
-
-            if present and vueltas < -_GIRO_MINIMO:
-                report('signo', None,
-                       'un comando positivo hace BAJAR el angulo: ensayo.signo() '
-                       'lo da vuelta al procesar')
-
-            # Que el motor gire no quiere decir que el canal de corriente lo vea. Un
-            # motor chico consume decenas de mA, y contra el ruido de un sensor de
-            # varios amperes eso puede no ser nada: mejor saberlo antes de sacar
-            # conclusiones de `i`.
-            if sensed and present and abs(vueltas) > _GIRO_MINIMO and pico < 5 * noise:
-                report('canal de i', None,
-                       f'el pico del arranque ({pico:.0f} mA) no se despega de cinco '
-                       f'veces el ruido ({5 * noise:.0f} mA): este canal no resuelve '
-                       f'la corriente de este motor')
+            self._verificar_actuador(report, u, present, sensed, rest_ma, noise)
 
         bad = results.count(False)
         print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')
         return not bad
+
+    def _verificar_actuador(self, report, u, present, sensed, rest_ma, noise):
+        """La parte de bringup() que mueve el motor: el actuador, `bidir` y los signos.
+
+        Primero en crudo --sin los signos del banco y con los dos sentidos
+        habilitados--, un tirón con +u y otro con -u, que es lo único que deja ver
+        qué hay: un puente invierte el giro, un transistor empuja igual. Con eso se
+        verifica lo que se declaró en `bidir` y se miden los signos. Después se
+        aplican y se repiten los dos tirones, que ahora tienen que dar lo que un
+        usuario espera: +u sube el ángulo y la corriente, y -u baja el ángulo o no
+        hace nada, según el actuador.
+        """
+        bidir = bool(self.mot_bidir)
+        antes = (self.ang_inv, self.cur_inv)
+        lsb = self.channel('i').scale
+
+        print(f'  accionando con u = +{u} y u = -{u}, 0,4 s cada uno y con el eje '
+              f'quieto antes, dos veces ...')
+
+        self.ang_inv = self.cur_inv = 0
+        self.mot_bidir = 1
+        try:
+            v_pos, df_pos = self._tiron(u)
+            v_neg, _ = self._tiron(-u)
+        except BaseException:
+            self.ang_inv, self.cur_inv = antes
+            raise
+        finally:
+            self.mot_bidir = int(bidir)
+
+        pico = df_pos['i'].abs().max()
+        i_pos = df_pos['i'].mean()
+
+        evidence = ([f'{abs(v_pos):.2f} vueltas'] if present else []) + \
+                   ([f'{pico:.0f} mA de pico'] if sensed else [])
+        gira = present and abs(v_pos) > _GIRO_MINIMO
+
+        if not evidence:
+            report('motor', None, 'no se puede evaluar: no hay sensor de angulo ni '
+                                  'medicion de corriente')
+        else:
+            report('motor', gira or (sensed and pico > abs(rest_ma) + 5 * noise),
+                   ', '.join(evidence))
+
+        # Que el motor gire no quiere decir que el canal de corriente lo vea. Un
+        # motor chico consume decenas de mA, y contra el ruido de un sensor de
+        # varios amperes eso puede no ser nada: mejor saberlo antes de sacar
+        # conclusiones de `i`.
+        if sensed and gira and pico < 5 * noise:
+            report('canal de i', None,
+                   f'el pico del arranque ({pico:.0f} mA) no se despega de cinco '
+                   f'veces el ruido ({5 * noise:.0f} mA): este canal no resuelve la '
+                   f'corriente de este motor')
+
+        # ---- el actuador contra lo declarado
+        if not gira:
+            report('actuador', None, 'el eje no giro con +u: no se puede verificar bidir')
+        elif abs(v_neg) <= _GIRO_MINIMO:
+            report('actuador', False,
+                   f'con -{u} el eje no gira ({v_neg:+.2f} vueltas): '
+                   + ('revisar IN1 (6) e IN2 (7)' if bidir else
+                      'un transistor tendria que empujar igual que con +u'))
+        else:
+            invierte = (v_pos > 0) != (v_neg > 0)
+            tipo = ('invierte el giro: puente en H (B)' if invierte else
+                    'empuja para el mismo lado: un solo cuadrante (B′)')
+            if invierte == bidir:
+                report('actuador', True, f'-u {tipo}, como declara bidir = {bidir}')
+            else:
+                report('actuador', False,
+                       f'-u {tipo}, pero se conecto con bidir = {bidir}. '
+                       f'Conectar con sync_board(bidir={invierte}).')
+
+        # ---- los signos
+        if not gira:
+            self.ang_inv, self.cur_inv = antes
+            report('signos', None, 'sin giro no se pueden medir: quedan los de antes')
+            return
+
+        ang_inv = int(v_pos < 0)
+
+        # La media de todo el tirón y no el pico, que con el sensor al revés también
+        # es grande. Tiene que despegarse de lo que puede dar el residuo del cero.
+        umbral = max(3 * lsb, 5 * noise / max(len(df_pos), 1) ** 0.5)
+        mide_i = sensed and abs(i_pos) > umbral
+        cur_inv = int(i_pos < 0) if mide_i else antes[1]
+
+        self.ang_inv, self.cur_inv = ang_inv, cur_inv
+        self._guardar_cableado(ang_inv, cur_inv, mide_i, invierte=(v_pos > 0) != (v_neg > 0)
+                               if abs(v_neg) > _GIRO_MINIMO else None)
+
+        v_pos, df_pos = self._tiron(u)
+        v_neg, df_neg = self._tiron(-u)
+        i_pos = df_pos['i'].mean()
+
+        ok = v_pos > _GIRO_MINIMO and (not mide_i or i_pos > 0)
+        report('signos', ok,
+               f'ang_inv = {ang_inv}, cur_inv = {cur_inv}'
+               + ('' if mide_i else ' (sin medir: la corriente no se despega del cero)')
+               + f'; +u da {v_pos:+.2f} vueltas y {i_pos:+.0f} mA de media. '
+               f'Guardados en {CABLEADO.name}')
+
+        u_neg = df_neg['u'].min()
+        if bidir:
+            report('-u', v_neg < -_GIRO_MINIMO and u_neg == -u,
+                   f'sale u = {u_neg:+.0f} y el eje da {v_neg:+.2f} vueltas')
+        else:
+            report('-u', abs(v_neg) <= _GIRO_MINIMO and u_neg == 0,
+                   f'sale u = {u_neg:+.0f} (recortado a cero) y el eje da '
+                   f'{v_neg:+.2f} vueltas')
+
+    def _guardar_cableado(self, ang_inv, cur_inv, cur_medido, invierte):
+        """Guarda los signos en `CABLEADO`, sin tocar lo demás que haya."""
+        _actualizar_cableado(
+            ang_inv=int(ang_inv),
+            cur_inv=int(cur_inv),
+            cur_inv_medido=bool(cur_medido),
+            invierte_con_u_negativo=None if invierte is None else bool(invierte),
+            placa=self.info)
+
+
+def _actualizar_cableado(**campos):
+    """Agrega o reemplaza `campos` en `CABLEADO`, con la fecha."""
+    from datetime import datetime
+
+    datos = leer_cableado() or {}
+    datos.update(campos)
+    datos['medido'] = datetime.now().isoformat(timespec='seconds')
+    CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
 
 
 # ------------------------------------------------------- compilación y carga
@@ -634,7 +930,7 @@ def _wait_for_port(hint=None, timeout=2.0):
 
 
 def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
-               sketch=None):
+               sketch=None, bidir=None):
     """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
 
     Compila sólo cuando algún archivo fuente cambió de verdad, carga sólo cuando
@@ -642,6 +938,10 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
     siempre reabre el enlace, lo que resetea la placa, así que el sketch arranca
     desde sus valores por omisión haya hecho falta o no grabar. Ese reset es el
     motivo de llamarlo al principio de cada celda.
+
+    `bidir` es qué actuador tiene el banco: True para un puente en H, False para un
+    transistor. Junto con los signos medidos y el cero de la corriente se le carga
+    a la placa después del reset; ver `Bench.configurar()`.
 
     force_compile y force_upload saltean cada uno su propia verificación.
 
@@ -727,6 +1027,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
         ) from None
 
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
+    _link.configurar(bidir=bidir, say=say)
     return _link
 
 

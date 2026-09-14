@@ -425,7 +425,7 @@ check('un canal desconocido levanta excepcion',
       _raises(lambda: rig.channel('nope'), _cl.CtrlLinkError))
 
 # Un eje que gira parejo a una vuelta por segundo, muestreado a 500 Hz, con el
-# comando positivo: la velocidad tiene que dar 2*pi rad/s y el signo +1.
+# comando positivo: la velocidad tiene que dar 2*pi rad/s.
 _t = np.arange(0, 1.0, 0.002)
 _df = pd.DataFrame({'t': _t, 'y_uw': 360.0 * _t, 'u': np.full(len(_t), 204.0),
                     'i': np.full(len(_t), 100.0)})
@@ -437,14 +437,10 @@ check('el promedio no cambia una velocidad constante',
 check('el promedio es centrado: una rampa de velocidad no se atrasa',
       abs(ensayo.velocidad(pd.DataFrame({'t': _t, 'y_uw': 360.0 * _t ** 2}),
                            ventana=0.05)[1][250] - 2 * np.pi * 2 * _tv[250]) < 0.05)
-check('el signo del banco es +1 si el angulo sube con u > 0', ensayo.signo(_df) == 1)
 _df['y_uw'] = -_df['y_uw']
-check('y -1 si baja', ensayo.signo(_df) == -1)
-_neg = _df.assign(u=-204.0, y_uw=360.0 * _t)
-check('un comando negativo no decide el signo', ensayo.signo(_neg) == 1)
 _n = ensayo.normalizar(_df, ventana=0)
-check('normalizar da vuelta el angulo con el signo del banco',
-      np.allclose(_n['omega'], 2 * np.pi))
+check('normalizar no toca el signo: ya viene resuelto de la placa',
+      np.allclose(_n['omega'], -2 * np.pi))
 check('normalizar pone u en por ciento e i en amperes',
       abs(_n['u'].iloc[0] - 80.0) < 1e-9 and abs(_n['i'].iloc[0] - 0.1) < 1e-12)
 check('normalizar trae las columnas de un ensayo', list(_n.columns) == ensayo.COLUMNAS)

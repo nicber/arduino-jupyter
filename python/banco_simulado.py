@@ -7,7 +7,8 @@ motor. Los notebooks no se enteran: corren el mismo código en los dos casos, y 
 
 El modelo sigue al banco de verdad, no al de un libro, y eso incluye lo
 incómodo. El actuador es un transistor a masa con su diodo de rueda libre:
-empuja y no frena, un comando negativo empuja para el mismo lado, y con el
+empuja y no frena, un comando negativo empujaría para el mismo lado --por eso,
+con `mot_bidir` en cero, se recorta a cero igual que en la placa--, y con el
 comando en cero el eje sigue por inercia hasta que lo para el rozamiento, que
 tarda segundos. El motor no se reinicia entre capturas --sigue girando mientras
 la computadora hace otra cosa, igual que el de verdad--, así que un ensayo que no
@@ -70,10 +71,16 @@ MOTOR = dict(
 )
 PWM_T = 1e-3        # s, 1 kHz
 
-# El instante del período de PWM en el que el ADC toma la corriente, como
-# fracción del período desde que el transistor conduce. PWM y muestreo están
-# enganchados en fase, así que es siempre el mismo instante: el canal no mide el
-# promedio sino una muestra de la forma de onda, y la diferencia depende del duty.
+# La placa promedia todas las conversiones de la ventana de `cur_filas` filas, con
+# el ADC libre, y eso da la media de la corriente sin sesgo de fase. Acá se modela
+# igual: la media de cada período de PWM, promediada sobre la ventana, más un ruido
+# de 120 mA RMS por conversión (medido en el clon) dividido por la raíz de las
+# conversiones que entran. A /32 son 45,5 por fila de 2 ms.
+CONVERSIONES_POR_S = 1e6 / 44.0
+RUIDO_CONVERSION_MA = 120.0
+
+# Lo que queda de cuando el canal tomaba una sola muestra por fila: la fase del
+# período en la que se la tomaba. _periodo() la sigue calculando.
 FASE_ADC = 0.35
 
 # El retardo entre el eje y lo que informa el sensor: el filtro del AS5600 en 2x
@@ -81,18 +88,16 @@ FASE_ADC = 0.35
 RETARDO_S = 0.5e-3
 
 # La medición de corriente, con las escalas del sketch: 12 bits contra 5006 mV y
-# un ACS712 de 185 mV/A. El UNO cuenta de a cuatro, porque su ADC es de 10 bits
-# corrido dos lugares. El reposo no cae justo en media escala, y el ruido son los
-# 91 mA RMS que se midieron en el banco.
+# un ACS712 de 185 mV/A. El reposo no cae justo en media escala.
 MA_POR_CUENTA = 1000.0 * (5006.0 / 4096.0) / 185.0
 REPOSO_I = 2048 + 57         # cuentas
-RUIDO_I_MA = 91.0
 
 _Canal = namedtuple('_Canal', 'name scale unit')
 
 CANALES = {
     'y_raw': _Canal('y_raw', GRADOS_POR_CUENTA, 'deg'),
     'y_uw':  _Canal('y_uw',  GRADOS_POR_CUENTA, 'deg'),
+    'y_rep': _Canal('y_rep', 1.0,               ''),
     'u':     _Canal('u',     1.0,               'pwm'),
     'i':     _Canal('i',     MA_POR_CUENTA,     'mA'),
 }
@@ -114,6 +119,15 @@ class BancoSimulado:
         # lecturas son las de un banco sano, y están para que la tabla que muestra
         # `dev` sea la misma con el cable enchufado y sin él.
         self.ang_cal = 0
+        self.mot_bidir = 0
+        self.ang_inv = 0                # el cableado imaginario ya tiene los signos bien
+        self.cur_inv = 0
+        self.cur_filas = 10
+        self.cur_sagc = 0               # el banco de mentira no tiene la caída de AVCC
+        self.cur_sagd = 0
+        self.cur_notch = 0              # el banco de mentira no tiene red
+        self.cur_red = 4980
+        self.cur_notchr = 950
         self.cur_zero = 2048
         self.loop_div = 10
         self.dec = 1
@@ -137,7 +151,7 @@ class BancoSimulado:
         self._i = 0.0                   # A
         self._reloj = time.monotonic()
 
-        self.info = 'CtrlLink 1 Banco (SIMULADO) chans=4 dt_us=2000'
+        self.info = 'CtrlLink 1 Banco (SIMULADO) chans=5 dt_us=2000'
         self.simulado = True
 
     @property
@@ -154,7 +168,11 @@ class BancoSimulado:
     def ctl_uff(self, valor):
         # Lo que pasó desde la última vez, con el comando que había.
         self._ponerse_al_dia()
-        self._uff = int(round(min(255, max(-255, float(valor)))))
+        self._uff = self._recortar(valor)
+
+    def _recortar(self, valor):
+        """Lo que hace HBridge::write(): -255..255, o 0..255 en un solo cuadrante."""
+        return int(round(min(255, max(-255 if self.mot_bidir else 0, float(valor)))))
 
     def set(self, name, value, tries=3):
         if name == 'ang_lutw':
@@ -203,12 +221,21 @@ class BancoSimulado:
     def rest(self):
         self.ctl_uff = 0
 
-    def zero_current(self, seconds=0.3):
+    def zero_current(self, seconds=0.3, canales=None):
         """Lo mismo que en el banco de verdad: el reposo de ahora pasa a ser el cero."""
         self.rest()
-        df = self.capture(seconds, warn=False)
-        self.cur_zero = round(self.cur_zero + df['i'].mean() / MA_POR_CUENTA)
+        df = self.capture(seconds, warn=False, canales=canales)
+        signo = -1 if self.cur_inv else 1
+        self.cur_zero = round(self.cur_zero + signo * df['i'].mean() / MA_POR_CUENTA)
         return self.cur_zero
+
+    def configurar(self, bidir=None, cero=True, say=print, **_):
+        """Lo mismo que `Bench.configurar()`. El motor de mentira es de un cuadrante
+        diga lo que diga `bidir`: declararlo al revés se ve igual que en un banco B′."""
+        if bidir is not None:
+            self.mot_bidir = int(bool(bidir))
+        if cero:
+            self.zero_current()
 
     # ------------------------------------------------------ contarse solo
 
@@ -280,7 +307,7 @@ class BancoSimulado:
         return i, area / T, muestra
 
     def _integrar(self, comandos):
-        """Avanza el motor un período de PWM por comando. Devuelve (w, theta, i_adc) por período."""
+        """Avanza el motor un período de PWM por comando. Devuelve (w, theta, i media) por período."""
         p = self.motor
         J, T = p['J'], PWM_T
         w, theta, i = self._w, self._theta, self._i
@@ -306,7 +333,7 @@ class BancoSimulado:
             theta += 0.5 * (w + w_nueva) * T * a_cuentas
             w = w_nueva
 
-            ws[k], thetas[k], muestras[k] = w, theta, muestra
+            ws[k], thetas[k], muestras[k] = w, theta, i_med
 
         self._w, self._theta, self._i = w, theta, i
         return ws, thetas, muestras
@@ -361,7 +388,7 @@ class BancoSimulado:
         t_periodo = np.arange(n) * PWM_T
         for retardo, nombre, valor in sorted(events, key=lambda e: float(e[0])):
             if nombre == 'ctl_uff':
-                v = int(round(min(255, max(-255, float(valor)))))
+                v = self._recortar(valor)
                 comandos[t_periodo >= float(retardo) - 1e-12] = v
                 self._uff = v
             else:
@@ -389,18 +416,31 @@ class BancoSimulado:
         crudo = np.mod(cuentas, CUENTAS)
         corregido = cuentas - (self._lut_lookup(crudo) if self.ang_cal else 0)
 
-        # La corriente, como la ve el ADC del UNO: una muestra de la forma de onda,
-        # con ruido, en escalones de cuatro cuentas.
-        adc = (REPOSO_I + muestras[idx] * 185.0 / (5006.0 / 4096.0)
-               + self._rng.normal(0, RUIDO_I_MA / MA_POR_CUENTA, filas))
-        adc = np.clip(np.floor(adc / 4) * 4, 0, 4092)
+        # La corriente, como la publica la placa: la media de los períodos de la
+        # ventana de `cur_filas` filas que termina en cada fila, con el ruido que
+        # queda de promediar sus conversiones.
+        ventana = max(1, int(round(max(1, int(self.cur_filas)) * self.dt / PWM_T)))
+        acumulada = np.concatenate([[0.0], np.cumsum(muestras)])
+        hasta = np.minimum(idx + 1, n)
+        desde = np.maximum(hasta - ventana, 0)
+        media = (acumulada[hasta] - acumulada[desde]) / np.maximum(hasta - desde, 1)
+        conversiones = CONVERSIONES_POR_S * self.dt * max(1, int(self.cur_filas))
+        adc = (REPOSO_I + media * 185.0 / (5006.0 / 4096.0)
+               + self._rng.normal(0, RUIDO_CONVERSION_MA / np.sqrt(conversiones) / MA_POR_CUENTA,
+                                  filas))
+        adc = np.clip(np.rint(adc), 0, 4095)
+
+        # Los signos van al final, como en la placa: la tabla habla del imán.
+        s_ang = -1 if self.ang_inv else 1
+        s_cur = -1 if self.cur_inv else 1
 
         df = pd.DataFrame({
             't': t,
             'y_raw': crudo * GRADOS_POR_CUENTA,
-            'y_uw': corregido * GRADOS_POR_CUENTA,
+            'y_uw': s_ang * corregido * GRADOS_POR_CUENTA,
+            'y_rep': np.zeros(filas, dtype=np.uint8),
             'u': comandos[idx].astype(float),
-            'i': (adc - self.cur_zero) * MA_POR_CUENTA,
+            'i': s_cur * (adc - self.cur_zero) * MA_POR_CUENTA,
         })
 
         if canales is not None:
@@ -417,7 +457,8 @@ class BancoSimulado:
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
                         spres=1, mstat=0x20, agc=128, mag=1800,
                         wall=float(duration), rows=filas, drops=0,
-                        units={'y_raw': 'deg', 'y_uw': 'deg', 'u': 'pwm', 'i': 'mA'})
+                        units={'y_raw': 'deg', 'y_uw': 'deg', 'y_rep': '', 'u': 'pwm',
+                               'i': 'mA'})
 
         return df
 
@@ -437,23 +478,24 @@ class BancoSimulado:
                 ('sensor', 'contesta en el bus'),
                 ('iman', 'detectado, AGC 128/255, campo 1800'),
                 ('bus i2c', '0 errores de transferencia, 0 desbordes'),
-                ('motor', f'gira con u={u}')]:
+                ('motor', f'gira con u={u}'),
+                ('actuador', f'bidir = {bool(self.mot_bidir)}; el simulado no lo verifica')]:
             print(f'  [   ok]  {etiqueta:<18}  {detalle}')
         print('\n  NADA DE ESTO ES REAL: es el banco simulado.')
         return True
 
 
-def conseguir_banco(forzar_simulado=False, **kw):
+def conseguir_banco(forzar_simulado=False, bidir=None, **kw):
     """El banco de verdad si está, y si no uno simulado, avisando cuál es.
 
     Un notebook que se muestra en clase no puede depender de que el cable esté
     enchufado, pero tampoco puede hacer pasar un modelo por una medición. Así
-    que cae solo, y lo dice fuerte.
+    que cae solo, y lo dice fuerte. `bidir` es el de `sync_board()`.
     """
     if not forzar_simulado:
         try:
             from bench import sync_board
-            return sync_board()
+            return sync_board(bidir=bidir)
         except Exception as exc:
             print(f'no hay banco: {type(exc).__name__}: {exc}')
 
@@ -461,4 +503,6 @@ def conseguir_banco(forzar_simulado=False, **kw):
     print('BANCO SIMULADO. Las capturas salen de un modelo, no de un motor.')
     print('El motor y el error de sensor los puso banco_simulado.py.')
     print('=' * 68)
-    return BancoSimulado(**kw)
+    banco = BancoSimulado(**kw)
+    banco.configurar(bidir=bidir)
+    return banco

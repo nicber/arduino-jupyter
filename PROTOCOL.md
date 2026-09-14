@@ -115,8 +115,8 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `Banco` corre cuatro canales a 500 Hz —un int32 y tres de 16 bits, 25
-bytes por fila—, que son 12,5 kB/s, o el 13 % de un enlace de 1 Mbaud.
+sketch `Banco` corre cinco canales a 500 Hz —un int32, tres de 16 bits y uno de 8,
+27 bytes por fila—, que son 13,5 kB/s, o el 14 % de un enlace de 1 Mbaud.
 
 Pero a 1 Mbaud el cable no es lo que se acaba primero, sino la CPU del
 dispositivo. Formatear un byte, copiarlo al buffer y sacarlo por la interrupción

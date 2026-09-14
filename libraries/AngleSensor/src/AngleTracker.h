@@ -5,10 +5,10 @@
 // del lado de la aritmética, comprobable en la máquina de escritorio, y deja la
 // decisión de corregir o no en manos de quien la toma.
 //
-// Tampoco filtra, ni elige un cero, ni da vuelta el signo. Las tres cosas se
-// hacen del lado de la computadora: un filtro acá se identifica después como si
-// fuera un polo del motor, y el signo con el que el ángulo acompaña al comando es
-// de qué lado están dos cables, no del programa.
+// Tampoco filtra, ni elige un cero, ni da vuelta el signo. Un filtro acá se
+// identifica después como si fuera un polo del motor, y el signo con el que el
+// ángulo acompaña al comando es de qué lado están dos cables, no de este módulo:
+// lo aplica quien lo usa, sobre lo ya desenrollado (Banco con `ang_inv`).
 
 #ifndef ANGLESENSOR_ANGLETRACKER_H
 #define ANGLESENSOR_ANGLETRACKER_H

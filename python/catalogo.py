@@ -24,7 +24,11 @@ _CATALOGO = {
     # Lo único que mueve el motor.
     'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió de verdad es el canal u'),
 
+    # El actuador.
+    'mot_bidir':   ('perilla', '0, 1',        '1 con puente en H; 0 con un solo cuadrante, y un comando negativo sale como cero'),
+
     # El sensor de ángulo y su calibración.
+    'ang_inv':     ('perilla', '0, 1',        '1 si el ángulo se publica dado vuelta; lo mide bringup()'),
     'ang_cal':     ('perilla', '0, 1',        '1 si la corrección de la tabla está aplicada'),
     'ang_lutw':    ('perilla', 'empaquetado', 'una entrada de la tabla: (índice << 16) | valor'),
     'ang_lutsum':  ('lectura', '',            'suma de Fletcher de la tabla: verifica las 64 con una lectura'),
@@ -37,6 +41,13 @@ _CATALOGO = {
 
     # La medición de corriente.
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
+    'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica dada vuelta; lo mide bringup()'),
+    'cur_sagc':    ('perilla', '1/10000',     'compensación de la caída de AVCC mientras el PWM conmuta; la calibra calibrar_caida()'),
+    'cur_sagd':    ('perilla', '1/10000',     'compensación de la caída de AVCC por ciclo de trabajo, a fondo; la calibra calibrar_caida()'),
+    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150'),
+    'cur_red':     ('perilla', '0,01 Hz',     'la red vista desde la placa, para el notch: la mide calibrar_red()'),
+    'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
+    'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y el PWM; 1 = sólo la fila'),
 
     # El reloj del muestreo.
     'loop_div':    ('perilla', 'muestras',    'muestras de 5 kHz por fila: 10 son 500 Hz, 5 son 1 kHz'),
@@ -52,6 +63,7 @@ _CATALOGO = {
 # mueve para hacer un experimento, después lo que se mira.
 _GRUPOS = (
     ('ctl',   'El comando'),
+    ('mot',   'El actuador'),
     ('ang',   'El sensor de ángulo'),
     ('cur',   'La medición de corriente'),
     ('loop',  'El reloj del muestreo'),

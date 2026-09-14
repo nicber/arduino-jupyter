@@ -69,25 +69,7 @@ def esperar_quieto(dev, quieto=0.5, ventana=0.3, limite=60.0):
             return esperado
 
 
-def signo(df):
-    """+1 si un comando positivo sube el ángulo, -1 si lo baja.
-
-    Es una propiedad del cableado --de qué lado están los cables del motor, y de
-    qué lado mira el imán al sensor--, no de la planta, y se decide mirando para
-    dónde fue el eje mientras el comando era positivo. Sólo los comandos
-    positivos: con un actuador de un solo cuadrante uno negativo empuja para el
-    mismo lado, y contarlo al revés sería mentir. Devuelve +1 si en la captura no
-    hubo comando positivo o no hubo movimiento.
-    """
-    u = df['u'].to_numpy(dtype=float)
-    theta = df['y_uw'].to_numpy(dtype=float)
-    empuja = u[1:] > 0
-    if empuja.sum() < 2:
-        return 1
-    return -1 if np.diff(theta)[empuja].sum() < 0 else 1
-
-
-def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=1):
+def velocidad(df, ventana=0.02, canal='y_uw'):
     """(t, omega): radianes por segundo, derivando el ángulo y promediando.
 
     La derivada es la diferencia hacia atrás dividida por el período, que es lo
@@ -101,9 +83,12 @@ def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=1):
     Con `ventana = 0` no se promedia, y se ve la cuantización desnuda: una cuenta
     del sensor por período, a 500 Hz, son 0,77 rad/s. Devuelve una muestra menos
     que la captura.
+
+    El signo ya viene resuelto de la placa: un comando positivo sube el ángulo.
+    Ver `bringup()`.
     """
     t = df['t'].to_numpy(dtype=float)
-    theta = signo_banco * np.deg2rad(df[canal].to_numpy(dtype=float))
+    theta = np.deg2rad(df[canal].to_numpy(dtype=float))
     dt = _dt(t)
     w = np.diff(theta) / dt
     n = max(1, int(round(ventana / dt)))
@@ -120,19 +105,14 @@ def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=1):
     return t[1:], w
 
 
-def normalizar(df, ventana=0.02, signo_banco=None):
+def normalizar(df, ventana=0.02):
     """La captura en las unidades de un modelo: t [s], u [%], theta [rad], omega [rad/s], i [A].
 
-    `signo_banco` da vuelta el ángulo si un comando positivo lo hace bajar; por
-    omisión se lo deduce de la propia captura con `signo()`. La velocidad sale de
-    `velocidad()` con la misma `ventana`, y la primera fila --que no tiene
-    velocidad-- se descarta.
+    La velocidad sale de `velocidad()` con la misma `ventana`, y la primera fila
+    --que no tiene velocidad-- se descarta.
     """
-    if signo_banco is None:
-        signo_banco = signo(df)
-
-    t, w = velocidad(df, ventana=ventana, signo_banco=signo_banco)
-    theta = signo_banco * np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
+    t, w = velocidad(df, ventana=ventana)
+    theta = np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
 
     return pd.DataFrame({
         't':     t,
@@ -143,15 +123,14 @@ def normalizar(df, ventana=0.02, signo_banco=None):
     })
 
 
-def guardar(df, ruta, ventana=0.02, signo_banco=None):
+def guardar(df, ruta, ventana=0.02):
     """Escribe la captura como CSV con las columnas de `normalizar()`. Devuelve la ruta.
 
     Una captura que ya está normalizada --tiene `omega`-- se escribe tal cual.
     """
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    datos = df if 'omega' in df else normalizar(df, ventana=ventana,
-                                                 signo_banco=signo_banco)
+    datos = df if 'omega' in df else normalizar(df, ventana=ventana)
     datos[COLUMNAS].to_csv(ruta, index=False, float_format='%.6g')
     return ruta
 

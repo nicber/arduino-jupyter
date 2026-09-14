@@ -8,8 +8,10 @@
 //
 // Sirve igual para el actuador más pobre, un transistor a masa con su diodo de
 // rueda libre gobernado desde ENA: IN1 e IN2 no van a ningún lado, y un comando
-// negativo empuja para el mismo lado que uno positivo. Eso no se esconde acá: la
-// placa pone lo que se le pide y es la medición la que muestra qué hizo el eje.
+// negativo empujaría para el mismo lado que uno positivo. Para eso está `bidir`:
+// en cero, un comando negativo se recorta a cero y `u` informa ese cero, que es lo
+// que de verdad salió. Qué actuador hay no lo puede averiguar el puente; lo dice
+// quien arma el banco.
 //
 // El pin de ENA no es una preferencia: este código habla con OC1A del Timer1
 // directamente, porque es el único temporizador que queda libre en un AVR de la
@@ -43,12 +45,17 @@ class HBridge
     // una división.
     static const Command MAX = 255;
 
-    Command u;          // el último comando aplicado, para la telemetría
+    Command u;          // el último comando aplicado, ya recortado, para la telemetría
+    uint8_t bidir;      // 1: acciona en los dos sentidos; 0: un solo cuadrante
 
     // `top` es el TOP del Timer1: f = F_CPU / (2 * top). Por debajo de 255 el
     // ciclo de trabajo tendría menos escalones que el comando.
+    //
+    // Arranca en un solo cuadrante: un sketch que no sepa qué actuador tiene
+    // nunca invierte el sentido de un motor que no lo esperaba.
     constexpr explicit HBridge(Top top)
         : u(0)
+        , bidir(0)
         , m_top(top < 255 ? 255 : top)
         , m_dir(0)
     {
@@ -95,7 +102,7 @@ class HBridge
     }
 
     // Pone `command` sobre el puente: la magnitud en ENA por PWM, el sentido en
-    // IN1/IN2. Se recorta a -MAX..MAX.
+    // IN1/IN2. Se recorta a -MAX..MAX, o a 0..MAX si `bidir` está en cero.
     //
     // Un cambio de sentido no escribe las entradas de sentido con el puente vivo.
     // Primero baja ENA, que apaga las cuatro llaves de una sola escritura; recién
@@ -115,6 +122,7 @@ class HBridge
     {
         if (command >  MAX) command =  MAX;
         if (command < -MAX) command = (Command)-MAX;
+        if (command < 0 && !bidir) command = 0;
 
         u = command;
 

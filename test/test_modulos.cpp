@@ -23,6 +23,8 @@
 #include "AngleLut.h"
 #include "AngleTracker.h"
 #include "CurrentSense.h"
+#include "WindowMean.h"
+#include "SupplySag.h"
 #include "LoopAngle.h"
 #include "LoopCurrent.h"
 #include "Pid.h"
@@ -194,6 +196,61 @@ int main()
     lcur.update(2148);
     check_eq(lcur.i, -100, "y con el sensor invertido, menos cien");
     check_eq(lcur.sense.i, 100, "sin tocar lo que mide el sensor");
+
+    // ------------------------------------------------- el promedio de la corriente
+
+    WindowMean win(3);
+
+    // Una fila sola: el promedio de sus conversiones, redondeado.
+    check_eq(win.push(3 * 100 + 2, 3), 101, "una fila da el promedio de sus conversiones");
+
+    // Promedia conversiones, no filas: 10 conversiones en 200 pesan más que 2 en 0.
+    WindowMean pesos(2);
+    pesos.push(10 * 200, 10);
+    check_eq(pesos.push(0, 2), 167, "una fila con mas conversiones pesa mas");
+
+    // Las filas viejas salen de la ventana.
+    win.push(3 * 100, 3);
+    win.push(3 * 100, 3);
+    win.push(3 * 400, 3);
+    win.push(3 * 400, 3);
+    check_eq(win.push(3 * 400, 3), 400, "despues de rows filas la vieja ya no cuenta");
+
+    // Una fila sin conversiones --el ADC no corrió-- no inventa un cero.
+    WindowMean vacia(1);
+    vacia.push(4 * 250, 4);
+    check_eq(vacia.push(0, 0), 250, "una fila vacia deja el ultimo promedio");
+
+    // Cambiar rows empieza de nuevo y recorta al rango.
+    win.rows = 0;
+    win.apply();
+    check_eq(win.rows, 1, "rows en cero se recorta a una fila");
+    check_eq(win.push(2 * 7, 2), 7, "y la ventana empieza de nuevo");
+    win.rows = 200;
+    win.apply();
+    check_eq(win.rows, WindowMean::MAX_ROWS, "y por arriba a MAX_ROWS");
+
+    // La ventana llena con el máximo de conversiones de la placa más rápida no
+    // desborda: 32 filas de 91 conversiones de 4095.
+    WindowMean llena(WindowMean::MAX_ROWS);
+    int16_t ultimo = 0;
+    for (int k = 0; k < 40; k++) { ultimo = llena.push(91UL * 4095UL, 91); }
+    check_eq(ultimo, 4095, "la ventana llena a fondo de escala no desborda");
+
+    // ----------------------------------------------- la caída de la referencia
+
+    SupplySag sag;
+    check_eq(sag.correct(300000UL, 128, 255), 300000L, "sin calibrar no corrige nada");
+
+    sag.fixed = 25;      // 0,25 %
+    sag.slope = 220;     // 2,2 %
+    check_eq(sag.correct(300000UL, 0, 255), 300000L, "con el pin en bajo no hay caida");
+    check_eq(sag.correct(300000UL, 255, 255), 300000L - 6600L,
+             "al 100 % sin conmutar, solo la pendiente");
+    check_eq(sag.correct(100000UL, 51, 255), 100000L - 690L,
+             "al 20 % la parte fija mas la pendiente");
+    check(sag.correct(4000000000UL, 200, 255) < 4000000000UL,
+          "una suma enorme no desborda");
 
     // ------------------------------------------------------------------- el PID
 

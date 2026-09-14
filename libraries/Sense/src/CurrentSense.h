@@ -6,8 +6,8 @@
 // la máquina de escritorio.
 //
 // Lo único que sabe es dónde está el cero del sensor. No filtra --un filtro acá se
-// confunde con la planta que se mide-- ni da vuelta el signo, que se resuelve del
-// lado de la computadora igual que el del ángulo.
+// confunde con la planta que se mide-- ni da vuelta el signo, que lo aplica quien
+// lo usa igual que el del ángulo (Banco con `cur_inv`).
 
 #ifndef SENSE_CURRENTSENSE_H
 #define SENSE_CURRENTSENSE_H

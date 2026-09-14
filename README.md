@@ -14,7 +14,7 @@ mano y se verifica con `python-control`, acá se mide sobre un motor de verdad,
 con su zona muerta, su saturación, su ruido y su cuantización.
 
 ```python
-dev = sync_board()
+dev = sync_board(bidir=False)                               # False: transistor; True: puente en H
 ensayo.esperar_quieto(dev)                                  # el eje, parado de verdad
 dev.ctl_uff = 102                                           # 40 % sobre el actuador
 df = dev.step('ctl_uff', 204, pre=3.0, post=4.0, back=0)    # escalón, t = 0 en el escalón
@@ -36,9 +36,11 @@ TP y no está en el notebook.
 
 En la placa no hay ley de control ni filtros: el comando va derecho al actuador y
 el ángulo vuelve tal como lo entregó el sensor. Todo lo que se hace con la
-medición --elegir el signo, derivar, filtrar, ajustar-- pasa del lado de la
-computadora, donde se ve y se puede cambiar. Un filtro en la placa se confunde
-con la planta que se está midiendo, y por eso no hay ninguno. Los detalles del
+medición --derivar, filtrar, ajustar-- pasa del lado de la computadora, donde se
+ve y se puede cambiar. Un filtro en la placa se confunde con la planta que se está
+midiendo, y por eso no hay ninguno. Lo único que la placa sabe del cableado es lo
+que se le dice al conectar: si el actuador acciona en los dos sentidos (`bidir`) y
+los signos del imán y del sensor de corriente, que mide `bringup()`. Los detalles del
 enlace están en [`PROTOCOL.md`](PROTOCOL.md).
 
 ---
@@ -74,8 +76,9 @@ que se mide:
 
 - **empuja y no frena**: con el comando en cero, o más bajo, el eje sólo lo frena
   el rozamiento, y bajar de velocidad tarda casi el doble que subir;
-- **un comando negativo empuja para el mismo lado**: el sentido está en los
-  cables, no en el comando;
+- **el sentido está en los cables, no en el comando**: un comando negativo
+  empujaría para el mismo lado, así que conectando con `bidir=False` la placa lo
+  recorta a cero;
 - **con el comando en cero el eje sigue girando muchos segundos**, así que todo
   ensayo empieza con `ensayo.esperar_quieto(dev)`;
 - **la corriente se extingue antes de terminar cada período de PWM** a
@@ -84,18 +87,35 @@ que se mide:
 
 Con el puente en H, `ENA` lleva la magnitud e `IN1`/`IN2` el sentido, y un comando
 negativo hace girar el motor para el otro lado. Con el comando en cero el puente
-también queda abierto, así que el eje tampoco frena solo. Si un comando positivo hace bajar el
-ángulo medido, eso es de qué lado están los cables del motor y de qué lado mira el
-imán: `ensayo.signo()` lo detecta y `ensayo.normalizar()` lo aplica.
+también queda abierto, así que el eje tampoco frena solo.
+
+**Qué actuador hay lo declara quien conecta**: `sync_board(bidir=True)` con un
+puente, `bidir=False` con un transistor. `bringup()` acciona con `+u` y con `-u` y
+marca una falla si lo declarado no es lo que hay. **Los signos los mide
+`bringup()`**: si un comando positivo hace bajar el ángulo o sale como corriente
+negativa, es de qué lado están los cables y de qué lado miran los sensores. Se los
+pone a la placa (`ang_inv`, `cur_inv`) y los guarda en `notebooks/cableado.json`,
+de donde los carga cada conexión; desde ahí un comando positivo sube el ángulo en
+cualquier banco.
 
 **La medición de corriente lee A0 contra Vcc.** Un ACS712 es bipolar y
 ratiométrico: reposa en la mitad de su alimentación para poder bajar cuando la
 corriente cambia de sentido, así que contra la referencia interna de 1,1 V
 satura en reposo. Contra Vcc reposa en media escala por construcción. Lo que se
 paga es resolución: con 185 mV/A son 6,6 mA por cuenta en el clon y 26 en el UNO,
-que cuenta de a cuatro. **Con este motor el canal no alcanza**: consume decenas
-de mA y el sensor tiene 91 mA RMS de ruido por muestra. Sirve para ver que hay
-corriente, no para medirla; `bringup()` lo dice cuando lo ve.
+que cuenta de a cuatro.
+
+**Cada fila de corriente es un promedio.** Adentro de un período de PWM la
+corriente es un escalón de cientos de mA, y el PWM y el muestreo salen del mismo
+cristal: una conversión por fila cae siempre en la misma fase y se desvía de la
+media hasta 300 mA. Así que el ADC corre libre (a /32 en el clon, /128 en el UNO),
+la placa suma todas sus conversiones y publica el promedio de las últimas
+`cur_filas` filas: 10 por omisión, 20 ms, que anulan el PWM y los 50/100 Hz de la
+red y dejan unos 5 mA de ruido, con un retardo fijo de ~10 ms. Es el único filtro de
+la placa, y está porque lo que saca no se puede sacar de filas que ya lo traen
+plegado. Todo esto se midió con el sketch `AdcFase` y `herramientas/adc_fase.py`.
+La escala en mA sigue sin verificar con un tester: ver la nota al pie de la sección
+4 de `hardware.ipynb`.
 
 Dos números que conviene verificar una vez por banco, los dos en el sketch:
 
@@ -293,8 +313,9 @@ dice en la primera celda.
 `dev.bringup()` verifica el equipo parte por parte, y es lo que conviene correr
 ante cualquier duda. Cada vez que se conecta, `sync_board()` recompila si se editó
 el sketch, graba si cambió el binario y reabre el enlace, lo que resetea la placa
-a los valores del sketch; la calibración del sensor la repone la computadora (ver
-*Calibrar el sensor*).
+a los valores del sketch. Después le carga `bidir`, los signos de `cableado.json` y
+el cero de la corriente, que mide ahí mismo; la calibración del sensor la repone la
+computadora (ver *Calibrar el sensor*).
 
 > ⚠️ **Varias celdas hacen girar el motor.** Antes de correrlas, revisar que el
 > eje esté libre y que no haya nada cerca.
@@ -320,7 +341,10 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 
 | Parámetro | Qué es |
 |---|---|
-| `ctl_uff` | el comando sobre el actuador, de -255 a 255 |
+| `ctl_uff` | el comando sobre el actuador, de -255 a 255 (de 0 a 255 con `mot_bidir` en 0) |
+| `mot_bidir` | 1 con puente en H, 0 con un solo cuadrante; lo fija `sync_board(bidir=...)` |
+| `ang_inv`, `cur_inv` | los signos del banco; los mide `bringup()` y los carga `sync_board()` |
+| `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
@@ -328,11 +352,12 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |
 | `ang_present`, `ang_status`, `ang_agc`, `ang_mag` | estado del sensor: si contesta en el bus, y qué dice del imán |
 
-Las capturas son `DataFrame`s con `t`, `y_raw`, `y_uw`, `u` e `i`. Lo que se hace
-con ellas está en `python/ensayo.py`, que conviene leer entero:
-`esperar_quieto()` no deja arrancar un ensayo con el eje girando, `velocidad()`
-deriva el ángulo y promedia con una ventana centrada, `signo()` dice para dónde va
-el ángulo con un comando positivo, `normalizar()` pasa todo a segundos, por
+Las capturas son `DataFrame`s con `t`, `y_raw`, `y_uw`, `y_rep`, `u` e `i`. `y_rep`
+vale 1 en una fila cuyo ángulo repite el anterior porque el bus I2C no llegó a
+traer la muestra. Lo que se hace con ellas está en `python/ensayo.py`, que conviene
+leer entero: `esperar_quieto()` no deja arrancar un ensayo con el eje girando,
+`velocidad()` deriva el ángulo y promedia con una ventana centrada,
+`normalizar()` pasa todo a segundos, por
 ciento, radianes, radianes por segundo y amperes, y `guardar()` / `cargar()` lo
 llevan a un archivo y lo traen de vuelta.
 
@@ -389,7 +414,9 @@ identificaría después como un tiempo muerto del motor.
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa lejos de los rieles: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
 | `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el actuador no lo sigue». La causa más común es la alimentación de potencia |
-| `bringup` anota `signo` | un comando positivo hace bajar el ángulo. No es una falla: `ensayo.normalizar()` lo da vuelta |
+| `bringup` marca falla en `actuador` | lo declarado en `bidir` no es lo que hay: `-u` invierte el giro con `bidir=False`, o empuja igual con `bidir=True`. El mensaje dice con qué conectar |
+| `bringup` marca falla en `-u` | con `bidir=True` el eje no gira al revés, o con `bidir=False` el comando negativo no sale como cero: un sketch viejo en la placa, `sync_board(force_upload=True)` |
+| `sync_board` dice «sin signos medidos» | no hay `notebooks/cableado.json`: correr `dev.bringup()` con el motor, que lo escribe |
 | `bringup` anota `canal de i` | el pico de corriente del arranque no se despega del ruido: el sensor no resuelve este motor |
 | un ensayo sale distinto cada vez que se corre | ¿esperó a que el eje pare? Con el comando en cero el motor sigue girando muchos segundos: `ensayo.esperar_quieto(dev)` |
 | «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |

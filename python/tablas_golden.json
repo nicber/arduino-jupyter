@@ -6,6 +6,16 @@
       "frac": "0"
     },
     {
+      "nombre": "mot_bidir",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
+      "nombre": "ang_inv",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
       "nombre": "ang_cal",
       "tipo": "CTRL_U8",
       "frac": "0"
@@ -56,6 +66,41 @@
       "frac": "0"
     },
     {
+      "nombre": "cur_inv",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_filas",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_sagc",
+      "tipo": "CTRL_U16",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_sagd",
+      "tipo": "CTRL_U16",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_red",
+      "tipo": "CTRL_U16",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_notch",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_notchr",
+      "tipo": "CTRL_U16",
+      "frac": "0"
+    },
+    {
       "nombre": "loop_div",
       "tipo": "CTRL_U8",
       "frac": "0"
@@ -83,6 +128,12 @@
       "tipo": "CTRL_I32",
       "escala": "COUNTS_TO_DEG",
       "unidad": "deg"
+    },
+    {
+      "nombre": "y_rep",
+      "tipo": "CTRL_U8",
+      "escala": "1.0f",
+      "unidad": ""
     },
     {
       "nombre": "u",

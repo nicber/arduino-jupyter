@@ -60,14 +60,15 @@ def main():
           f'faltan {sorted(esperados - set(dev.params))}')
 
     canales = [c.name for c in dev.channels]
-    check('y los canales', canales == ['y_raw', 'y_uw', 'u', 'i'], str(canales))
+    check('y los canales', canales == ['y_raw', 'y_uw', 'y_rep', 'u', 'i'], str(canales))
 
     # ----------------------------------------------------- ida y vuelta de todo
     #
     # Cada perilla tiene que guardar lo que se le escribe, y seguir leyendo lo mismo
     # después de haber escrito todas las demás: eso descarta dos entradas de la
     # tabla apuntando a la misma dirección.
-    PRUEBA = {'ctl_uff': 0, 'ang_cal': 0, 'cur_zero': 2000, 'loop_div': 20, 'dec': 2}
+    PRUEBA = {'ctl_uff': 0, 'mot_bidir': 1, 'ang_inv': 1, 'ang_cal': 0,
+              'cur_zero': 2000, 'cur_inv': 1, 'cur_filas': 7, 'loop_div': 20, 'dec': 2}
 
     malos = []
     for nombre, valor in PRUEBA.items():
@@ -86,6 +87,26 @@ def main():
                 if not cerca(float(dev.get(n)), float(v), 1e-9)]
     check('y ninguna se pisa con otra', not cruzados, '; '.join(cruzados))
     dev.dec = 1
+
+    # Lo que sigue compara contra la medición cruda, así que sin los signos del
+    # banco y en un cuadrante. Cada signo se prueba en su bloque.
+    dev.ang_inv = dev.cur_inv = dev.mot_bidir = 0
+    dev.cur_filas = 10
+
+    # ------------------------------------------------ el promedio de la corriente
+    # Con el ADC libre, más filas en la ventana tienen que bajar el ruido como la
+    # raíz de las conversiones: de 1 a 10 filas, unas tres veces. Y cur_filas se
+    # recorta a 1..32.
+    dev.rest()
+    dev.cur_filas = 1
+    r1 = dev.capture(0.5, warn=False)['i'].std()
+    dev.cur_filas = 10
+    r10 = dev.capture(0.5, warn=False)['i'].std()
+    check('10 filas de promedio bajan el ruido de la corriente', r10 < r1 / 2,
+          f'{r1:.1f} mA con 1 fila, {r10:.1f} mA con 10')
+    dev.cur_filas = 100
+    check('cur_filas se recorta a 32', dev.cur_filas == 32, str(dev.cur_filas))
+    dev.cur_filas = 10
 
     # ------------------------------------------------------ el reloj del muestreo
     for divisor in (5, 10, 25):
@@ -118,7 +139,30 @@ def main():
     check('correr cur_zero corre la corriente lo mismo y al reves',
           cerca(i1 - i0, -DELTA, tol),
           f'{i0:.1f} -> {i1:.1f} cuentas, diferencia {i1 - i0:+.1f} contra {-DELTA}')
+
+    # Con el cero corrido la corriente queda lejos de cero, que es lo que hace
+    # visible el signo.
+    dev.cur_inv = 1
+    i2 = dev.capture(0.3, warn=False)['i'].mean() / lsb
+    dev.cur_inv = 0
+    check('cur_inv da vuelta la corriente, cero incluido', cerca(i2, -i1, tol),
+          f'{i1:.1f} -> {i2:.1f} cuentas')
     dev.cur_zero = base_zero
+
+    # ------------------------------------------------------------- el ángulo
+    # Con el eje quieto: dar vuelta el signo tiene que dar vuelta el desenrollado
+    # y no tocar la cuenta cruda.
+    a0 = dev.capture(0.2, warn=False)
+    dev.ang_inv = 1
+    a1 = dev.capture(0.2, warn=False)
+    dev.ang_inv = 0
+    escala = dev.channel('y_uw').scale
+    check('ang_inv da vuelta y_uw y deja y_raw',
+          cerca(a1['y_uw'].median(), -a0['y_uw'].median(), 2 * escala)
+          and cerca(a1['y_raw'].median(), a0['y_raw'].median(), 2 * escala),
+          f'y_uw {a0["y_uw"].median():+.2f} -> {a1["y_uw"].median():+.2f} grados')
+    check('y_rep marca pocas filas con el eje quieto', a0['y_rep'].mean() < 0.01,
+          f'{a0["y_rep"].sum()} de {len(a0)}')
 
     # ------------------------------------------------- la tabla de calibracion
     import calib
@@ -160,15 +204,21 @@ def main():
         print()
         print('--- lo que necesita mover el eje ---')
 
-        vueltas, pico = dev._tiron(120)
+        vueltas, df = dev._tiron(120)
         check('el eje gira con un comando', abs(vueltas) > 0.05,
-              f'{vueltas:+.2f} vueltas, {pico:.0f} mA de pico')
+              f'{vueltas:+.2f} vueltas, {df["i"].abs().max():.0f} mA de pico')
 
-        # El comando que sale es el que se pidió, recortado a -255..255.
-        dev.ctl_uff = 400
-        u = dev.capture(0.1, warn=False)['u']
-        dev.rest()
-        check('el comando se recorta en 255', (u == 255).all(), str(u.unique()))
+        # El comando que sale es el que se pidió, recortado a -255..255, o a 0..255
+        # en un solo cuadrante. Con bidir en 1 el eje se mueve: en un banco B′,
+        # para el mismo lado.
+        for bidir, pedido, sale in ((0, 400, 255), (0, -120, 0), (1, -400, -255)):
+            dev.mot_bidir = bidir
+            dev.ctl_uff = pedido
+            u = dev.capture(0.1, warn=False)['u']
+            dev.rest()
+            check(f'con mot_bidir = {bidir}, {pedido:+d} sale como {sale:+d}',
+                  (u == sale).all(), str(u.unique()))
+        dev.mot_bidir = 0
     else:
         print()
         print('       lo del motor se saltea; --motor lo incluye (mueve el eje)')
