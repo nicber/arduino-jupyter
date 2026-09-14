@@ -324,12 +324,8 @@ class Bench:
         return self.cur_zero + self._signo_corriente() * df['i'].mean() / self.channel('i').scale
 
     def _signo_corriente(self):
-        """-1 si la placa publica la corriente dada vuelta. Banco lo llama `cur_inv`,
-        ControlDemo `cur_invert`, y un sketch sin ninguno de los dos no la da vuelta."""
-        for nombre in ('cur_inv', 'cur_invert'):
-            if nombre in self.link._params:
-                return -1 if self.get(nombre) else 1
-        return 1
+        """-1 si la placa publica la corriente dada vuelta (`cur_inv`)."""
+        return -1 if 'cur_inv' in self.link._params and self.cur_inv else 1
 
     def _tiron(self, u, seconds=0.4):
         """`u` sobre el actuador por un instante, desde el eje quieto.
@@ -384,16 +380,20 @@ class Bench:
             say(f'  la red vista desde la placa: {self.cur_red / 100:.2f} Hz (para el notch, '
                 f'cur_notch)')
 
-        if 'ang_inv' in params:
-            if 'ang_inv' not in guardado:
+        # Cada signo por separado: ControlDemo tiene `cur_inv` pero no `ang_inv`,
+        # porque su lazo de ángulo ya lo da vuelta y el signo del lazo es `mot_inv`.
+        signos = [n for n in ('ang_inv', 'cur_inv') if n in params]
+        if signos:
+            if not all(n in guardado for n in signos):
                 say(f'  sin signos medidos ({Path(cableado).name} no los tiene): el '
                     f'angulo y la corriente van con el signo del cableado. Correr '
                     f'dev.bringup().')
             else:
-                self.ang_inv = int(guardado['ang_inv'])
-                self.cur_inv = int(guardado['cur_inv'])
-                say(f'  signos del banco: ang_inv = {self.ang_inv}, cur_inv = '
-                    f'{self.cur_inv} ({Path(cableado).name})')
+                for n in signos:
+                    self.set(n, int(guardado[n]))
+                say('  signos del banco: '
+                    + ', '.join(f'{n} = {int(guardado[n])}' for n in signos)
+                    + f' ({Path(cableado).name})')
 
         # Contra un riel no hay un offset que medir sino una entrada al aire, y
         # "calibrarla" dejaría un canal que informa ceros perfectos. Eso lo explica

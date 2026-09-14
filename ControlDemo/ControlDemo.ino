@@ -62,7 +62,7 @@
 // compensarlo; ver PROTOCOL.md. Los comandos son raros y diminutos, así que eso
 // no cuesta nada.
 //
-// La tabla de canales entera son 45 bytes por fila, o el 23 % del enlace a 500 Hz,
+// La tabla de canales entera son 47 bytes por fila, o el 24 % del enlace a 500 Hz,
 // que es el "bastante por debajo de la mitad" que le gusta a este protocolo. Pero
 // antes que el cable se acaba la CPU: formatear una fila y sacarla por la UART le
 // cuesta a esta placa más que el paso PID. Por eso la computadora elige qué canales
@@ -70,7 +70,7 @@
 // Python--. Medido en el banco con el PID corriendo, la frecuencia más alta sin
 // perder períodos es:
 //
-//   los 7 canales, 45 bytes                  1 kHz    (loop_div = 5)
+//   los 7 canales, 45 bytes                  1 kHz    (loop_div = 5, antes de y_rep)
 //   ref, y_uw, e, u, 29 bytes                1250 Hz  (loop_div = 4)
 //   y_uw, u, 17 bytes                        1667 Hz  (loop_div = 3)
 //
@@ -252,8 +252,15 @@ struct BoardFacts
 
 static BoardFacts g_board = { ADC_FULL, 0, 0, 0 };
 
-// Lo que la ISR congela en el tick de cada período.
-static volatile uint16_t g_tick_raw = 0;
+// Lo que la ISR congela en el tick de cada período, y el contador de muestras del
+// AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
+static volatile uint16_t g_tick_raw    = 0;
+static volatile uint8_t  g_tick_fresh  = 0;
+static uint16_t          g_isr_samples = 0;
+
+// 1 si la cuenta de este período repite la anterior: la transferencia del AS5600
+// que tenía que traerla no terminó a tiempo. El mismo canal que en Banco.
+static uint8_t g_y_rep = 0;
 
 // La cuenta cruda del sensor, sin corregir, sin offset y sin el signo invertido.
 // Es lo que indexa la tabla de calibración, así que es lo que la computadora
@@ -325,7 +332,7 @@ static const CtrlParam PROGMEM g_params[] =
 
     { "mot_top",     CTRL_U16, &g_motor.top,         0                 },
     { "mot_bidir",   CTRL_U8,  &g_motor.bidir,       0                 },
-    { "mot_invert",  CTRL_U8,  &g_motor.invert,      0                 },
+    { "mot_inv",     CTRL_U8,  &g_motor.invert,      0                 },
 
     { "ang_offset",  CTRL_I16, &g_angle.offset,      0                 },
     { "ang_alpha",   CTRL_I32, &g_alpha_y,           Angle::Alpha::FRAC },
@@ -343,7 +350,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_buserr",     CTRL_U16, &g_health.errors,     0                 },
 
     { "cur_zero",    CTRL_I16, &g_current.sense.zero, 0                },
-    { "cur_invert",  CTRL_U8,  &g_current.invert,    0                 },
+    { "cur_inv",     CTRL_U8,  &g_current.invert,    0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
     { "cur_sagc",    CTRL_U16, &g_sag.fixed,         0                 },
@@ -377,6 +384,7 @@ static const CtrlChannel PROGMEM g_channels[] =
     { "ref",   CTRL_I32, &g_set.ref,      1.0f / (1 << Setpoint::FRAC), "tgt" },
     { "y_raw", CTRL_U16, &g_y_raw,        COUNTS_TO_DEG,    "deg" },
     { "y_uw",  CTRL_I32, &g_angle.track.y_uw, COUNTS_TO_DEG,    "deg" },
+    { "y_rep", CTRL_U8,  &g_y_rep,        1.0f,             ""    },
     { "y_uwf", CTRL_I32, &g_angle.y_uwf,  COUNTS_TO_DEG,    "deg" },
     { "e",     CTRL_I16, &g_set.e,        1.0f,             "tgt" },
     { "u",     CTRL_I16, &g_motor.u,      1.0f,             "pwm" },
@@ -389,11 +397,18 @@ static const CtrlChannel PROGMEM g_channels[] =
 // el lazo va a usar. Cada módulo se lleva su estado.
 ISR(TIMER2_COMPA_vect)
 {
+    // Antes de lanzar la transferencia de este tick: si el contador no avanzó desde
+    // el tick anterior, la que se lanzó entonces no terminó.
+    const uint16_t samples = Sensor::samples();
+    const uint8_t  fresh   = (samples != g_isr_samples);
+    g_isr_samples = samples;
+
     Sensor::do_transfer();
 
     if (g_clock.on_isr())
     {
-        g_tick_raw = Sensor::counts();
+        g_tick_raw   = Sensor::counts();
+        g_tick_fresh = fresh;
         g_adc.close_row();
     }
 }
@@ -471,10 +486,13 @@ static bool apply_sensor_filter(void)
 static void measure(void)
 {
     uint16_t raw16;
+    uint8_t  fresh;
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
         raw16 = g_tick_raw;
+        fresh = g_tick_fresh;
     }
+    g_y_rep = !fresh;
 
     uint32_t sum;
     uint16_t n;
