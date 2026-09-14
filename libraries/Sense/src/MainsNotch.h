@@ -54,16 +54,35 @@ class MainsNotch
         , pole_milli(950)
         , m_active(0)
         , m_fresh(true)
+        , m_applied_chz(0)
+        , m_applied_harmonics(0xFF)
+        , m_applied_milli(0)
+        , m_applied_row_hz(0.0f)
         , m_sec()
     {
     }
 
     // Recalcula los coeficientes para filas de `row_hz`. Una sección cuyo armónico
     // queda por encima de la mitad de la frecuencia de las filas no se usa.
+    //
+    // Sólo si algo de lo suyo cambió: el sketch lo llama después de cada escritura
+    // de parámetro, `ctl_uff` incluido, y recalcular reinicia el estado --que en
+    // medio de un escalón deja una oscilación de la amplitud de la red-- y cuesta
+    // varias operaciones de punto flotante.
     void apply(float row_hz)
     {
         if (harmonics > MAX_HARMONICS) harmonics = MAX_HARMONICS;
         if (pole_milli > 999)          pole_milli = 999;
+
+        if (mains_chz == m_applied_chz && harmonics == m_applied_harmonics &&
+            pole_milli == m_applied_milli && row_hz == m_applied_row_hz)
+        {
+            return;
+        }
+        m_applied_chz       = mains_chz;
+        m_applied_harmonics = harmonics;
+        m_applied_milli     = pole_milli;
+        m_applied_row_hz    = row_hz;
 
         const float r = pole_milli / 1000.0f;
         m_active = 0;
@@ -162,9 +181,13 @@ class MainsNotch
         return (int16_t)v;
     }
 
-    uint8_t m_active;
-    bool    m_fresh;
-    Section m_sec[MAX_HARMONICS];
+    uint8_t  m_active;
+    bool     m_fresh;
+    uint16_t m_applied_chz;         // con qué se calcularon los coeficientes de ahora
+    uint8_t  m_applied_harmonics;
+    uint16_t m_applied_milli;
+    float    m_applied_row_hz;
+    Section  m_sec[MAX_HARMONICS];
 };
 
 #endif  // SENSE_MAINSNOTCH_H

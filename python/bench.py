@@ -656,21 +656,29 @@ class Bench:
         aplican y se repiten los dos tirones, que ahora tienen que dar lo que un
         usuario espera: +u sube el ángulo y la corriente, y -u baja el ángulo o no
         hace nada, según el actuador.
+
+        Sólo los signos que la placa declare: ControlDemo tiene `cur_inv` pero no
+        `ang_inv`, porque su lazo de ángulo ya lo da vuelta.
         """
         bidir = bool(self.mot_bidir)
-        antes = (self.ang_inv, self.cur_inv)
+        nombres = [n for n in ('ang_inv', 'cur_inv') if n in self.link._params]
+        antes = {n: int(self.get(n)) for n in nombres}
         lsb = self.channel('i').scale
+
+        def poner(valores):
+            for n, v in valores.items():
+                self.set(n, int(v))
 
         print(f'  accionando con u = +{u} y u = -{u}, 0,4 s cada uno y con el eje '
               f'quieto antes, dos veces ...')
 
-        self.ang_inv = self.cur_inv = 0
+        poner({n: 0 for n in nombres})
         self.mot_bidir = 1
         try:
             v_pos, df_pos = self._tiron(u)
             v_neg, _ = self._tiron(-u)
         except BaseException:
-            self.ang_inv, self.cur_inv = antes
+            poner(antes)
             raise
         finally:
             self.mot_bidir = int(bidir)
@@ -720,47 +728,53 @@ class Bench:
 
         # ---- los signos
         if not gira:
-            self.ang_inv, self.cur_inv = antes
+            poner(antes)
             report('signos', None, 'sin giro no se pueden medir: quedan los de antes')
             return
 
-        ang_inv = int(v_pos < 0)
+        medidos = {}
+        if 'ang_inv' in antes:
+            medidos['ang_inv'] = int(v_pos < 0)
 
         # La media de todo el tirón y no el pico, que con el sensor al revés también
         # es grande. Tiene que despegarse de lo que puede dar el residuo del cero.
         umbral = max(3 * lsb, 5 * noise / max(len(df_pos), 1) ** 0.5)
         mide_i = sensed and abs(i_pos) > umbral
-        cur_inv = int(i_pos < 0) if mide_i else antes[1]
+        if 'cur_inv' in antes:
+            medidos['cur_inv'] = int(i_pos < 0) if mide_i else antes['cur_inv']
 
-        self.ang_inv, self.cur_inv = ang_inv, cur_inv
-        self._guardar_cableado(ang_inv, cur_inv, mide_i, invierte=(v_pos > 0) != (v_neg > 0)
-                               if abs(v_neg) > _GIRO_MINIMO else None)
+        poner(medidos)
+        invierte = (v_pos > 0) != (v_neg > 0) if abs(v_neg) > _GIRO_MINIMO else None
+        self._guardar_cableado(medidos, mide_i, invierte)
 
         v_pos, df_pos = self._tiron(u)
         v_neg, df_neg = self._tiron(-u)
         i_pos = df_pos['i'].mean()
 
-        ok = v_pos > _GIRO_MINIMO and (not mide_i or i_pos > 0)
+        # Sin `ang_inv` la placa no da vuelta el ángulo, así que sólo se exige que gire.
+        sube = v_pos > _GIRO_MINIMO if 'ang_inv' in medidos else abs(v_pos) > _GIRO_MINIMO
+        ok = sube and (not mide_i or 'cur_inv' not in medidos or i_pos > 0)
         report('signos', ok,
-               f'ang_inv = {ang_inv}, cur_inv = {cur_inv}'
-               + ('' if mide_i else ' (sin medir: la corriente no se despega del cero)')
+               ', '.join(f'{n} = {v}' for n, v in medidos.items())
+               + ('' if mide_i else ' (la corriente no se despega del cero: sin medir)')
                + f'; +u da {v_pos:+.2f} vueltas y {i_pos:+.0f} mA de media. '
                f'Guardados en {CABLEADO.name}')
 
         u_neg = df_neg['u'].min()
         if bidir:
-            report('-u', v_neg < -_GIRO_MINIMO and u_neg == -u,
+            gira_al_reves = (v_neg < -_GIRO_MINIMO if 'ang_inv' in medidos else
+                             (v_neg > 0) != (v_pos > 0) and abs(v_neg) > _GIRO_MINIMO)
+            report('-u', gira_al_reves and u_neg == -u,
                    f'sale u = {u_neg:+.0f} y el eje da {v_neg:+.2f} vueltas')
         else:
             report('-u', abs(v_neg) <= _GIRO_MINIMO and u_neg == 0,
                    f'sale u = {u_neg:+.0f} (recortado a cero) y el eje da '
                    f'{v_neg:+.2f} vueltas')
 
-    def _guardar_cableado(self, ang_inv, cur_inv, cur_medido, invierte):
-        """Guarda los signos en `CABLEADO`, sin tocar lo demás que haya."""
+    def _guardar_cableado(self, signos, cur_medido, invierte):
+        """Guarda los signos medidos en `CABLEADO`, sin tocar lo demás que haya."""
         _actualizar_cableado(
-            ang_inv=int(ang_inv),
-            cur_inv=int(cur_inv),
+            **{n: int(v) for n, v in signos.items()},
             cur_inv_medido=bool(cur_medido),
             invierte_con_u_negativo=None if invierte is None else bool(invierte),
             placa=self.info)
