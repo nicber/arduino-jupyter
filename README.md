@@ -122,16 +122,17 @@ mide sin carga. Es el único filtro de la placa, y está porque lo que saca no s
 sacar de filas que ya lo traen plegado.
 
 **El PWM corre la lectura.** La corriente de base del transistor sale de la misma
-placa y hunde su alimentación, que es la referencia del ADC: con el motor quieto y
-el comando al 30 % se leen ~160 mA que no existen. `cur_sagc` y `cur_sagd` lo
+placa y hunde su alimentación, que es la referencia del ADC: con la fuente del motor
+apagada y el comando al 30 %, sin compensar, se leen ~160 mA que no existen. `cur_sagc` y `cur_sagd` lo
 compensan en función del ciclo de trabajo, y `dev.calibrar_caida()` los mide **con
 la fuente del motor apagada** --si el eje gira, aborta sin tocar nada--. Se guardan
-en `cableado.json` y los carga cada conexión. La compensación es aproximada: con el
-motor andando pueden quedar decenas de mA de error en régimen (se midió hasta
--100 mA), así que la corriente sirve para ver la forma de un transitorio más que
-para medir un valor absoluto. Tampoco se puede verificar desde acá con la fuente
-prendida y el eje trabado. La solución de fondo es de hardware: un MOSFET de compuerta lógica
-(IRLB8721, IRLZ44N) en lugar del BD139, que casi no le pide corriente a la placa.
+en `cableado.json` y los carga cada conexión. **Cuánto error deja con el motor
+andando no está medido**: se calibra en la única condición en la que se sabe que la
+corriente es cero, y con el motor andando no hay una corriente conocida contra la
+cual compararla. Una lectura que no cierre con un motor de un cuadrante --una
+corriente negativa, por ejemplo-- no tiene explicación todavía. Lo que sí evitaría
+la caída es un MOSFET de compuerta lógica (IRLB8721, IRLZ44N) en lugar del BD139,
+que casi no le pide corriente a la placa.
 La escala en mA sigue sin verificar con un tester: ver la nota al pie de la sección
 4 de `hardware.ipynb`.
 
@@ -379,7 +380,10 @@ leer entero: `esperar_quieto()` no deja arrancar un ensayo con el eje girando,
 `velocidad()` deriva el ángulo y promedia con una ventana centrada,
 `normalizar()` pasa todo a segundos, por
 ciento, radianes, radianes por segundo y amperes, y `guardar()` / `cargar()` lo
-llevan a un archivo y lo traen de vuelta.
+llevan a un archivo y lo traen de vuelta. Cada captura registra en
+`df.attrs['config']` la placa y las perillas que cambian lo que se mide
+(`loop_div`, `cur_filas`, los signos, el cero y la compensación de la corriente), y
+`guardar()` lo escribe arriba del CSV en líneas que empiezan con `#`.
 
 No hay ninguna lista de parámetros escrita del lado de Python: la placa declara su
 tabla al conectarse. Poner `dev` en una celda la muestra entera, con el valor de
@@ -501,7 +505,6 @@ python/test_*.py         pruebas, no necesitan hardware ni compilar
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/               los notebooks: hardware y calibración
 herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
-herramientas/empaquetar_tp2.py   arma dist/arduino-jupyter-tp2.zip, lo necesario para el TP2
 dyc.yml                  el entorno de conda del curso
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 Docs/CALIBRACION_AS5600.md  por qué la calibración es como es

@@ -79,17 +79,15 @@ PWM_T = 1 / 1050    # s, como PWM_TOP en Banco.ino
 CONVERSIONES_POR_S = 1e6 / 44.0
 RUIDO_CONVERSION_MA = 120.0
 
-# Lo que queda de cuando el canal tomaba una sola muestra por fila: la fase del
-# período en la que se la tomaba. _periodo() la sigue calculando.
-FASE_ADC = 0.35
-
 # El retardo entre el eje y lo que informa el sensor: el filtro del AS5600 en 2x
 # más el muestreo.
 RETARDO_S = 0.5e-3
 
-# La medición de corriente, con las escalas del sketch: 12 bits contra 5006 mV y
-# un ACS712 de 185 mV/A. El reposo no cae justo en media escala.
-MA_POR_CUENTA = 1000.0 * (5006.0 / 4096.0) / 185.0
+# La medición de corriente, con las escalas del sketch: 1,25 mV por cuenta
+# (UV_PER_COUNT en Sense/RowAdc.h) y un ACS712 de 185 mV/A. El reposo no cae justo
+# en media escala.
+MV_POR_CUENTA = 1.25
+MA_POR_CUENTA = 1000.0 * MV_POR_CUENTA / 185.0
 REPOSO_I = 2048 + 57         # cuentas
 
 _Canal = namedtuple('_Canal', 'name scale unit')
@@ -270,14 +268,13 @@ class BancoSimulado:
     def _periodo(self, D, w, i0):
         """Un período de PWM con la velocidad congelada.
 
-        Devuelve (corriente al final, corriente media, corriente en FASE_ADC), en A.
+        Devuelve (corriente al final, corriente media), en A.
         """
         p = self.motor
         R, T = p['R'], PWM_T
         tau = p['L'] / R
         emf = p['Ke'] * w
         ton = D * T
-        tadc = FASE_ADC * T
 
         def tramo(i, a, t):
             # i(t) = a + (i - a) e^{-t/tau}, que se detiene en cero si va a cruzarlo:
@@ -297,14 +294,11 @@ class BancoSimulado:
         i, area = i0, 0.0
         if ton > 0.0:
             i, area = tramo(i0, a_on, ton)
-        i_on = i
         if ton < T:
             i, ar = tramo(i, a_off, T - ton)
             area += ar
 
-        muestra = (tramo(i0, a_on, tadc)[0] if tadc < ton
-                   else tramo(i_on, a_off, tadc - ton)[0])
-        return i, area / T, muestra
+        return i, area / T
 
     def _integrar(self, comandos):
         """Avanza el motor un período de PWM por comando. Devuelve (w, theta, i media) por período."""
@@ -320,7 +314,7 @@ class BancoSimulado:
             # El transistor sólo ve el módulo del comando: uno negativo empuja para
             # el mismo lado.
             D = min(255, abs(int(comandos[k]))) / 255.0
-            i, i_med, muestra = self._periodo(D, w, i)
+            i, i_med = self._periodo(D, w, i)
             par = p['Ke'] * i_med
 
             if w <= 0.0 and par <= p['Ts']:
@@ -425,7 +419,7 @@ class BancoSimulado:
         desde = np.maximum(hasta - ventana, 0)
         media = (acumulada[hasta] - acumulada[desde]) / np.maximum(hasta - desde, 1)
         conversiones = CONVERSIONES_POR_S * self.dt * max(1, int(self.cur_filas))
-        adc = (REPOSO_I + media * 185.0 / (5006.0 / 4096.0)
+        adc = (REPOSO_I + media * 185.0 / MV_POR_CUENTA
                + self._rng.normal(0, RUIDO_CONVERSION_MA / np.sqrt(conversiones) / MA_POR_CUENTA,
                                   filas))
         adc = np.clip(np.rint(adc), 0, 4095)
@@ -457,6 +451,9 @@ class BancoSimulado:
                         gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
                         spres=1, mstat=0x20, agc=128, mag=1800,
                         wall=float(duration), rows=filas, drops=0,
+                        config=dict({'dispositivo': self.info},
+                                    **{n: self.get(n) for n in catalogo.de_configuracion()
+                                       if hasattr(self, n)}),
                         units={'y_raw': 'deg', 'y_uw': 'deg', 'y_rep': '', 'u': 'pwm',
                                'i': 'mA'})
 

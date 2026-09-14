@@ -59,6 +59,22 @@ _CATALOGO = {
     'chans':       ('perilla', 'bits',        'qué canales van en la fila, uno por bit; mejor capture(..., canales=[...])'),
 }
 
+# Las perillas que no son de configuración: el comando es el experimento mismo --y
+# ya viene en el canal u--, `ang_lutw` es un registro de escritura y las dos del
+# enlace no cambian lo que se mide.
+_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'dec', 'chans')
+
+
+def de_configuracion():
+    """Las perillas que cambian lo que mide una captura, en el orden de la tabla.
+
+    Es lo que `df.attrs['config']` registra de cada captura, y lo que
+    `ensayo.guardar()` escribe arriba del CSV.
+    """
+    return tuple(n for n, (clase, _, _) in _CATALOGO.items()
+                 if clase == 'perilla' and n not in _NO_CONFIGURAN)
+
+
 # El título de cada grupo, en el orden en que conviene leerlos: primero lo que se
 # mueve para hacer un experimento, después lo que se mira.
 _GRUPOS = (

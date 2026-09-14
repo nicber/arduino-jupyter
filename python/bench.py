@@ -61,7 +61,7 @@ LIBRARIES = _HERE / 'libraries'
 BUILD_DIR = _HERE / 'build'
 
 # El sketch que se graba si no se pide otro. `sync_board(sketch=...)` acepta el
-# nombre de una carpeta del repositorio --'Banco', 'ControlDemo'-- o una ruta.
+# nombre de una carpeta del repositorio --'Banco'-- o una ruta.
 SKETCH    = _HERE / 'Banco'
 
 # La calibración del sensor de este banco. No entra en el repositorio --es un dato
@@ -169,6 +169,9 @@ class DiagnosticoDeBanco:
 
     def parametros_de_estado(self):
         return self._ESTADO
+
+    def parametros_de_configuracion(self):
+        return catalogo.de_configuracion()
 
     def notas_primero(self, df):
         """Va antes que las del muestreo: si el sensor no está, lo demás es consecuencia."""
@@ -317,8 +320,8 @@ class Bench:
         `canales` tiene que ser el mismo que va a usar el ensayo. El cero depende
         de cuánta telemetría sale: transmitir le carga la alimentación a la placa
         --el LED de TX, el conversor USB-serie-- y medido en el banco la corriente
-        leída se corre unos -5,6 mA por cada 1000 bytes/s, casi 60 mA entre emitir
-        todos los canales y emitir uno solo. Por omisión, todos, que es lo que emite
+        leída se corre, y entre emitir todos los canales y emitir uno solo se
+        midieron unos 20 mA. Por omisión, todos, que es lo que emite
         `capture()` si no se le pide otra cosa.
         """
         self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
@@ -393,8 +396,8 @@ class Bench:
             say(f'  la red vista desde la placa: {self.cur_red / 100:.2f} Hz (para el notch, '
                 f'cur_notch)')
 
-        # Cada signo por separado: ControlDemo tiene `cur_inv` pero no `ang_inv`,
-        # porque su lazo de ángulo ya lo da vuelta y el signo del lazo es `mot_inv`.
+        # Cada signo por separado, y sólo los que el sketch declare: uno que cierre un
+        # lazo de ángulo puede tener `cur_inv` y no `ang_inv`.
         signos = [n for n in ('ang_inv', 'cur_inv') if n in params]
         if signos:
             if not all(n in guardado for n in signos):
@@ -682,8 +685,8 @@ class Bench:
         usuario espera: +u sube el ángulo y la corriente, y -u baja el ángulo o no
         hace nada, según el actuador.
 
-        Sólo los signos que la placa declare: ControlDemo tiene `cur_inv` pero no
-        `ang_inv`, porque su lazo de ángulo ya lo da vuelta.
+        Sólo los signos que la placa declare: un sketch que cierre un lazo de ángulo
+        puede tener `cur_inv` y no `ang_inv`.
         """
         bidir = bool(self.mot_bidir)
         nombres = [n for n in ('ang_inv', 'cur_inv') if n in self.link._params]
@@ -1012,8 +1015,8 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
 
     force_compile y force_upload saltean cada uno su propia verificación.
 
-    `sketch` elige qué se graba: el nombre de una carpeta del repositorio
-    --'ControlDemo'-- o una ruta. Por omisión `SKETCH`. Cada sketch compila en su
+    `sketch` elige qué se graba: el nombre de una carpeta del repositorio o una
+    ruta. Por omisión `SKETCH`. Cada sketch compila en su
     propia carpeta de `build/`, así que alternar entre dos no recompila ninguno.
     """
     global _link

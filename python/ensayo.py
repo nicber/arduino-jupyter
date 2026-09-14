@@ -20,6 +20,7 @@ segundos, por ciento de PWM, radianes, radianes por segundo y amperes. Es lo que
 espera cualquier herramienta de identificación, y lo que se puede leer dentro de
 un año sin acordarse de nada de esto.
 """
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -124,31 +125,66 @@ def normalizar(df, ventana=0.02):
     t, w = velocidad(df, ventana=ventana)
     theta = np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
 
-    return pd.DataFrame({
+    datos = pd.DataFrame({
         't':     t,
         'u':     df['u'].to_numpy(dtype=float)[1:] * 100.0 / U_MAX,
         'theta': theta,
         'omega': w,
         'i':     df['i'].to_numpy(dtype=float)[1:] / 1000.0,
     })
+    datos.attrs['config'] = dict(df.attrs.get('config', {}), ventana=ventana)
+    return datos
 
 
 def guardar(df, ruta, ventana=0.02):
     """Escribe la captura como CSV con las columnas de `normalizar()`. Devuelve la ruta.
+
+    Arriba de las columnas van unas líneas que empiezan con `#` y dicen con qué se
+    midió: la placa, la fecha, la `ventana` y las perillas de la captura
+    (`df.attrs['config']`). Un modelo ajustado con `cur_filas = 10` y otro con
+    `cur_filas = 1` no se comparan igual, y dentro de un mes eso ya no se recuerda.
+    Para leerlo con otra cosa que `cargar()`: `pd.read_csv(ruta, comment='#')`.
 
     Una captura que ya está normalizada --tiene `omega`-- se escribe tal cual.
     """
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     datos = df if 'omega' in df else normalizar(df, ventana=ventana)
-    datos[COLUMNAS].to_csv(ruta, index=False, float_format='%.6g')
+
+    config = dict(datos.attrs.get('config', {}))
+    config.setdefault('ventana', ventana)
+    encabezado = [f'# guardado: {datetime.now():%Y-%m-%d %H:%M:%S}']
+    encabezado += [f'# {clave}: {valor}' for clave, valor in config.items()]
+
+    with open(ruta, 'w', encoding='utf-8', newline='') as f:
+        f.write('\n'.join(encabezado) + '\n')
+        datos[COLUMNAS].to_csv(f, index=False, float_format='%.6g', lineterminator='\n')
     return ruta
 
 
+def _valor(texto):
+    """Un valor del encabezado, como número si lo es."""
+    for tipo in (int, float):
+        try:
+            return tipo(texto)
+        except ValueError:
+            pass
+    return texto
+
+
 def cargar(ruta):
-    """Lee un CSV escrito por `guardar()`."""
-    df = pd.read_csv(ruta)
+    """Lee un CSV escrito por `guardar()`. La configuración queda en `df.attrs['config']`."""
+    config = {}
+    with open(ruta, encoding='utf-8') as f:
+        for linea in f:
+            if not linea.startswith('#'):
+                break
+            clave, _, valor = linea[1:].strip().partition(': ')
+            config[clave] = _valor(valor)
+
+    df = pd.read_csv(ruta, comment='#')
     faltan = [c for c in COLUMNAS if c not in df]
     if faltan:
         raise ValueError(f'{ruta}: faltan las columnas {faltan}')
+    df.attrs['config'] = config
     return df

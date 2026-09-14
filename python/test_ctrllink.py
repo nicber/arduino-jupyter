@@ -458,6 +458,38 @@ with tempfile.TemporaryDirectory() as _tmp:
 check('guardar y cargar devuelven lo mismo',
       np.allclose(_leido.to_numpy(), _n.to_numpy(), rtol=1e-5, atol=1e-6))
 
+# El archivo dice con qué configuración se midió.
+_df.attrs['config'] = {'dispositivo': 'CtrlLink 1 Banco', 'loop_div': 10, 'cur_red': 49.8}
+with tempfile.TemporaryDirectory() as _tmp:
+    _ruta = ensayo.guardar(_df, Path(_tmp) / 'c.csv', ventana=0.02)
+    _texto = _ruta.read_text(encoding='utf-8')
+    _leido = ensayo.cargar(_ruta)
+    _pandas = pd.read_csv(_ruta, comment='#')
+check('guardar escribe la configuracion arriba de las columnas',
+      '# loop_div: 10' in _texto and _texto.index('# loop_div') < _texto.index('t,u,'), _texto[:200])
+check('cargar devuelve la configuracion en attrs',
+      _leido.attrs['config'].get('loop_div') == 10 and _leido.attrs['config'].get('cur_red') == 49.8
+      and _leido.attrs['config'].get('ventana') == 0.02
+      and _leido.attrs['config'].get('dispositivo') == 'CtrlLink 1 Banco', str(_leido.attrs['config']))
+check('pandas lo lee salteando el encabezado', list(_pandas.columns) == ensayo.COLUMNAS)
+
+
+class _DiagConKp:
+    def parametros_de_configuracion(self):
+        return ('kp', 'ki', 'no_existe')
+
+
+_devc = connect(FakeUno(), diagnostico=_DiagConKp())
+_c1 = _devc.capture(0.1, warn=False).attrs['config']
+_devc.kp = 1.25
+_c2 = _devc.capture(0.1, warn=False).attrs['config']
+_devc.step('kp', 2.0, pre=0.05, post=0.05, warn=False)
+_c3 = _devc.capture(0.1, warn=False).attrs['config']
+check('la captura registra la configuracion que el dispositivo tiene',
+      _c1.get('kp') == 0.5 and 'ki' in _c1 and 'no_existe' not in _c1, str(_c1))
+check('un set se refleja en la captura siguiente', _c2.get('kp') == 1.25, str(_c2))
+check('un evento de captura no deja la configuracion vieja', _c3.get('kp') == 2.0, str(_c3))
+
 # --------------------------------------------- celda cortada por el medio
 # Lo que de verdad pasa en un notebook: el boton de parar en mitad de una
 # captura, un traceback a mitad de un `set`. El dispositivo queda emitiendo o el
