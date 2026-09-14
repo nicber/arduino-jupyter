@@ -168,7 +168,8 @@ static const float SENSE_MV_PER_A = 185.0f;
 // es donde un ACS712 --bipolar y ratiométrico-- reposa con margen para los dos
 // sentidos. La corriente de base del transistor carga la alimentación del micro y
 // corre la lectura mientras conduce; se compensa con el ciclo de trabajo
-// (`cur_sagc`, `cur_sagd`, que calibra `calibrar_caida()` del lado de Python). Las
+// (una tabla de 17 puntos, `cur_sagw` y `cur_sagsum`, que calibra `calibrar_caida()`
+// del lado de Python). Las
 // referencias internas del LGT8F328P se probaron y no sirven con el I2C del AS5600
 // funcionando: ver Sense/RowAdc.h.
 //
@@ -213,6 +214,8 @@ typedef RowAdc<SENSE_CHANNEL>                                  Adc;
 static SampleClock  g_clock(10);
 static Adc          g_adc;
 static SupplySag    g_sag;
+static uint32_t     g_sagw   = SupplySag::NOTHING;
+static uint16_t     g_sagsum = 0;
 static WindowMean   g_window(1);      // un período: una ventana larga atrasa el lazo
 static MainsNotch   g_notch;
 static LoopCurrent  g_current(SENSE_ZERO);
@@ -356,8 +359,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_inv",     CTRL_U8,  &g_current.invert,    0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
-    { "cur_sagc",    CTRL_U16, &g_sag.fixed,         0                 },
-    { "cur_sagd",    CTRL_U16, &g_sag.slope,         0                 },
+    { "cur_sagw",    CTRL_U32, &g_sagw,              0                 },
+    { "cur_sagsum",  CTRL_U16, &g_sagsum,            0                 },
     { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0                 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0                 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0                 },
@@ -608,6 +611,7 @@ static void refresh_tuning(void)
     g_current.set_alpha(LoopCurrent::Alpha::from_raw(g_alpha_i));
 
     g_lut.apply(g_lutw);
+    g_sag.apply(g_sagw);
 
     g_window.apply();
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
@@ -616,6 +620,7 @@ static void refresh_tuning(void)
     // describe lo que hay, incluso si alguien lo escribió a mano, y la computadora
     // puede verificar 64 entradas con una sola lectura.
     g_lutsum = g_lut.checksum();
+    g_sagsum = g_sag.checksum();
 
     // El filtro del sensor, sólo cuando cambió: escribirlo en cada `set pid_kp`
     // pararía el muestreador sin motivo. Y sólo con el muestreador corriendo,

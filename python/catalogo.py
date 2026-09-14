@@ -42,8 +42,8 @@ _CATALOGO = {
     # La medición de corriente.
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica dada vuelta; lo mide bringup()'),
-    'cur_sagc':    ('perilla', '1/10000',     'compensación de la caída de AVCC mientras el PWM conmuta; la calibra calibrar_caida()'),
-    'cur_sagd':    ('perilla', '1/10000',     'compensación de la caída de AVCC por ciclo de trabajo, a fondo; la calibra calibrar_caida()'),
+    'cur_sagw':    ('perilla', 'empaquetado', 'una entrada de la tabla de la caída de AVCC contra el ciclo de trabajo: (índice << 16) | partes por 10000; la calibra calibrar_caida()'),
+    'cur_sagsum':  ('lectura', '',            'suma de Fletcher de la tabla de la caída: verifica las 17 con una lectura'),
     'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150'),
     'cur_red':     ('perilla', '0,01 Hz',     'la red vista desde la placa, para el notch: la mide calibrar_red()'),
     'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
@@ -62,7 +62,10 @@ _CATALOGO = {
 # Las perillas que no son de configuración: el comando es el experimento mismo --y
 # ya viene en el canal u--, `ang_lutw` es un registro de escritura y las dos del
 # enlace no cambian lo que se mide.
-_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'dec', 'chans')
+_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'cur_sagw', 'dec', 'chans')
+
+# Y dos lecturas que sí configuran: las sumas dicen qué tabla estaba puesta.
+_TABLAS = ('ang_lutsum', 'cur_sagsum')
 
 
 def de_configuracion():
@@ -72,7 +75,7 @@ def de_configuracion():
     `ensayo.guardar()` escribe arriba del CSV.
     """
     return tuple(n for n, (clase, _, _) in _CATALOGO.items()
-                 if clase == 'perilla' and n not in _NO_CONFIGURAN)
+                 if (clase == 'perilla' and n not in _NO_CONFIGURAN) or n in _TABLAS)
 
 
 # El título de cada grupo, en el orden en que conviene leerlos: primero lo que se

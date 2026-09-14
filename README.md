@@ -123,14 +123,20 @@ sacar de filas que ya lo traen plegado.
 
 **El PWM corre la lectura.** La corriente de base del transistor sale de la misma
 placa y hunde su alimentación, que es la referencia del ADC: con la fuente del motor
-apagada y el comando al 30 %, sin compensar, se leen ~160 mA que no existen. `cur_sagc` y `cur_sagd` lo
-compensan en función del ciclo de trabajo, y `dev.calibrar_caida()` los mide **con
-la fuente del motor apagada** --si el eje gira, aborta sin tocar nada--. Se guardan
-en `cableado.json` y los carga cada conexión. **Cuánto error deja con el motor
-andando no está medido**: se calibra en la única condición en la que se sabe que la
-corriente es cero, y con el motor andando no hay una corriente conocida contra la
-cual compararla. Una lectura que no cierre con un motor de un cuadrante --una
-corriente negativa, por ejemplo-- no tiene explicación todavía. Lo que sí evitaría
+apagada y el comando al 30 %, sin compensar, se leen ~160 mA que no existen. Una
+tabla de 17 puntos contra el ciclo de trabajo lo compensa en la placa (`cur_sagw`,
+verificada con `cur_sagsum`), y `dev.calibrar_caida()` la mide **con la fuente del
+motor apagada** --si el eje gira, aborta--, en una sola captura de poco más de un
+minuto: los puntos en escalera, referidos a la recta entre el reposo de antes y el de
+después. Se guarda en `cableado.json` y la carga cada conexión. Que alcance con
+medirla sin corriente está medido: con el sensor fuera del circuito, la caída dio
+lo mismo con la fuente apagada, con el eje trabado --mucha corriente de colector--
+y con el eje libre, dentro de 3 y 10 mA respectivamente. Lo que no está verificado
+es la escala en mA. Y **el reposo deriva**: arrancar una captura lo corre unos
+20 mA que se van en ~20 s, y después se mueve algunos mA por minuto, también con la
+fuente del motor apagada y sin causa conocida. Eso limita la calibración --tres
+calibraciones seguidas difirieron en ±15 mA-- y cualquier medición de corriente
+absoluta: la corriente sirve para comparar dentro de una misma captura. Lo que sí evitaría
 la caída es un MOSFET de compuerta lógica (IRLB8721, IRLZ44N) en lugar del BD139,
 que casi no le pide corriente a la placa.
 La escala en mA sigue sin verificar con un tester: ver la nota al pie de la sección
@@ -366,7 +372,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
-| `cur_sagc`, `cur_sagd` | compensación de la caída de Vcc con el PWM; `calibrar_caida()` los mide con la fuente del motor apagada |
+| `cur_sagw`, `cur_sagsum` | la tabla de la compensación de la caída de Vcc con el PWM, una entrada por escritura, y su suma; `calibrar_caida()` la mide con la fuente del motor apagada |
 | `cur_notch`, `cur_red`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), la frecuencia en centésimas de Hz (la mide `calibrar_red()`) y el radio del polo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |

@@ -137,8 +137,9 @@ static const uint16_t PWM_TOP = 7619;
 // Contra AVCC, que se cae mientras el transistor conduce: la corriente de base (unos
 // 18 mA con 220 ohm) carga la alimentación del micro y la lectura sube un 2,2 %,
 // unos 500 mA aparentes sin corriente en el motor. Se compensa con el ciclo de
-// trabajo, que la placa conoce: ver Sense/SupplySag.h, y `cur_sagc` / `cur_sagd`, que
-// se calibran con la fuente del motor apagada. Una cuenta son 1,25 mV en A0 en las
+// trabajo, que la placa conoce: una tabla de 17 puntos (Sense/SupplySag.h) que se
+// carga con `cur_sagw` y se verifica con `cur_sagsum`, y que calibrar_caida() mide
+// con la fuente del motor apagada. Una cuenta son 1,25 mV en A0 en las
 // dos placas, y con 185 mV/A eso son 6,8 mA --27 en el UNO, que cuenta de a
 // cuatro--. El ruido es mucho más grande que eso: 120 mA RMS por conversión,
 // medidos en el clon, y por eso se promedia.
@@ -202,8 +203,11 @@ static uint8_t g_ang_inv = 0;
 static uint8_t g_cur_inv = 0;
 
 // La compensación de la caída de AVCC con el ciclo de trabajo. Arranca en cero, sin
-// compensar: los números son del cableado de cada banco y los carga la computadora.
+// compensar: la tabla es del cableado de cada banco y la carga la computadora, una
+// entrada por escritura de `cur_sagw`.
 static SupplySag g_sag;
+static uint32_t  g_sagw   = SupplySag::NOTHING;
+static uint16_t  g_sagsum = 0;
 
 // El notch de la red sobre la corriente, fila por fila. Arranca apagado: con la
 // ventana de 20 ms por omisión no hace falta. Ver Sense/MainsNotch.h.
@@ -259,8 +263,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_zero",    CTRL_I16, &g_current.zero,      0 },
     { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
-    { "cur_sagc",    CTRL_U16, &g_sag.fixed,         0 },
-    { "cur_sagd",    CTRL_U16, &g_sag.slope,         0 },
+    { "cur_sagw",    CTRL_U32, &g_sagw,              0 },
+    { "cur_sagsum",  CTRL_U16, &g_sagsum,            0 },
     { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
@@ -412,15 +416,18 @@ static void refresh_tuning(void)
     CtrlLink::set_period_us(g_clock.apply(SAMPLE_HZ));
 
     g_lut.apply(g_lutw);
+    g_sag.apply(g_sagw);
 
     g_window.apply();
 
     // Con la frecuencia de las filas de ahora: `loop_div` también la mueve.
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
-    // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
-    // describe lo que hay, y la computadora verifica 64 entradas con una lectura.
+    // Se recalculan siempre y no sólo al escribir las tablas: así `ang_lutsum` y
+    // `cur_sagsum` describen lo que hay, y la computadora verifica cada tabla con una
+    // lectura.
     g_lutsum = g_lut.checksum();
+    g_sagsum = g_sag.checksum();
 }
 
 // La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy fuerte,

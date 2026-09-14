@@ -380,12 +380,19 @@ class Bench:
 
         guardado = leer_cableado(cableado) or {}
 
-        if 'cur_sagd' in params:
-            if 'cur_sagd' in guardado:
-                self.cur_sagc = int(guardado['cur_sagc'])
-                self.cur_sagd = int(guardado['cur_sagd'])
-                say(f'  caida de AVCC compensada: {self.cur_sagc / 100:.2f} % mientras '
-                    f'conmuta + {self.cur_sagd / 100:.2f} % a fondo')
+        if 'cur_sagw' in params:
+            tabla = guardado.get('cur_sag')
+            if tabla is None and 'cur_sagd' in guardado:
+                # La recta de antes, evaluada en los puntos de la tabla.
+                tabla = _tabla_de_recta(int(guardado['cur_sagc']), int(guardado['cur_sagd']))
+                say('  OJO: la caida de AVCC esta calibrada con la recta vieja '
+                    '(cur_sagc, cur_sagd), que deja 10 a 40 mA de error. Con la fuente '
+                    'del motor APAGADA, correr dev.calibrar_caida().')
+            if tabla is not None:
+                self._poner_caida(tabla)
+                say(f'  caida de AVCC compensada: {tabla[1] / 100:.2f} % a duty 16, '
+                    f'{tabla[_SAG_PUNTOS.index(128) + 1] / 100:.2f} % a 128, '
+                    f'{tabla[-1] / 100:.2f} % a fondo')
             else:
                 say('  sin compensar la caida de AVCC con el PWM: la corriente lee de mas '
                     'mientras el transistor conduce. Con la fuente del motor APAGADA, '
@@ -465,68 +472,121 @@ class Bench:
             _actualizar_cableado(cur_red=self.cur_red)
         return f, amplitudes
 
-    def calibrar_caida(self, us=(40, 80, 120, 160, 200, 230, 255), seconds=1.0, guardar=True):
-        """Mide cuánto sube la lectura de corriente con el PWM sin corriente en el motor.
+    def _poner_caida(self, tabla):
+        """Carga la tabla de la caída de AVCC en la placa y la verifica con su suma."""
+        tabla = [int(v) for v in tabla]
+        if len(tabla) != _SAG_TAMANO:
+            raise ValueError(f'la tabla de la caida tiene {_SAG_TAMANO} valores, no {len(tabla)}')
+        for k, v in enumerate(tabla):
+            self.set('cur_sagw', (k << 16) | (min(max(v, 0), _SAG_MAXIMO) & 0xFFFF))
+        leida = int(self.get('cur_sagsum'))
+        propia = _fletcher([min(max(v, 0), _SAG_MAXIMO) for v in tabla])
+        if leida != propia:
+            raise RuntimeError(f'la tabla de la caida no llego entera: la placa dice '
+                               f'{leida:#06x} y la tabla es {propia:#06x}')
+
+    def calibrar_caida(self, seconds=1.0, guardar=True, verificar=True):
+        """Mide cuánto sube la lectura de corriente con el PWM, y lo compensa en la placa.
 
         **Con la fuente del motor apagada**, o el motor desconectado: si circula
         corriente, se la calibra como si fuera error. Si el eje gira durante la
-        medición se aborta y no se toca nada. Lo que no se puede detectar desde acá
-        es la fuente prendida con el eje trabado.
+        medición se aborta y la placa vuelve a la tabla de `CABLEADO`.
 
         Mientras el transistor conduce, su corriente de base carga la alimentación
-        del micro, y como el ADC mide contra ella la lectura sube. Sin corriente en
-        el motor todo lo que se lea es eso. Se ajusta la recta
-        `e(D) = sagc · [0 < D < 1] + sagd · D` en partes por diez mil, se la pone en
-        la placa y se la guarda en `CABLEADO`. Devuelve (sagc, sagd).
+        del micro, y como el ADC mide contra ella la lectura sube. Con el sensor fuera
+        del circuito se midió que eso depende del ciclo de trabajo y no de la
+        corriente del motor --fuente apagada, eje libre y eje trabado dan lo mismo a
+        pocos mA--, así que alcanza con medirlo sin corriente.
+
+        El reposo no se queda quieto: arrancar el flujo de telemetría lo corre unos
+        20 mA que se van en unos 20 s, y después deriva de a unos mA por minuto. Así que
+        todo es una sola captura, sin arrancar y parar el flujo entre puntos: 20 s de
+        reposo para que se asiente, los puntos en escalera --con el PWM prendido la
+        lectura llega a su valor en menos de 0,1 s--, y 10 s de reposo al final. Cada
+        punto se refiere a la recta entre el reposo de antes y el de después. Es
+        poco más de un minuto, y la verificación otro tanto.
+
+        Los puntos son los de la tabla de la placa (duty 16, 32, ..., 240 y 255). La
+        tabla se carga, se verifica con `cur_sagsum` y se guarda en `CABLEADO`. Con
+        `verificar`, se mide con la tabla puesta qué queda en cuatro puntos.
+        Devuelve la tabla, en partes por diez mil.
         """
         import numpy as np
 
         lsb = self.channel('i').scale
-        antes = (self.cur_sagc, self.cur_sagd)
-        self.cur_sagc = self.cur_sagd = 0
-        self.rest()
-        time.sleep(0.3)
+        signo = self._signo_corriente()
+        anterior = (leer_cableado() or {}).get('cur_sag')
+        asentar, despues, paso = 20.0, 10.0, seconds + 0.3
 
-        def cuentas():
-            df = _sin_arranque(self.capture(seconds, warn=False, canales=['y_uw', 'i']))
+        def escalera(us):
+            """Los mA de cada punto menos el reposo interpolado, en una sola captura."""
+            eventos = [(asentar + k * paso, 'ctl_uff', u) for k, u in enumerate(us)]
+            fin = asentar + len(us) * paso
+            eventos.append((fin, 'ctl_uff', 0))
+            df = self.capture(fin + despues, events=eventos, warn=False,
+                              canales=['y_uw', 'u', 'i'])
             vueltas = abs(df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
             if vueltas > _GIRO_MINIMO:
                 raise RuntimeError(
                     f'el eje giro {vueltas:.1f} vueltas con el PWM: la fuente del motor '
                     f'esta prendida. Apagarla (o desconectar el motor) y volver a correr '
-                    f'calibrar_caida(); la compensacion queda como estaba.')
-            return self.cur_zero + self._signo_corriente() * df['i'].mean() / lsb
+                    f'calibrar_caida().')
 
-        D, e = [], []
+            t = df['t'].to_numpy() - df['t'].iloc[0]
+            u = df['u'].to_numpy()
+            i = df['i'].to_numpy()
+            prende = t[np.flatnonzero(u != 0)[0]]
+            apaga = t[np.flatnonzero(u != 0)[-1]]
+            antes = (t > prende - 5.0) & (t < prende) & (u == 0)
+            luego = (t > apaga + 4.0) & (u == 0)
+            ta, ia = t[antes].mean(), i[antes].mean()
+            tb, ib = t[luego].mean(), i[luego].mean()
+
+            puntos = []
+            for k, uk in enumerate(us):
+                m = (u == uk) & (t >= prende + k * paso + 0.3) & (t < prende + (k + 1) * paso)
+                tk = t[m].mean()
+                ref = ia + (ib - ia) * (tk - ta) / (tb - ta)
+                puntos.append((float(i[m].mean()), float(ref)))
+            return puntos, ib - ia
+
+        def caida(lectura, ref):
+            cuentas_ref = self.cur_zero + signo * ref / lsb
+            return signo * (lectura - ref) / lsb / cuentas_ref * 10000
+
+        self.rest()
+        tabla = [0] * _SAG_TAMANO
         try:
-            base = cuentas()
-            for u in us:
-                self.ctl_uff = u
-                time.sleep(0.3)
-                D.append(u / 255.0)
-                e.append((cuentas() - base) / base * 10000)
+            self._poner_caida(tabla)
+            puntos, deriva = escalera(_SAG_PUNTOS)
         except BaseException:
-            self.cur_sagc, self.cur_sagd = antes
-            raise
-        finally:
             self.rest()
+            self._poner_caida(anterior if anterior is not None else [0] * _SAG_TAMANO)
+            print('calibrar_caida abortada: la placa quedo con la tabla de '
+                  + ('cableado.json' if anterior is not None else 'cero, sin compensar'))
+            raise
 
-        D, e = np.array(D), np.array(e)
-        conmuta = D < 1.0
-        A = np.column_stack([conmuta.astype(float), D])
-        sagc, sagd = np.linalg.lstsq(A, e, rcond=None)[0]
-        resto = e - A @ [sagc, sagd]
-        sagc, sagd = int(round(max(sagc, 0))), int(round(max(sagd, 0)))
+        for k, (lectura, ref) in enumerate(puntos, start=1):
+            tabla[k] = int(round(min(max(caida(lectura, ref), 0), _SAG_MAXIMO)))
+        self._poner_caida(tabla)
 
-        print(f'caida de AVCC: {sagc / 100:.2f} % mientras conmuta + {sagd / 100:.2f} % a '
-              f'fondo (residuo del ajuste {np.abs(resto).max():.0f} por diez mil)')
-        for d, x in zip(D, e):
-            print(f'  {d:4.0%}: {x / 100:+.2f} %')
+        print('caida de AVCC, por duty:')
+        print('  ' + '  '.join(f'{u}: {v / 100:.2f} %'
+                               for u, v in zip((0,) + _SAG_PUNTOS, tabla)))
+        print(f'el reposo se corrio {deriva:+.1f} mA entre antes y despues de la escalera')
 
-        self.cur_sagc, self.cur_sagd = sagc, sagd
+        if verificar:
+            us = (48, 128, 208, 255)
+            restos, deriva = escalera(us)
+            print('con la tabla puesta queda: '
+                  + ', '.join(f'{lectura - ref:+.0f} mA a {u}'
+                              for u, (lectura, ref) in zip(us, restos))
+                  + f' (reposo corrido {deriva:+.1f} mA)')
+
         if guardar:
-            _actualizar_cableado(cur_sagc=sagc, cur_sagd=sagd)
-        return sagc, sagd
+            _actualizar_cableado(cur_sag=tabla)
+            _borrar_del_cableado('cur_sagc', 'cur_sagd')
+        return tabla
 
     # ------------------------------------------------------- puesta en marcha
 
@@ -837,6 +897,40 @@ def _actualizar_cableado(**campos):
     datos.update(campos)
     datos['medido'] = datetime.now().isoformat(timespec='seconds')
     CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
+
+
+def _borrar_del_cableado(*claves):
+    """Saca `claves` de `CABLEADO`, si están."""
+    datos = leer_cableado()
+    if datos is None or not any(c in datos for c in claves):
+        return
+    for c in claves:
+        datos.pop(c, None)
+    CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
+
+
+# La tabla de la caída de AVCC de Sense/SupplySag.h: 17 puntos en partes por diez
+# mil, el primero en duty 0 --que vale cero: con el pin en bajo no hay caída--, uno
+# cada 16 cuentas hasta 240, y el último con el pin siempre en alto.
+_SAG_TAMANO = 17
+_SAG_PUNTOS = tuple(range(16, 241, 16)) + (255,)
+_SAG_MAXIMO = 2000
+
+
+def _tabla_de_recta(fijo, pendiente):
+    """La recta de la compensación anterior, `fijo · [0 < D < 1] + pendiente · D`, en los puntos de la tabla."""
+    return [0] + [int(round((fijo if u < 255 else 0) + pendiente * u / 255)) for u in _SAG_PUNTOS]
+
+
+def _fletcher(valores):
+    """La suma de Fletcher de 16 bits de las tablas de la placa, byte bajo primero."""
+    a = b = 0
+    for v in valores:
+        v = int(v) & 0xFFFF
+        for byte in (v & 0xFF, v >> 8):
+            a = (a + byte) & 0xFF
+            b = (b + a) & 0xFF
+    return (b << 8) | a
 
 
 # ------------------------------------------------------- compilación y carga

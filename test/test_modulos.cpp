@@ -252,16 +252,36 @@ int main()
 
     SupplySag sag;
     check_eq(sag.correct(300000UL, 128, 255), 300000L, "sin calibrar no corrige nada");
+    check_eq(sag.checksum(), 0, "la tabla vacia suma cero");
 
-    sag.fixed = 25;      // 0,25 %
-    sag.slope = 220;     // 2,2 %
-    check_eq(sag.correct(300000UL, 0, 255), 300000L, "con el pin en bajo no hay caida");
-    check_eq(sag.correct(300000UL, 255, 255), 300000L - 6600L,
-             "al 100 % sin conmutar, solo la pendiente");
-    check_eq(sag.correct(100000UL, 51, 255), 100000L - 690L,
-             "al 20 % la parte fija mas la pendiente");
+    // 100 partes por punto hasta duty 240, y 2000 con el pin siempre en alto.
+    for (uint32_t k = 0; k < SupplySag::SIZE - 1; k++)
+    {
+        check(sag.apply((k << 16) | (100 * k)), "cada entrada se escribe");
+    }
+    check(sag.apply(((uint32_t)(SupplySag::SIZE - 1) << 16) | 2000UL), "y la del pin en alto");
+    check(!sag.apply(((uint32_t)(SupplySag::SIZE - 1) << 16) | 2000UL),
+          "la misma escritura dos veces no hace nada");
+    check(!sag.write_packed((17UL << 16) | 5UL), "un indice que no existe se rechaza");
+    check_eq(sag.checksum(), 0x64de, "la suma de Fletcher es la que calcula Python");
+
+    check_eq(sag.error(0, 255), 0, "con el pin en bajo no hay caida");
+    check_eq(sag.error(24, 255), 150, "entre dos puntos, interpola");
+    check_eq(sag.error(240, 255), 1500, "en un punto, el punto");
+    check_eq(sag.error(248, 255), 1767, "el ultimo tramo va de 240 a full");
+    check_eq(sag.error(255, 255), 2000, "a fondo, el ultimo punto");
+    check_eq(sag.error(300, 255), 2000, "por arriba de full, el ultimo punto");
+    check_eq(sag.correct(100000UL, 24, 255), 100000L - 1500L, "corrige la suma entera");
     check(sag.correct(4000000000UL, 200, 255) < 4000000000UL,
           "una suma enorme no desborda");
+
+    SupplySag baja;
+    baja.write_packed((1UL << 16) | 50UL);
+    check_eq(baja.error(8, 255), 25, "una tabla que sube redondea bien");
+    baja.write_packed((2UL << 16) | 0UL);
+    check_eq(baja.error(24, 255), 25, "y una que baja, tambien");
+    check((uint16_t)baja.write_packed((3UL << 16) | 60000UL) && baja.entry[3] == SupplySag::MAX_ENTRY,
+          "una entrada enorme se acota");
 
     // ------------------------------------------------------------------- el PID
 

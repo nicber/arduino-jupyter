@@ -474,6 +474,23 @@ check('cargar devuelve la configuracion en attrs',
 check('pandas lo lee salteando el encabezado', list(_pandas.columns) == ensayo.COLUMNAS)
 
 
+# La tabla de la caída de AVCC: la misma suma que SupplySag::checksum() en
+# test_modulos.cpp, y la recta vieja pasada a la tabla.
+_tabla = [100 * k for k in range(16)] + [2000]
+check('la suma de la tabla de la caida es la de la placa', bench._fletcher(_tabla) == 0x64de,
+      hex(bench._fletcher(_tabla)))
+_recta = bench._tabla_de_recta(27, 174)
+check('la recta vieja pasa a la tabla: cero en 0, fija + pendiente mientras conmuta, sin fija a fondo',
+      len(_recta) == 17 and _recta[0] == 0 and _recta[8] == round(27 + 174 * 128 / 255)
+      and _recta[-1] == 174, str(_recta))
+import banco_simulado
+_sim = banco_simulado.BancoSimulado()
+for _k, _v in enumerate(_tabla):
+    _sim.set('cur_sagw', (_k << 16) | _v)
+check('el simulador carga y verifica la tabla de la caida',
+      _sim.get('cur_sagsum') == bench._fletcher(_tabla), hex(_sim.get('cur_sagsum')))
+
+
 class _DiagConKp:
     def parametros_de_configuracion(self):
         return ('kp', 'ki', 'no_existe')

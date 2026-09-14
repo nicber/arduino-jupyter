@@ -697,6 +697,10 @@ class CtrlLink:
                 stored = self._coerce(name, echoed)
                 if self._agrees(name, stored, value):
                     self.__dict__.setdefault('_conocidos', {})[name] = stored
+                    # Una tabla se escribe por `<x>w` y se verifica con `<x>sum`: la
+                    # suma conocida deja de valer.
+                    if name.endswith('w'):
+                        self._olvidar([name[:-1] + 'sum'])
                     return stored
                 break
             if attempt + 1 == tries:
