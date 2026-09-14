@@ -321,8 +321,15 @@ class Bench:
         """
         self.rest()
         df = self.capture(seconds, warn=False, canales=canales)
-        signo = -1 if self.cur_inv else 1
-        return self.cur_zero + signo * df['i'].mean() / self.channel('i').scale
+        return self.cur_zero + self._signo_corriente() * df['i'].mean() / self.channel('i').scale
+
+    def _signo_corriente(self):
+        """-1 si la placa publica la corriente dada vuelta. Banco lo llama `cur_inv`,
+        ControlDemo `cur_invert`, y un sketch sin ninguno de los dos no la da vuelta."""
+        for nombre in ('cur_inv', 'cur_invert'):
+            if nombre in self.link._params:
+                return -1 if self.get(nombre) else 1
+        return 1
 
     def _tiron(self, u, seconds=0.4):
         """`u` sobre el actuador por un instante, desde el eje quieto.
@@ -463,7 +470,7 @@ class Bench:
 
         def cuentas():
             df = self.capture(seconds, warn=False, canales=['i'])
-            return self.cur_zero + (-1 if self.cur_inv else 1) * df['i'].mean() / lsb
+            return self.cur_zero + self._signo_corriente() * df['i'].mean() / lsb
 
         base = cuentas()
         D, e = [], []

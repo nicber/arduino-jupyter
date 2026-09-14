@@ -5,14 +5,17 @@
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
 // Medición de corriente (opcional): ACS712 en A0
-// Actuador (opcional): puente L298N, ENA -> 9 (PWM, 1 kHz), IN1 -> 6, IN2 -> 7
+// Actuador (opcional): puente L298N, ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7
 //
 // Este archivo no hace casi nada por sí mismo: arma los módulos, los cablea entre
 // sí y publica sus parámetros. Cada cosa que se puede medir, accionar o ajustar
 // tiene un dueño, y el dueño se lleva su estado adentro:
 //
 //   g_clock    el reloj del lazo          Sampler/SampleClock.h
-//   g_adc      el conversor corriendo libre  Sense/FreeAdc.h
+//   g_adc      el conversor corriendo libre  Sense/RowAdc.h
+//   g_sag      la caída de la referencia   Sense/SupplySag.h
+//   g_window   el promedio de la corriente Sense/WindowMean.h
+//   g_notch    el notch de la red          Sense/MainsNotch.h
 //   g_current  la corriente con sentido    Control/LoopCurrent.h
 //   g_lut      la corrección del ángulo    Calibracion/AngleLut.h
 //   g_angle    la posición del lazo        Control/LoopAngle.h
@@ -29,6 +32,13 @@
 // 500 Hz. De esa manera el muestreo mantiene un período rígido aun cuando el
 // cálculo de control fluctúe. `loop_late` informa cuánta fluctuación hubo y
 // `loop_missed` cuenta los períodos de control que se saltearon del todo.
+//
+// El ángulo y la corriente de cada período se congelan en la ISR, en el tick mismo,
+// y no cuando loop() llega a atenderlo: si no, un paso atendido tarde calcularía con
+// una medición de hasta `loop_late` después, y en un lazo cerrado ese retardo
+// variable entra en la realimentación. Congelado, el ángulo tiene un retardo fijo de
+// un tick (200 us), y la ventana de la corriente termina en el tick. Ver Banco.ino,
+// donde se midió.
 //
 // La ley de control es aritmética entera de punta a punta; ver ControlMath. Y
 // también lo es cada parámetro que lee: cada uno se guarda en la forma de punto
@@ -73,6 +83,8 @@
 // llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
 // 5 y 6 andan como siempre.
 
+#include <util/atomic.h>
+
 #include <nI2C.h>
 
 #include <AS5600.h>
@@ -84,7 +96,10 @@
 
 #include <AngleLut.h>
 #include <SensorHealth.h>
-#include <FreeAdc.h>
+#include <MainsNotch.h>
+#include <RowAdc.h>
+#include <SupplySag.h>
+#include <WindowMean.h>
 #include <HBridge.h>
 #include <LoopAngle.h>
 #include <LoopCurrent.h>
@@ -125,12 +140,13 @@ static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 // encendido que ya venía escaso: medido en este banco, a 20 kHz el motor
 // directamente no arranca, y a 1 kHz anda.
 //
-// 1 kHz sale exacto (TOP = 8000) y entran dos períodos suyos en cada período del
-// lazo, así que los dos quedan enganchados en fase en lugar de batir: el
-// muestreador toma siempre las mismas cinco fases de la ondulación, lo que da un
-// sesgo fijo en la corriente en lugar de una oscilación lenta. Con un puente
-// MOSFET --un TB6612FNG, un DRV8833-- nada de esto haría falta.
-static const uint16_t PWM_TOP_DEFAULT = 8000;   // 1,0 kHz
+// Y no 1 kHz justo, sino 1050 Hz (TOP = 7619). A 1 kHz el PWM queda enganchado en
+// fase con el muestreador de 5 kHz, que sale del mismo cristal; y lo que queda del
+// rizado del PWM después de promediar cada período del lazo se pliega a 1050 - 1000 =
+// 50 Hz y sus armónicos, que es donde la ventana de 20 ms de la corriente y el notch
+// de la red tienen ceros. A 1010 Hz, en cambio, caía en 10 Hz. Ver Banco.ino. Con un
+// puente MOSFET --un TB6612FNG, un DRV8833-- se podría modular mucho más rápido.
+static const uint16_t PWM_TOP_DEFAULT = 7619;   // 1050 Hz
 
 // Medición de corriente en A0. Nada de este bloque entra en la ley de control
 // salvo que alguien ponga el objetivo en corriente: sobre todo fija las unidades
@@ -145,73 +161,22 @@ static const uint8_t SENSE_CHANNEL = 0;
 // sensibilidad--, así que ahí va 185 dividido por lo mismo. Ver README.
 static const float SENSE_MV_PER_A = 185.0f;
 
-// La referencia del ADC, que es la única perilla de ganancia que tiene el AVR de
-// este lado, y es una elección entre techo y resolución.
+// El ADC corre libre contra AVCC y cada período del lazo promedia todas sus
+// conversiones: una conversión suelta cae siempre en la misma fase del PWM, y la
+// corriente adentro del período es un escalón de cientos de mA. Contra AVCC, porque
+// es donde un ACS712 --bipolar y ratiométrico-- reposa con margen para los dos
+// sentidos. La corriente de base del transistor carga la alimentación del micro y
+// corre la lectura mientras conduce; se compensa con el ciclo de trabajo
+// (`cur_sagc`, `cur_sagd`, que calibra `calibrar_caida()` del lado de Python). Las
+// referencias internas del LGT8F328P se probaron y no sirven con el I2C del AS5600
+// funcionando: ver Sense/RowAdc.h.
 //
-// Por omisión va la referencia alta, que es Vcc, y no sólo por el techo. Un ACS712
-// es un sensor bipolar y ratiométrico: reposa en la mitad de su alimentación
-// --2,5 V con 5 V-- para poder bajar cuando la corriente cambia de sentido. Medir
-// esa salida contra Vcc es medirla contra la misma tensión que la produce, así que
-// el reposo cae en media escala por construcción, valga Vcc 4,8 o 5,1 y sea cual
-// sea la placa.
-//
-// Contra la referencia interna de 1,1 V, en cambio, ese mismo sensor satura en
-// reposo: no mide nada, y desde el ADC se ve igual que una entrada al aire.
-//
-// Vcc es REFS=01 en las dos placas del banco. Y elegirla en el clon no es escribir
-// REFS: ver board::adc_select_reference() en BoardStart.h.
-//
-// OJO que en este banco el reposo no cae en media escala: cae en 3071 cuentas de
-// 4096, o sea 3,75 V contra Vcc de 5 V, y no en los 2,5 que daría un ACS712
-// alimentado a 5. El canal mide bien --se lo verificó accionando el motor-- así
-// que lo más probable es que el sensor no esté alimentado con los mismos 5 V: uno
-// que reposa en 3,75 está viendo 7,5 V, que es lo que suele tener la fuente del
-// puente. Vale la pena confirmarlo con un tester, porque de ahí sale para qué lado
-// hay margen: la corriente de este banco hace *bajar* la salida, y hacia abajo
-// quedan las 3071 cuentas enteras.
-//
-// Y porque un sensor alimentado por encima de 5 V puede sacar la salida por encima
-// de 5 V, que es más de lo que le gusta a una entrada del AVR.
-//
-// Lo que se paga con la interna es resolución: un LSB pasa de 1,07 mV a 4,9, y con
-// 185 mV/A eso deja 200 mA en apenas siete u ocho cuentas. SENSE_REF_INTERNAL en
-// true vuelve a la interna, y sirve para un sensor unipolar --el que va en la
-// alimentación del puente-- que reposa cerca de cero y no necesita techo.
-static const bool  SENSE_REF_INTERNAL = false;
-static const float ADC_REF_MV         = SENSE_REF_INTERNAL ? 1093.0f : 5006.0f;
-
-// Todo lo que sigue cuenta en cuentas de 12 bits, en las dos placas del banco.
-//
-// El UNO tiene un ADC de 10 bits y el clon con LGT8F328P uno de 12, así que la
-// misma tensión mide cuatro veces más en una que en la otra. Se corre la lectura
-// del UNO dos bits para arriba en lugar de tirar los dos de abajo del clon: eso
-// conserva lo que el clon mide de verdad y le cuesta al UNO dos ceros al final de
-// un número que igual no los tenía. El corrimiento vive adentro de FreeAdc.
+// Todo cuenta en la escala de RowAdc en las dos placas: una cuenta son 1,25 mV en la
+// entrada, así que con 185 mV/A son 6,8 mA --27 en el UNO, que cuenta de a cuatro--.
 static const uint16_t ADC_FULL         = 4096;
-static const int16_t  SENSE_ZERO       = SENSE_REF_INTERNAL ? 0 : (ADC_FULL / 2);
-static const float    ADC_MV_PER_LSB   = ADC_REF_MV / ADC_FULL;
-static const float    SENSE_MA_PER_LSB = 1000.0f * ADC_MV_PER_LSB / SENSE_MV_PER_A;
-
-// Y la referencia interna no vale lo mismo en las dos placas, así que la escala de
-// arriba es la del ATmega y nada más. La tabla de canales viaja en flash con una
-// constante compilada y no se puede corregir al arrancar; lo que sí se calcula al
-// arrancar es `cur_ma_lsb`, y con eso la computadora corrige la escala de `i`.
-//
-// En el ATmega la referencia interna es el bandgap, especificado entre 1,0 y
-// 1,2 V: el número es de esta placa y no del modelo, y son los 1093 mV medidos en
-// el UNO de este banco. En el clon es una referencia trimada de fábrica y vale
-// 1,024 V. Son un 6 % de diferencia, no un factor de cuatro: el factor de cuatro
-// era el ancho del conversor y ya está corregido más arriba.
-//
-// Esta constante es sólo para esa elección. La alta no la necesita: las dos placas
-// corren a 5 V y la referencia alta es Vcc en las dos.
-//
-// OJO que entonces ADC_REF_MV --los 5006 mV medidos en el UNO de este banco-- se
-// usa para las dos placas. El canal es ratiométrico contra el Vcc de cada una, así
-// que el número correcto para el clon es el Vcc del clon; mientras no se lo mida
-// con un tester, lo que se acepta es ese error, que en dos placas alimentadas por
-// el mismo USB es del orden del uno por ciento.
-static const float ADC_REF_MV_LGT8F = 1024.0f;
+static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
+static const float    SENSE_MA_PER_LSB =
+    (float)RowAdc<SENSE_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
 
 // Son dos elecciones independientes, y vale la pena mantenerlas separadas.
 //
@@ -240,12 +205,15 @@ typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
 typedef LoopAngle<COUNTS_PER_REV>                              Angle;
 typedef LoopDrive<HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN> > Motor;
-typedef FreeAdc<SENSE_CHANNEL>                                 Adc;
+typedef RowAdc<SENSE_CHANNEL>                                  Adc;
 
 // Los divisores por omisión: 10 muestras de 5 kHz por período de control son
 // 500 Hz de lazo.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
+static SupplySag    g_sag;
+static WindowMean   g_window(1);      // un período: una ventana larga atrasa el lazo
+static MainsNotch   g_notch;
 static LoopCurrent  g_current(SENSE_ZERO);
 static Lut          g_lut;
 static Angle        g_angle;
@@ -283,6 +251,9 @@ struct BoardFacts
 };
 
 static BoardFacts g_board = { ADC_FULL, 0, 0, 0 };
+
+// Lo que la ISR congela en el tick de cada período.
+static volatile uint16_t g_tick_raw = 0;
 
 // La cuenta cruda del sensor, sin corregir, sin offset y sin el signo invertido.
 // Es lo que indexa la tabla de calibración, así que es lo que la computadora
@@ -374,6 +345,12 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_zero",    CTRL_I16, &g_current.sense.zero, 0                },
     { "cur_invert",  CTRL_U8,  &g_current.invert,    0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
+    { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
+    { "cur_sagc",    CTRL_U16, &g_sag.fixed,         0                 },
+    { "cur_sagd",    CTRL_U16, &g_sag.slope,         0                 },
+    { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0                 },
+    { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0                 },
+    { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0                 },
     { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
 
     { "board_adcfs",   CTRL_U16, &g_board.adcfs,       0                 },
@@ -408,13 +385,24 @@ static const CtrlChannel PROGMEM g_channels[] =
 
 // ----------------------------------------------------------------------- la ISR
 
-// Tres líneas, una por cosa que hay que hacer cada 200 us. Ninguna de las tres
-// guarda estado acá: cada módulo se lleva el suyo.
+// Una muestra del sensor por tick, y en el tick de cada período se congela lo que
+// el lazo va a usar. Cada módulo se lleva su estado.
 ISR(TIMER2_COMPA_vect)
 {
     Sensor::do_transfer();
-    g_adc.on_isr();
-    g_clock.on_isr();
+
+    if (g_clock.on_isr())
+    {
+        g_tick_raw = Sensor::counts();
+        g_adc.close_row();
+    }
+}
+
+// El ADC corre libre, sin relación con el muestreador: cada conversión se suma al
+// período en curso. Ver Sense/RowAdc.h.
+ISR(ADC_vect)
+{
+    g_adc.on_conversion();
 }
 
 // ------------------------------------------------------------------- el lazo
@@ -475,11 +463,34 @@ static bool apply_sensor_filter(void)
 // así el seguimiento no sabe que existe una calibración, y la decisión de corregir
 // o no queda donde se toma. La tabla se indexa con la cuenta cruda, que es la
 // única que conserva el ángulo de adentro de la vuelta.
+//
+// La corriente del período se compensa con el ciclo de trabajo que estuvo aplicado
+// mientras duró --el de la escritura anterior--, se promedia sobre `cur_filas`
+// períodos y pasa por el notch de la red, si está prendido. Después LoopCurrent le
+// resta el cero, le da el signo y la filtra para el lazo.
 static void measure(void)
 {
-    g_current.update(g_adc.read());
+    uint16_t raw16;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        raw16 = g_tick_raw;
+    }
 
-    const Lut::Counts raw = (Lut::Counts)Sensor::counts();
+    uint32_t sum;
+    uint16_t n;
+    g_adc.row(sum, n);
+
+    const Motor::Command applied = g_motor.u;
+    const uint16_t duty = (uint16_t)(applied < 0 ? -applied : applied);
+    sum = g_sag.correct(sum, duty, (uint16_t)Motor::MAX);
+
+    // El notch va alrededor del cero y no sobre la cuenta cruda: así su estado no
+    // arrastra los miles de cuentas del reposo del sensor.
+    const int16_t zero = g_current.sense.zero;
+    const int16_t mean = g_window.push(sum, n);
+    g_current.update((int16_t)(g_notch.step((int16_t)(mean - zero)) + zero));
+
+    const Lut::Counts raw = (Lut::Counts)raw16;
 
     g_y_raw = (uint16_t)raw;
     g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
@@ -566,6 +577,9 @@ static void refresh_tuning(void)
     g_current.set_alpha(LoopCurrent::Alpha::from_raw(g_alpha_i));
 
     g_lut.apply(g_lutw);
+
+    g_window.apply();
+    g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
     // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
     // describe lo que hay, incluso si alguien lo escribió a mano, y la computadora
@@ -677,25 +691,13 @@ void setup()
     // antes de esta línea corre contra una referencia de resabio: el bandgap, y
     // sobre todo el estado eléctrico de las líneas del bus, que se juzga con
     // umbrales que son fracciones del fondo de escala.
-    if (SENSE_REF_INTERNAL)
-    {
-        board::adc_select_internal(g_board.adcfs >= ADC_FULL);
-    }
-    else
-    {
-        board::adc_select_vcc(g_board.adcfs >= ADC_FULL);
-    }
+    board::adc_select_vcc(g_board.adcfs >= ADC_FULL);
 
     g_board.bgadc = board::adc_bandgap();
 
-    // La escala del canal de corriente, que depende de la referencia y por lo tanto
-    // de la placa. Con Vcc las dos miden lo mismo; con la referencia interna no.
-    {
-        const float ref = (SENSE_REF_INTERNAL && g_board.adcfs >= ADC_FULL)
-                        ? ADC_REF_MV_LGT8F : ADC_REF_MV;
-        g_board.malsb = (uint16_t)(256.0f * 1000.0f * (ref / ADC_FULL)
-                                   / SENSE_MV_PER_A + 0.5f);
-    }
+    // La escala del canal de corriente, en Q8, para la computadora: la de RowAdc,
+    // que es la misma en las dos placas.
+    g_board.malsb = (uint16_t)(256.0f * SENSE_MA_PER_LSB + 0.5f);
 
     // El estado eléctrico del bus, antes de que el TWI tome las líneas. Desde el
     // protocolo, un cable al aire, un módulo sin alimentación y un corto contra
@@ -725,15 +727,7 @@ void setup()
 
     refresh_tuning();
 
-    g_adc.begin(g_board.adcfs, ADC_FULL);
-
-    // FreeAdc mide siempre contra Vcc; en el ATmega la interna la eligen los bits
-    // REFS, así que se agregan acá. La primera conversión, lanzada contra Vcc, se
-    // lee antes de que corra el muestreo, y la que sigue ya sale con la interna.
-    if (SENSE_REF_INTERNAL)
-    {
-        ADMUX |= _BV(REFS1);
-    }
+    g_adc.begin(g_board.adcfs);
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 
