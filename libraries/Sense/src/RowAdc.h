@@ -9,8 +9,7 @@
 // fijas tampoco alcanza (±40 mA con cinco). Con el ADC libre, en cambio, las
 // conversiones recorren todas las fases --en el LGT8F328P a /32 son 250 fases en
 // 11 ms-- y el promedio de la fila da la media sin sesgo, a cambio de un error de
-// patrón chico (≤ 13 mA medidos) que se promedia en las filas siguientes. Ver
-// herramientas/adc_fase.py y el sketch AdcFase, con los que se midió todo esto.
+// patrón chico (≤ 13 mA medidos) que se promedia en las filas siguientes.
 //
 // El reparto: on_conversion() va en la interrupción del ADC y suma; close_row() va
 // en la del muestreador, en el tick de la fila, y cierra la ventana; row() lo lee

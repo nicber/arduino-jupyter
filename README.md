@@ -45,28 +45,6 @@ que se le dice al conectar: si el actuador acciona en los dos sentidos (`bidir`)
 los signos del imán y del sensor de corriente, que mide `bringup()`. Los detalles del
 enlace están en [`PROTOCOL.md`](PROTOCOL.md).
 
-### Cambios respecto de la v1
-
-Si hay código escrito contra la primera versión del banco:
-
-- **`signo_banco` ya no hace falta.** La placa publica el ángulo y la corriente con
-  el signo del banco (`ang_inv`, `cur_inv`), que mide `bringup()` y guarda en
-  `notebooks/cableado.json`. `ensayo.velocidad()`, `normalizar()` y `guardar()`
-  siguen aceptando `signo_banco=` con un `FutureWarning`, pero con la placa ya
-  corregida un `signo_banco=-1` da vuelta el signo otra vez: sacarlo.
-  `ensayo.signo()` no existe más.
-- **`ensayo.velocidad()` ya no atrasa una muestra.** La v1 derivaba hacia atrás; ahora
-  es una diferencia central sobre el tiempo real entre filas. Un modelo ajustado con
-  la v1 puede tener 2 ms de tiempo muerto de más.
-- **`sync_board(bidir=...)`** declara el actuador; con `bidir=False` un comando
-  negativo sale como cero.
-- **Canal nuevo `y_rep`**, y parámetros nuevos de la corriente (`cur_filas`,
-  `cur_sagc`, `cur_sagd`, `cur_notch`, `cur_red`, `cur_notchr`) con sus calibraciones
-  `dev.calibrar_caida()` y `dev.calibrar_red()`.
-- **El PWM va a 1050 Hz** y no a 1 kHz.
-- **El ángulo se desenrolla en la placa a 5 kHz**: antes se desenrollaba por fila y
-  con `loop_div` 25 o 50 la velocidad salía mal por encima de ~600 rad/s.
-
 ---
 
 ## Qué hace falta
@@ -141,8 +119,7 @@ un modelo eléctrico, o se tiene en cuenta ese retardo, o se baja `cur_filas`. C
 `cur_filas = 1` la corriente no atrasa, pero trae la red; `cur_notch = 3` la saca
 con un notch en la frecuencia de la red y sus armónicos, que `dev.calibrar_red()`
 mide sin carga. Es el único filtro de la placa, y está porque lo que saca no se puede
-sacar de filas que ya lo traen plegado. Todo esto se midió con el sketch `AdcFase` y
-`herramientas/adc_fase.py`, que vienen en el zip.
+sacar de filas que ya lo traen plegado.
 
 **El PWM corre la lectura.** La corriente de base del transistor sale de la misma
 placa y hunde su alimentación, que es la referencia del ADC: con el motor quieto y
@@ -456,7 +433,7 @@ identificaría después como un tiempo muerto del motor.
 | `bringup` marca falla en `iman` | el sensor contesta pero el imán está ausente, muy lejos o muy cerca; el mensaje dice cuál |
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa lejos de los rieles: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
-| `bringup` marca falla en `motor` y el eje no gira | grabar `Puente_Bringup`: la placa lee sus propios pines de vuelta y separa «no sale el comando» de «el actuador no lo sigue». La causa más común es la alimentación de potencia |
+| `bringup` marca falla en `motor` y el eje no gira | la causa más común es la alimentación de potencia: la fuente del motor prendida, la masa común con el Arduino, y el pin 9 llegando a `ENA` o a la base del transistor |
 | `bringup` marca falla en `actuador` | lo declarado en `bidir` no es lo que hay: `-u` invierte el giro con `bidir=False`, o empuja igual con `bidir=True`. El mensaje dice con qué conectar |
 | `bringup` marca falla en `-u` | con `bidir=True` el eje no gira al revés, o con `bidir=False` el comando negativo no sale como cero: un sketch viejo en la placa, `sync_board(force_upload=True)` |
 | `sync_board` dice «sin signos medidos» | no hay `notebooks/cableado.json`: correr `dev.bringup()` con el motor, que lo escribe |
@@ -500,8 +477,6 @@ modular bipolar a 1050 Hz.
 
 ```
 Banco/                   el banco: PWM afuera, ángulo y corriente adentro, telemetría
-AS5600_Bringup/          verificación del sensor, con volcado de configuración
-Puente_Bringup/          verificación del accionamiento, sin usar el sensor
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/Actuator/      el puente en H, o el transistor desde ENA
 libraries/Sampler/       el reloj del muestreo: período rígido y divisor
@@ -512,7 +487,6 @@ libraries/AS5600Async/   lectura asincrónica del AS5600
 libraries/AS5600Regs/    el mapa de registros, sin ningún transporte
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 libraries/BoardStart/    el reloj, el ADC y el destrabe del bus, antes de todo lo demás
-AdcFase/                 el experimento con el que se decidió cómo medir la corriente
 test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          compilación, conexión y verificación de este equipo
@@ -527,7 +501,6 @@ python/test_*.py         pruebas, no necesitan hardware ni compilar
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/               los notebooks: hardware y calibración
 herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
-herramientas/adc_fase.py         el lado computadora de AdcFase
 herramientas/empaquetar_tp2.py   arma dist/arduino-jupyter-tp2.zip, lo necesario para el TP2
 dyc.yml                  el entorno de conda del curso
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones

@@ -20,7 +20,6 @@ segundos, por ciento de PWM, radianes, radianes por segundo y amperes. Es lo que
 espera cualquier herramienta de identificación, y lo que se puede leer dentro de
 un año sin acordarse de nada de esto.
 """
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -70,20 +69,7 @@ def esperar_quieto(dev, quieto=0.5, ventana=0.3, limite=60.0):
             return esperado
 
 
-def _signo_viejo(signo_banco, funcion):
-    """El signo_banco de la v1: se acepta, avisando, para que el código viejo corra."""
-    if signo_banco is None:
-        return 1
-    warnings.warn(
-        f'{funcion}(signo_banco=...) es de la v1 del banco y ya no hace falta: la '
-        f'placa publica el angulo con el signo del banco (ang_inv, que mide '
-        f'bringup()). Se aplica igual, pero con signo_banco={signo_banco} y la placa '
-        f'ya corregida el angulo queda dado vuelta dos veces. Sacarlo.',
-        FutureWarning, stacklevel=3)
-    return signo_banco
-
-
-def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=None):
+def velocidad(df, ventana=0.02, canal='y_uw'):
     """(t, omega): radianes por segundo, derivando el ángulo y promediando.
 
     La derivada es la diferencia central, (theta[k+1] - theta[k-1]) dividida por
@@ -101,13 +87,10 @@ def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=None):
     siguiente, la diferencia es hacia atrás.
 
     El signo ya viene resuelto de la placa: un comando positivo sube el ángulo.
-    Ver `bringup()`. `signo_banco` es de la v1 y se acepta con un aviso.
-
-    Cambio respecto de la v1: la v1 derivaba hacia atrás y dividía por el período
-    típico, así que la velocidad salía atrasada una muestra (2 ms a 500 Hz).
+    Ver `bringup()`.
     """
     t = df['t'].to_numpy(dtype=float)
-    theta = _signo_viejo(signo_banco, 'velocidad') * np.deg2rad(df[canal].to_numpy(dtype=float))
+    theta = np.deg2rad(df[canal].to_numpy(dtype=float))
 
     if len(t) < 2:
         return t[1:], np.zeros(0)
@@ -132,18 +115,14 @@ def velocidad(df, ventana=0.02, canal='y_uw', signo_banco=None):
     return t[1:], w
 
 
-def normalizar(df, ventana=0.02, signo_banco=None):
+def normalizar(df, ventana=0.02):
     """La captura en las unidades de un modelo: t [s], u [%], theta [rad], omega [rad/s], i [A].
 
     La velocidad sale de `velocidad()` con la misma `ventana`, y la primera fila
-    --que no tiene velocidad-- se descarta. `signo_banco` es de la v1 y se acepta
-    con un aviso.
+    --que no tiene velocidad-- se descarta.
     """
-    signo = _signo_viejo(signo_banco, 'normalizar')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', FutureWarning)
-        t, w = velocidad(df, ventana=ventana, signo_banco=signo_banco)
-    theta = signo * np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
+    t, w = velocidad(df, ventana=ventana)
+    theta = np.deg2rad(df['y_uw'].to_numpy(dtype=float))[1:]
 
     return pd.DataFrame({
         't':     t,
@@ -154,15 +133,14 @@ def normalizar(df, ventana=0.02, signo_banco=None):
     })
 
 
-def guardar(df, ruta, ventana=0.02, signo_banco=None):
+def guardar(df, ruta, ventana=0.02):
     """Escribe la captura como CSV con las columnas de `normalizar()`. Devuelve la ruta.
 
     Una captura que ya está normalizada --tiene `omega`-- se escribe tal cual.
     """
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    datos = df if 'omega' in df else normalizar(df, ventana=ventana,
-                                                 signo_banco=signo_banco)
+    datos = df if 'omega' in df else normalizar(df, ventana=ventana)
     datos[COLUMNAS].to_csv(ruta, index=False, float_format='%.6g')
     return ruta
 

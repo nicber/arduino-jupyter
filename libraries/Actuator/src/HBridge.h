@@ -152,9 +152,8 @@ class HBridge
     // La magnitud sola, sin tocar el sentido.
     //
     // El camino normal es write(), que decide las dos cosas juntas y es el único que
-    // garantiza que un cambio de sentido no atraviese un estado conduciendo. Esto
-    // existe para un diagnóstico que necesita las dos mitades por separado: mover
-    // ENA con IN1 e IN2 quietos, y leer cada pin de vuelta. Ver Puente_Bringup.
+    // garantiza que un cambio de sentido no atraviese un estado conduciendo; esto
+    // es la mitad que usa write() para la magnitud.
     //
     // `magnitude` va de 0 a MAX y el temporizador cuenta hasta el TOP, que es otra
     // escala. Se divide por MAX + 1 = 256 en lugar de por 255, que es un
