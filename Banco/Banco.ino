@@ -6,7 +6,8 @@
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
 // Medición de corriente (opcional): ACS712 en A0
 // Actuador: ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
-// transistor a masa con su diodo de rueda libre gobernado desde el pin 9.
+// transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
+// banco un BD139, NPN, con 220 Ω en la base).
 //
 // Acá no hay ley de control: `ctl_uff` va derecho al actuador. Todo lo que se hace
 // con la medición --derivar la velocidad, filtrar, ajustar un modelo-- pasa del

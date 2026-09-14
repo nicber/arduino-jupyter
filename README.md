@@ -62,7 +62,7 @@ muestra en clase.
 | AS5600 SCL | A5 | |
 | AS5600 VDD / GND | 5V / GND | |
 | Salida del ACS712 | A0 | opcional |
-| `ENA` del puente, o la puerta del transistor (PWM, 1050 Hz) | 9 | |
+| `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1050 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
 
