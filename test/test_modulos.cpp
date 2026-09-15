@@ -1,6 +1,6 @@
 // Comprobaciones de escritorio para los módulos que son aritmética pura: la tabla
 // de calibración, el seguimiento de ángulo, la medición de corriente y el notch.
-// Las del lazo y el PID están en libraries/Control/test/test_control.cpp.
+// Las del lazo y el PID van con la biblioteca Control, que no entra en el zip del TP2.
 //
 // Que se puedan probar acá es la mitad del punto de haberlos separado. Ninguno
 // toca un registro ni pregunta nada a nadie: reciben números por update(), por
