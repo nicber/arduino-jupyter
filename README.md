@@ -10,12 +10,12 @@ se corre, y sale el gráfico.
 
 Está pensado como banco de trabajo para **Control Clásico y por Variables de
 Estado** (Ingeniería Electrónica, UNRN): lo que en las prácticas se calcula a
-mano y se verifica con `python-control`, acá se mide sobre un motor de verdad,
+mano y se verifica con `python-control`, acá se mide sobre un motor real,
 con su zona muerta, su saturación, su ruido y su cuantización.
 
 ```python
 dev = sync_board(bidir=False)                               # False: transistor; True: puente en H
-ensayo.esperar_quieto(dev)                                  # el eje, parado de verdad
+ensayo.esperar_quieto(dev)                                  # el eje, efectivamente parado
 dev.ctl_uff = 102                                           # 40 % sobre el actuador
 df = dev.step('ctl_uff', 204, pre=3.0, post=4.0, back=0)    # escalón, t = 0 en el escalón
 t, w = ensayo.velocidad(df)                                 # rad/s, derivada de este lado
@@ -45,8 +45,8 @@ sentidos (`bidir`), los signos del imán y del sensor de corriente, que mide
 `bringup()`, y el divisor de A1, si hay. El enlace está resumido en
 [*El enlace*](#el-enlace).
 
-**Dónde está explicado cada cosa.** Por qué el hardware es como es --el actuador, el
-PWM de 1050 Hz, cómo se mide la corriente y qué se le puede creer-- está en
+**Dónde está explicada cada cosa.** Por qué el hardware es como es --el actuador, el
+PWM de 1050 Hz, cómo se mide la corriente y qué confiabilidad tiene-- está en
 [`notebooks/hardware.ipynb`](notebooks/hardware.ipynb), y sólo ahí. Este README dice
 cómo instalar, qué perillas hay y qué hacer cuando algo falla; los comentarios del
 código explican las decisiones de implementación.
@@ -89,13 +89,13 @@ placa usa el cociente A0/A1; el divisor se declara una vez por banco con
 `dev.declarar_divisor(5100, 2000)`. **Un divisor suelto no da error**: corre la
 corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
 Con una ventana corta, `cur_notch = 3` saca la red sin calibrarla. La escala en mA no
-está verificada con un tester y depende de `SENSE_MV_PER_A`, en el sketch, y de la
-relación del divisor. El montaje, los números medidos y qué se le puede creer al
+está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
+relación del divisor. El montaje, los números medidos y la confiabilidad del
 canal: `hardware.ipynb`, sección 4.
 
 El AS5600 necesita un imán **magnetizado diametralmente** girando sobre el chip,
 a un par de milímetros. Las plaquetas de AS5600 traen su propio regulador y los
-pull-ups del bus; un chip pelado en modo 3,3 V necesita adaptación de niveles.
+pull-ups del bus; un chip sin plaqueta en modo 3,3 V necesita adaptación de niveles.
 
 **Se puede empezar sin motor y sin medición de corriente.** Sin nada conectado a
 los pines 9, 6 y 7 el muestreo corre igual y la telemetría se comporta de manera
@@ -122,21 +122,21 @@ Cómo instalar las dos cosas está en [*Puesta en marcha*](#puesta-en-marcha).
 ### Clones del UNO
 
 Sirve cualquier placa con un ATmega328P a 16 MHz, y también los clones que no
-son exactamente eso. Nada de lo que sigue hay que configurar: el notebook se da
-cuenta solo. Está acá porque cuando algo falla conviene saber qué se estaba
+son exactamente eso. Nada de lo que sigue hay que configurar: el notebook lo
+detecta. Está acá porque cuando algo falla conviene saber qué se estaba
 compensando.
 
 **El bootloader.** Un UNO escucha a 115200 y muchos clones baratos traen el
-bootloader viejo del Nano, que escucha a 57600. Elegir mal no da un error legible
+bootloader antiguo del Nano, que escucha a 57600. Elegir mal no da un error legible
 sino diez líneas de «not in sync». `sync_board()` prueba los dos, se queda con el
-que anduvo y lo recuerda por puerto. Un tipo de placa que no esté en la lista se
+que funcionó y lo recuerda por puerto. Un tipo de placa que no esté en la lista se
 agrega en `UPLOAD_FQBNS`, en `placa.py`.
 
 **El reloj.** Hay clones armados sobre un LGT8F328P, que no lleva cristal: usa un
 RC interno de 32 MHz y arranca dividido por 8, o sea a 4 MHz. Todo este proyecto
-está calculado para 16 MHz, así que a 4 MHz no anda nada, y el síntoma es el peor
-posible: el puerto serie también emite cuatro veces lento y el monitor se llena
-de basura. Los sketches corrigen el divisor al arrancar, y sólo si la placa
+está calculado para 16 MHz, así que a 4 MHz no funciona nada, y el síntoma es
+confuso: el puerto serie también emite cuatro veces más lento y el monitor muestra
+caracteres ilegibles. Los sketches corrigen el divisor al arrancar, y sólo si la placa
 arrancó dividida; ver `libraries/BoardStart/`. `bringup()` lo verifica midiendo la
 frecuencia real de las filas contra el reloj de la computadora.
 
@@ -247,12 +247,12 @@ Enchufar la placa y correr las celdas **en orden**, de arriba hacia abajo
 - **compila** el programa de la placa, lo que la primera vez tarda uno o dos
   minutos;
 - lo **graba** en la placa, sin que haga falta elegir el puerto;
-- y se conecta. Si todo anduvo, dice algo como
-  `COM3: CtrlLink 1 Banco ...  (compilado, cargado como clon con bootloader viejo)`.
+- y se conecta. Si todo funcionó, dice algo como
+  `COM3: CtrlLink 1 Banco ...  (compilado, cargado como clon con bootloader antiguo)`.
 
 Con un clon, que la primera grabación tarde medio minuto más es normal: prueba
 primero como UNO original y después como clon, y a partir de ahí recuerda cuál
-anduvo. El aviso `sin calibracion del sensor` también es normal.
+funcionó. El aviso `sin calibración del sensor` también es normal.
 
 Sin la placa enchufada el notebook también corre, sobre un banco simulado, y lo
 dice en la primera celda.
@@ -276,9 +276,9 @@ computadora (ver *Calibrar el sensor*).
 | La placa no aparece en **Herramientas → Puerto** del IDE | Probar otro cable: muchos cables USB sólo dan alimentación y no llevan datos. Si la placa tiene un chip CH340 (dice *CH340* cerca del USB), instalar su driver desde <https://www.wch-ic.com/downloads/CH341SER_EXE.html> y reenchufar |
 | «no se pudo abrir el puerto» | Otro programa lo tiene abierto: el Monitor Serie del IDE, el IDE mismo, u otro notebook. Cerrarlos, o reiniciar el kernel (menú **Kernel → Restart Kernel**) |
 | «Falta el soporte para placas AVR» | Hacer el paso 1.3: instalar *Arduino AVR Boards* desde el Gestor de placas del IDE |
-| «no se encontro arduino-cli» | El IDE no está instalado, o se instaló en una carpeta poco común. Reinstalarlo con las opciones por omisión |
+| «no se encontró arduino-cli» | El IDE no está instalado, o se instaló en una carpeta poco común. Reinstalarlo con las opciones por omisión |
 | «se encontraron varios puertos serie USB» | Hay más de una placa, o algún otro aparato USB-serie, enchufado. Desenchufar lo que sobra |
-| Un gráfico tira un error sobre DLL, o el kernel se muere sin avisar | El Python de `dyc` se está usando sin activar el entorno. Repetir el paso 6 |
+| Un gráfico tira un error sobre DLL, o el kernel se detiene sin mostrar un error | El Python de `dyc` se está usando sin activar el entorno. Repetir el paso 6 |
 
 ---
 
@@ -347,41 +347,41 @@ identificaría después como un tiempo muerto del motor.
 
 ---
 
-## Cuando algo no anda
+## Cuando algo no funciona
 
 | Síntoma | Dónde mirar |
 |---|---|
 | `sync_board()` no encuentra `arduino-cli` | busca primero en el `PATH` y después adentro del Arduino IDE 2, instalado en su lugar por omisión. Reinstalar el IDE con las opciones por omisión |
 | la primera celda dice `Faltan paquetes` | el kernel no es el entorno `dyc`; el mensaje dice cuál es. Ver el paso 6 de *Puesta en marcha* |
 | «no se pudo abrir el puerto» | algo más lo tiene tomado: el monitor serie del IDE, o un kernel de una sesión anterior. Un puerto serie es exclusivo |
-| «no se encontro ningun puerto serie USB» | placa desenchufada, o cable de sólo alimentación |
-| el monitor serie muestra basura, o `sync_board()` no encuentra el sketch que acaba de grabar | la placa no está corriendo a 16 MHz. Los sketches lo corrigen solos al arrancar; si el sketch grabado es de antes de eso, recompilar |
-| `bringup` marca falla en `bus i2c` con **cero muestras** y un desborde por período | el bus quedó tomado por el sensor, que se quedó a medio hablar cuando la grabación reseteó la placa. Los sketches lo destraban al arrancar; si vuelve a pasar, cortar y dar alimentación |
+| «no se encontró ningún puerto serie USB» | placa desenchufada, o cable de sólo alimentación |
+| el monitor serie muestra caracteres ilegibles, o `sync_board()` no encuentra el sketch que acaba de grabar | la placa no está corriendo a 16 MHz. Los sketches lo corrigen solos al arrancar; si persiste, volver a grabar el sketch con `sync_board(force_upload=True)` |
+| `bringup` marca falla en `bus i2c` con **cero muestras** y un desborde por período | el bus quedó tomado por el sensor, que quedó a mitad de una transferencia cuando la grabación reseteó la placa. Los sketches lo destraban al arrancar; si vuelve a pasar, cortar y dar alimentación |
 | `bringup` marca falla en `sensor` | el AS5600 no contesta en el bus: SDA (A4), SCL (A5), alimentación, pull-ups |
 | `bringup` marca falla en `iman` | el sensor contesta pero el imán está ausente, muy lejos o muy cerca; el mensaje dice cuál |
 | `bringup` marca falla en `bus i2c` | errores intermitentes con el sensor presente: cableado o pull-ups |
 | `bringup` marca falla en `cero de i` | el sensor de corriente no reposa lejos de los rieles: sin alimentar, mal cableado, o no es un ACS712 de 5 V |
 | `bringup` marca falla en `motor` y el eje no gira | la causa más común es la alimentación de potencia: la fuente del motor prendida, la masa común con el Arduino, y el pin 9 llegando a `ENA` o a la base del transistor |
 | `bringup` marca falla en `actuador` | lo declarado en `bidir` no es lo que hay: `-u` invierte el giro con `bidir=False`, o empuja igual con `bidir=True`. El mensaje dice con qué conectar |
-| `bringup` marca falla en `-u` | con `bidir=True` el eje no gira al revés, o con `bidir=False` el comando negativo no sale como cero: un sketch viejo en la placa, `sync_board(force_upload=True)` |
+| `bringup` marca falla en `-u` | con `bidir=True` el eje no gira al revés, o con `bidir=False` el comando negativo no sale como cero: un sketch desactualizado en la placa, `sync_board(force_upload=True)` |
 | `sync_board` dice «sin signos medidos» | no hay `notebooks/cableado.json`: correr `dev.bringup()` con el motor, que lo escribe |
 | `bringup` anota `canal de i` | el pico de corriente del arranque no se despega del ruido: el sensor no resuelve este motor |
 | un ensayo sale distinto cada vez que se corre | ¿esperó a que el eje pare? Con el comando en cero el motor sigue girando muchos segundos: `ensayo.esperar_quieto(dev)` |
-| «el dispositivo declara sus parametros en un formato anterior» | la placa tiene grabado un sketch viejo: `sync_board(force_upload=True)` |
+| «el dispositivo declara sus parámetros en un formato anterior» | la placa tiene grabado un sketch desactualizado: `sync_board(force_upload=True)` |
 | se interrumpió una celda en medio de una captura | nada: la operación siguiente resincroniza el enlace sola. `dev.resync()` lo fuerza a mano |
 | se pierden períodos | emitir sólo los canales que se van a mirar, con `dev.capture(..., canales=['y_uw', 'u'])`: formatear y enviar la fila entera le cuesta a la placa más que el paso. Si no alcanza, subir `loop_div` |
 | se descartan filas de telemetría | subir `dec`, o emitir menos canales con `canales=` |
 
 Toda captura verifica su propia salud y avisa por `stderr` si se perdieron
 períodos o filas: una serie temporal a la que le faltan muestras se ve igual que
-una sana hasta que uno va a fijarse.
+una sana en un gráfico.
 
-**Periféricos que se apropia `Banco`:** el Timer2, así que `analogWrite()` en
+**Periféricos de los que se apropia `Banco`:** el Timer2, así que `analogWrite()` en
 los pines 3 y 11 y `tone()` dejan de funcionar; el Timer1, que modula el actuador
 con su propio TOP, así que `analogWrite()` en los pines 9 y 10 y `Servo` dejan
 de servir; y el ADC, que se maneja directamente, así que no hay que llamar a
 `analogRead()`. El Timer0 queda intacto: `millis()` y el PWM de los pines 5 y 6
-andan como siempre.
+funcionan como siempre.
 
 **El PWM va a 1050 Hz** (`PWM_TOP` en el sketch). Por qué no más rápido, por qué
 no 1000 Hz justos y cómo convendría accionar un L298N: `hardware.ipynb`, sección 2.1.
@@ -393,7 +393,7 @@ no 1000 Hz justos y cómo convendría accionar un L298N: `hardware.ipynb`, secci
 La placa y la computadora hablan **CtrlLink**, un protocolo de texto por el puerto
 serie a 1 Mbaud (divisor exacto en un AVR de 16 MHz). Las líneas que empiezan con
 `#` son respuestas y eventos; cualquier otra es una fila de telemetría en
-hexadecimal de ancho fijo, que se decodifica de un solo golpe con numpy y se puede
+hexadecimal de ancho fijo, que se decodifica en bloque con numpy y se puede
 leer igual en el Monitor Serie.
 
 | Comando | Respuesta |
@@ -437,14 +437,14 @@ python/placa.py          compilar y grabar el sketch, encontrar el puerto
 python/ensayo.py         esperar al eje, la velocidad, las unidades y el archivo
 python/catalogo.py       qué significa cada parámetro, y cómo mostrarlo
 python/entorno.py        que el notebook corra en el entorno dyc, y qué hacer si no
-python/banco_simulado.py un banco de mentira que sigue al de verdad, para dar la clase sin la placa
+python/banco_simulado.py un banco simulado que reproduce al real, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware ni compilar
                          (test_notebooks.py además corre los notebooks simulados)
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
 notebooks/hardware.ipynb el banco, cómo está armado y la API para el TP2
 extras/calibracion_as5600/  opcional: calibración del AS5600 (notebook, calib.py, método, pruebas)
-herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
+herramientas/verificar.py        que la instalación funcione sin la placa: entorno, compilación, pruebas, notebooks
 dyc.yml                  el entorno de conda del curso
 ```
 
@@ -460,11 +460,11 @@ arduino-cli upload  -b arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 ```
 
 Las tres `--build-property` son las que compilan con optimización plena. El core
-de AVR trae `-Os` --optimizar por tamaño--, y este sketch quiere ciclos y no
-bytes; `sync_board()` las pasa solas, así que sólo hacen falta al compilar a
+de AVR trae `-Os` --optimizar por tamaño--, y en este sketch importa la velocidad
+y no el tamaño; `sync_board()` las pasa solas, así que sólo hacen falta al compilar a
 mano.
 
-Lo que **no** se pasa es `-flto`, y no por olvido: se probó y no cambia nada.
+Lo que **no** se pasa es `-flto`, porque no cambia nada.
 Todas las librerías de este proyecto son sólo de cabecera, así que el sketch
 entero ya es una sola unidad de traducción y no hay ninguna frontera que LTO pueda
 disolver.
