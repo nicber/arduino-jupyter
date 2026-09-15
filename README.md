@@ -46,7 +46,7 @@ sentidos (`bidir`), los signos del imán y del sensor de corriente, que mide
 [*El enlace*](#el-enlace).
 
 **Dónde está explicada cada cosa.** Por qué el hardware es como es --el actuador, el
-PWM de 1050 Hz, cómo se mide la corriente y qué confiabilidad tiene-- está en
+PWM de 1250 Hz, cómo se mide la corriente y qué confiabilidad tiene-- está en
 [`notebooks/hardware.ipynb`](notebooks/hardware.ipynb), y sólo ahí. Este README dice
 cómo instalar, qué perillas hay y qué hacer cuando algo falla; los comentarios del
 código explican las decisiones de implementación.
@@ -69,7 +69,7 @@ muestra en clase.
 | AS5600 VDD / GND | 5V / GND | |
 | Salida del ACS712, con el sensor del lado de +5 V del motor | A0 | opcional |
 | Divisor de 5V a A1: 5,1 kΩ de 5V a A1, 2 kΩ de A1 a GND, y 100 nF de A1 a GND | A1 | con el ACS712, si la placa funciona a 3,3 V |
-| `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1050 Hz) | 9 | |
+| `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1250 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
 
@@ -88,8 +88,9 @@ placa a 3,3 V, como el clon del banco, A1 lee los 5 V del sensor por un divisor 
 placa usa el cociente A0/A1; el divisor se declara una vez por banco con
 `dev.declarar_divisor(5100, 2000)`. **Un divisor suelto no da error**: corre la
 corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
-El notch de la red arranca prendido (`cur_notch = 3`) y no hay que calibrarlo; `cur_notch = 0`
-lo apaga. La escala en mA no
+Antes de promediar, la placa saca el rizado del PWM con una media de 4 ticks
+(`cur_ma`) y un notch en 250 Hz (`cur_nyq`), los dos prendidos. El notch de la red
+arranca apagado; `cur_notch` lo prende, cada armónico por separado. La escala en mA no
 está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
 relación del divisor. El montaje, los números medidos y la confiabilidad del
 canal: `hardware.ipynb`, sección 4.
@@ -296,7 +297,9 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
-| `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
+| `cur_notch`, `cur_notchr` | notch de la red para la corriente, como máscara (1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 apagado, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
+| `cur_ma` | 1 (por omisión) pasa cada tick de 5 kHz por una media de 4 ticks, un período del PWM, antes de sumar la fila |
+| `cur_nyq` | 1 (por omisión) agrega un notch en 250 Hz, el Nyquist de las filas, donde cae lo que queda del PWM |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver *Calibrar el sensor* |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |
@@ -311,7 +314,7 @@ leer entero: `esperar_quieto()` no deja arrancar un ensayo con el eje girando,
 ciento, radianes, radianes por segundo y amperes, y `guardar()` / `cargar()` lo
 llevan a un archivo y lo traen de vuelta. Cada captura registra en
 `df.attrs['config']` la placa y las perillas que cambian lo que se mide
-(`loop_div`, `cur_filas`, `cur_notch`, los signos, el cero y el divisor de la
+(`loop_div`, `cur_filas`, los filtros, los signos, el cero y el divisor de la
 corriente), y `guardar()` lo escribe arriba del CSV en líneas que empiezan con `#`.
 Para una herramienta que no acepta esas líneas (PID Tuner, APMonitor), se exporta
 sin ellas: `datos[ensayo.COLUMNAS].to_csv(ruta, index=False)`.
@@ -381,11 +384,12 @@ una sana en un gráfico.
 los pines 3 y 11 y `tone()` dejan de funcionar; el Timer1, que modula el actuador
 con su propio TOP, así que `analogWrite()` en los pines 9 y 10 y `Servo` dejan
 de servir; y el ADC, que se maneja directamente, así que no hay que llamar a
-`analogRead()`. El Timer0 queda intacto: `millis()` y el PWM de los pines 5 y 6
-funcionan como siempre.
+`analogRead()`. El Timer0 sigue llevando `millis()`, pero a 1000 Hz en lugar de
+976,6 Hz, en fase fija con el muestreo: `millis()` y `delay()` quedan un 2,4 % rápidos y
+el PWM de los pines 5 y 6 deja de servir.
 
-**El PWM va a 1050 Hz** (`PWM_TOP` en el sketch). Por qué no más rápido, por qué
-no 1000 Hz justos y cómo convendría accionar un L298N: `hardware.ipynb`, sección 2.1.
+**El PWM va a 1250 Hz** (`PWM_TOP` en el sketch). Por qué no más rápido, por qué
+1250 y cómo convendría accionar un L298N: `hardware.ipynb`, sección 2.1.
 
 ---
 
