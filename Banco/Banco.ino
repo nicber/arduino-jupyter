@@ -11,26 +11,19 @@
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
 // banco un BD139, NPN, con 220 Ω en la base).
 //
-// Acá no hay ley de control: `ctl_uff` va derecho al actuador. Todo lo que se hace
-// con la medición --derivar la velocidad, filtrar, ajustar un modelo-- pasa del
-// lado de la computadora, donde se ve y se puede cambiar sin recompilar. Un filtro
-// en la placa se identifica después como si fuera un polo del motor, y por eso el
-// ángulo no tiene ninguno.
+// Acá no hay ley de control: `ctl_uff` va derecho al actuador, y el ángulo no tiene
+// ningún filtro. Derivar, filtrar y ajustar se hace en la computadora. La corriente
+// es la única excepción: cada fila publica el promedio de las conversiones de las
+// últimas `cur_filas` filas --lo que hay que sacarle, el rizado del PWM y la red, ya
+// no se puede sacar de filas de 2 ms, que lo traen plegado--, y `cur_notch` saca la red
+// con una ventana corta. Por qué el hardware es como es --actuador, PWM, medición de
+// corriente-- está explicado una sola vez, en notebooks/hardware.ipynb; acá quedan
+// sólo las decisiones de implementación.
 //
-// La corriente es la excepción, y no por gusto: lo que hay que sacarle --el rizado
-// del PWM y los 50 y 100 Hz de la red-- ya no se puede sacar de filas de 2 ms, que lo
-// traen plegado. Así que cada fila publica el promedio de todas las conversiones de
-// su ventana, y la ventana abarca `cur_filas` filas: una caja con retardo conocido,
-// que con 10 filas a 500 Hz (20 ms) anula la red y el PWM. Para mirar un transitorio
-// con una ventana corta, `cur_notch` saca la red con dos notch alrededor de 50 Hz y
-// de sus armónicos. Ver Sense/RowAdc.h, Sense/WindowMean.h y Sense/MainsNotch.h.
-//
-// Lo que sí vive acá son las tres cosas que se fijan con cables: cuántos
-// cuadrantes tiene el actuador (`mot_bidir`) y de qué lado miran el imán y el
-// sensor de corriente (`ang_inv`, `cur_inv`). La placa arranca sin saberlas y la
-// computadora las fija al conectarse; bringup() mide los signos y verifica el
-// actuador. Con eso un comando positivo sube el ángulo y la corriente en cualquier
-// banco, y un lazo que se cierre después ve lo mismo que la telemetría.
+// Lo que se fija con cables lo carga la computadora al conectar: cuántos cuadrantes
+// tiene el actuador (`mot_bidir`), los signos del imán y del sensor de corriente
+// (`ang_inv`, `cur_inv`), que mide bringup(), y la relación del divisor de A1
+// (`cur_div`).
 //
 // Este archivo no hace casi nada por sí mismo: arma los módulos y publica sus
 // parámetros. Cada cosa que se puede medir o accionar tiene un dueño:
@@ -70,7 +63,8 @@
 // (UBRR=1), a diferencia de 115200, que queda 2,1 % desviado. Los bytes entrantes
 // llegan cada 10 us y el USART guarda sólo dos, así que entre el muestreador y la
 // interrupción de TWI se pierde un pequeño porcentaje de los bytes de un comando
-// enviado de corrido; la computadora los espacia para compensarlo. Ver PROTOCOL.md.
+// enviado de corrido; la computadora los espacia para compensarlo. El protocolo está
+// resumido en la sección «El enlace» del README.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
@@ -112,40 +106,21 @@ static const uint8_t MOTOR_PWM_PIN = 9;     // ENA, OC1A
 static const uint8_t MOTOR_IN1_PIN = 6;     // IN1
 static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 
-// El TOP del Timer1, phase-correct con preescalador 1: f = 16 MHz / (2 * TOP), o
-// sea ~1 kHz. Es lo que tolera un L298N alimentado con 5 V: un puente de Darlington
-// bipolares cae unos 2 V y tarda unos 2 us en conmutar, y a 20 kHz lo que se pierde
-// en cada transición se lleva una fracción grande de un tiempo de encendido que ya
-// venía escaso. Medido en este banco: a 20 kHz el motor no arranca y a ~1 kHz anda.
-//
-// Y no 1 kHz justo, sino 1050 Hz (TOP = 7619), por dos razones. Una: a 1 kHz el PWM
-// queda enganchado en fase con el muestreador de 5 kHz, que sale del mismo cristal;
-// a 1050 Hz la fase avanza 0,21 de período por tick y recorre el período entero cada
-// ~19 ms. La otra: lo que queda del rizado del PWM después de promediar cada fila se
-// pliega contra las filas a 1050 - 1000 = 50 Hz, y sus armónicos a 100 y 150 Hz, que
-// es donde la ventana de 20 ms de la corriente tiene ceros exactos --20 ms son 21
-// períodos justos--. Con 1010 Hz, en cambio, el pliegue caía en 10 Hz y se veía
-// como un ripple de ~15 mA en la corriente de régimen.
+// El TOP del Timer1, phase-correct con preescalador 1: f = 16 MHz / (2 * TOP) =
+// 1050 Hz. Por qué ~1 kHz y no 20 kHz, y por qué 1050 y no 1000: hardware.ipynb,
+// sección 2.1. Lo que importa acá: 20 ms de ventana de corriente son 21 períodos
+// justos, así que el rizado que queda se pliega a 50 Hz, donde la ventana tiene un
+// cero. Con 1010 Hz el pliegue caía en 10 Hz, un ripple de ~15 mA en régimen.
 static const uint16_t PWM_TOP = 7619;
 
 // Medición de corriente en A0. Nada de este bloque mueve el motor: sólo fija las
-// unidades que se le informan a la computadora.
-//
-// La sensibilidad es lo único que convierte cuentas en amperes, y depende de cuál
-// sensor esté puesto: 185 mV/A el ACS712 de 5 A, 100 mV/A el de 20 A. OJO si no
-// cierra con lo que mide un tester en serie con el motor: un divisor en la salida
-// divide el cero y la sensibilidad a la vez.
-//
-// El ACS712 es ratiométrico con su propia alimentación, los 5 V del USB. Si el micro
-// también funciona a 5 V, medir contra AVCC alcanza. El clon del banco funciona a
-// 3,3 V, y ahí la lectura se corre con cualquier consumo de la placa --la corriente
-// de base del transistor, 1,35 % a fondo--, porque lo que se mueve es la referencia
-// del ADC. Así que A1 lee los 5 V del sensor por un divisor, y con `cur_div` (la
-// relación del divisor) la corriente sale de A0/A1 en cuentas equivalentes a las de
-// 1,25 mV contra 5 V: ver Sense/SupplyRatio.h. Con `cur_div = 0` se mide contra
-// AVCC. En las dos formas una cuenta son 6,8 mA con 185 mV/A --27 en el UNO, que
-// cuenta de a cuatro--. El ruido es mucho más grande que eso: 120 mA RMS por
-// conversión, medidos en el clon, y por eso se promedia.
+// unidades que se le informan a la computadora. SENSE_MV_PER_A es lo único que
+// convierte cuentas en amperes: 185 mV/A el ACS712 de 5 A, 100 mV/A el de 20 A. Con
+// `cur_div` la corriente sale de A0/A1, contra la alimentación del sensor (ver
+// Sense/SupplyRatio.h); con `cur_div = 0`, de A0 contra AVCC. En las dos formas una
+// cuenta publicada son 1,25 mV contra 5 V (6,8 mA con 185 mV/A). Por qué hace falta
+// el divisor en el clon a 3,3 V: hardware.ipynb, sección 4. El ruido es de 120 mA RMS
+// por conversión, medido en el clon, y por eso se promedia.
 static const uint8_t  SENSE_CHANNEL    = 0;
 static const uint8_t  SUPPLY_CHANNEL   = 1;
 static const float    SENSE_MV_PER_A   = 185.0f;
@@ -239,9 +214,9 @@ static uint16_t g_last_writes   = 0;
 
 // La tabla NO se guarda en la placa. El dispositivo arranca siempre sin calibrar,
 // y quien tiene la tabla es la computadora, que la empuja al conectarse --ver
-// extras/calibracion_as5600/calib.py--: una calibración es una propiedad del banco --este imán, en
-// este eje-- y no del programa, y una tabla vieja aplicándose en silencio es peor
-// que ninguna.
+// extras/calibracion_as5600/calib.py--: una calibración es una propiedad del banco
+// --este imán, en este eje-- y no del programa, y una tabla vieja aplicándose en
+// silencio es peor que ninguna.
 
 // --------------------------------------------------------------------- tablas
 

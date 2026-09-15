@@ -35,15 +35,21 @@ La identificación en sí --el modelo, el ajuste, la validación-- es el trabajo
 TP y no está en el notebook.
 
 En la placa no hay ley de control, y el ángulo no tiene ningún filtro: el comando
-va derecho al actuador y el ángulo vuelve tal como lo entregó el sensor. Todo lo que
-se hace con la medición --derivar, filtrar, ajustar-- pasa del lado de la
-computadora, donde se ve y se puede cambiar. Un filtro en la placa se confunde con
-la planta que se está midiendo. La única excepción es la corriente, que se promedia
-en la placa por una razón que se explica más abajo, con un retardo fijo y
-declarado. Lo único que la placa sabe del cableado es lo
-que se le dice al conectar: si el actuador acciona en los dos sentidos (`bidir`) y
-los signos del imán y del sensor de corriente, que mide `bringup()`. Los detalles del
-enlace están en [`PROTOCOL.md`](PROTOCOL.md).
+va derecho al actuador y el ángulo vuelve como lo entregó el sensor, con el signo
+del banco. Todo lo que se hace con la medición --derivar, filtrar, ajustar-- pasa
+del lado de la computadora, donde se ve y se puede cambiar. Un filtro en la placa se
+confunde con la planta que se está midiendo. La única excepción es la corriente, que
+se promedia en la placa con un retardo fijo y declarado. Lo único que la placa sabe
+del cableado es lo que se le dice al conectar: si el actuador acciona en los dos
+sentidos (`bidir`), los signos del imán y del sensor de corriente, que mide
+`bringup()`, y el divisor de A1, si hay. El enlace está resumido en
+[*El enlace*](#el-enlace).
+
+**Dónde está explicado cada cosa.** Por qué el hardware es como es --el actuador, el
+PWM de 1050 Hz, cómo se mide la corriente y qué se le puede creer-- está en
+[`notebooks/hardware.ipynb`](notebooks/hardware.ipynb), y sólo ahí. Este README dice
+cómo instalar, qué perillas hay y qué hacer cuando algo falla; los comentarios del
+código explican las decisiones de implementación.
 
 ---
 
@@ -68,111 +74,24 @@ muestra en clase.
 | L298N `IN2` | 7 | sólo con un puente |
 
 **No todos los bancos tienen el mismo actuador.** Algunos tienen un **puente en H**
-(L298N, configuración **B** del notebook), que acciona en los dos sentidos con un
-comando de -255 a 255. Otros tienen un **transistor a masa con su diodo de rueda
-libre** (configuración **B′**), gobernado sólo desde el pin 9. La celda de la
-sección 2.2 de `hardware.ipynb` dice cuál tiene cada banco. El sketch y el notebook
-son los mismos para los dos.
+(L298N, configuración **B**) y otros un **transistor a masa con su diodo de rueda
+libre** (configuración **B′**, en este banco un BD139). Qué actuador hay lo declara
+quien conecta: `sync_board(bidir=True)` con un puente, `bidir=False` con un
+transistor; `bringup()` verifica que sea cierto y mide los signos del imán y del
+sensor de corriente, que guarda en `notebooks/cableado.json`. Qué cambia con un solo
+cuadrante --empuja y no frena, un comando negativo sale como cero, el eje sigue
+girando con el comando en cero--: `hardware.ipynb`, secciones 2.1 y 2.2.
 
-Con el transistor, el actuador es de un solo cuadrante, y eso se nota en todo lo
-que se mide:
-
-- **empuja y no frena**: con el comando en cero, o más bajo, el eje sólo lo frena
-  el rozamiento, y bajar de velocidad tarda casi el doble que subir;
-- **el sentido está en los cables, no en el comando**: un comando negativo
-  empujaría para el mismo lado, así que conectando con `bidir=False` la placa lo
-  recorta a cero;
-- **con el comando en cero el eje sigue girando muchos segundos**, así que todo
-  ensayo empieza con `ensayo.esperar_quieto(dev)`;
-- **la corriente se extingue antes de terminar cada período de PWM** a
-  velocidades medias, y eso dobla la curva estática: la ganancia cae varias veces
-  entre un comando bajo y uno alto.
-
-Con el puente en H, `ENA` lleva la magnitud e `IN1`/`IN2` el sentido, y un comando
-negativo hace girar el motor para el otro lado. Con el comando en cero el puente
-también queda abierto, así que el eje tampoco frena solo.
-
-**Qué actuador hay lo declara quien conecta**: `sync_board(bidir=True)` con un
-puente, `bidir=False` con un transistor. `bringup()` acciona con `+u` y con `-u` y
-marca una falla si lo declarado no es lo que hay. **Los signos los mide
-`bringup()`**: si un comando positivo hace bajar el ángulo o sale como corriente
-negativa, es de qué lado están los cables y de qué lado miran los sensores. Se los
-pone a la placa (`ang_inv`, `cur_inv`) y los guarda en `notebooks/cableado.json`,
-de donde los carga cada conexión; desde ahí un comando positivo sube el ángulo en
-cualquier banco.
-
-**Dónde va el sensor: del lado de +5 V.** El ACS712 en serie entre +5 V de la fuente
-del motor y el motor, con el diodo de rueda libre abarcando sensor y motor (cátodo a
-+5 V, antes del sensor; ánodo en el colector): así mide la corriente del motor,
-también la que recircula por el diodo. Medido en el banco, con el sensor del lado del
-colector la lectura se corría mientras el eje giraba y el régimen variaba de +2 a
-+55 mA entre corridas; del lado de +5 V, tres escalones seguidos dan el mismo régimen
-a ±1 mA.
-
-**La corriente se mide contra la alimentación del sensor.** Un ACS712 es bipolar y
-ratiométrico: reposa en la mitad de su alimentación, los 5 V del USB, y su
-sensibilidad es proporcional a ella. En una placa que funciona a 5 V, medir A0
-contra AVCC alcanza. **El clon del banco funciona a 3,3 V**, y ahí la lectura
-contra AVCC se corre con cualquier consumo de la placa, porque lo que se mueve es la
-referencia del ADC y no el sensor: con la fuente del motor apagada, la corriente de
-base del transistor hace leer -137 a -341 mA según el comando, y prender un LED de
-1 mA corre la lectura 45 cuentas.
-
-Por eso **A1 lee los 5 V del sensor por un divisor** (5,1 kΩ / 2 kΩ) y la placa usa
-el cociente A0/A1, en el que las dos alimentaciones se cancelan. Medido con la
-fuente del motor apagada: la lectura con el PWM queda entre -0,6 y +2,6 mA a
-cualquier comando, el reposo se mueve menos de 3 mA entre capturas, y los tonos de
-la red, que entraban por la alimentación, bajan de 67 a 0,6 mA. El resultado sale en
-cuentas equivalentes a las de 1,25 mV contra 5 V, así que la escala es la de siempre:
-6,8 mA por cuenta con 185 mV/A (27 en el UNO, que cuenta de a cuatro), con el sensor
-en reposo en ~2000.
-
-El divisor se declara una vez por banco, como el actuador: `dev.declarar_divisor(5100,
-2000)` pone la relación en la placa (`cur_div`), verifica que A1 lea y que el sensor
-repose en la mitad de su alimentación, y la guarda en `notebooks/cableado.json`, de
-donde la carga cada conexión. Sin divisor declarado, la placa mide contra AVCC como
-antes, y `bringup()` avisa si el sensor no reposa en media escala. La escala depende
-de la relación del divisor, así que la tolerancia de las resistencias entra en ella
-(±7 % con resistencias del 5 %). Conviene un capacitor de 100 nF de A1 a GND; el
-banco se midió sin él.
-
-**Cada fila de corriente es un promedio.** Adentro de un período de PWM la
-corriente es un escalón de cientos de mA, y el PWM y el muestreo salen del mismo
-cristal: una conversión por fila cae siempre en la misma fase y se desvía de la
-media hasta 300 mA. Así que el ADC convierte sin parar (a /32 en el clon, a /128 en
-el UNO), cada conversión arrancada a mano con su canal ya elegido --corriendo libre, el
-LGT8F328P mezclaba A0 y A1 según cuánto tardara la interrupción--,
-la placa suma todas sus conversiones y publica el promedio de las últimas
-`cur_filas` filas: 10 por omisión, 20 ms, que anulan el PWM y los 50/100 Hz de la
-red y dejan unos 6 mA de ruido por fila (5 mA sin divisor). **Eso atrasa la corriente ~10 ms** (media ventana)
-respecto del ángulo y del comando, y redondea sus escalones en 20 ms: al ajustar
-un modelo eléctrico, o se tiene en cuenta ese retardo, o se baja `cur_filas`. Con
-`cur_filas = 1` la corriente no atrasa, pero trae ~17 mA de ruido por fila y lo que
-quede de la red; `cur_notch = 3` saca 50, 100 y 150 Hz con dos notch por armónico, en
-49,5 y 50,5 Hz, que cubren la red vista desde la placa --el cristal del clon adelanta
-y la ve en ~49,7 Hz-- sin tener que medirla: al menos 36 dB de atenuación en toda esa
-banda. Es el único filtro de la placa, y está porque lo que saca no se puede
-sacar de filas que ya lo traen plegado.
-
-**Cómo quedó la corriente**, medido en el banco con todo lo de arriba y el motor libre:
-un pico de arranque de ~220 mA, ~22 mA en régimen a u = 150 repetibles a ±1 mA, cerca
-de cero mientras el eje gira por inercia, y 5 mA de ruido con 10 filas. Con el cero
-medido una sola vez, a lo largo de cuatro minutos con capturas, escalones y reposo, la
-lectura en reposo se movió unos ±5 mA, y hasta ~10 mA alrededor de los escalones: un
-`zero_current()` antes de cada ensayo sigue valiendo la pena. La escala en mA sigue sin
-verificar con un tester: ver la nota al pie de la sección 4 de `hardware.ipynb`.
-
-**Un divisor suelto no da error por sí solo**: A1 queda saturado o en cero y la
-corriente sale corrida cientos de mA. `sync_board()` avisa si A1 lee fuera de lo que
-puede dar el divisor; soldarlo, o al menos revisarlo cuando se toca la protoboard.
-
-Un número que conviene verificar una vez por banco, en el sketch:
-`SENSE_MV_PER_A`, la sensibilidad del sensor, que es lo único que convierte cuentas
-en amperes. `bringup()` calibra el cero, que tiene una condición conocida --el
-actuador abierto--, pero para la ganancia haría falta una corriente conocida. Un
-tester en serie con el motor, una vez, alcanza. Con el divisor en A1, la escala
-depende también de su relación, así que el mismo tester sirve para verificar las dos
-cosas juntas.
+**La corriente**: un ACS712 en A0, en serie del lado de +5 V del motor, promediado en
+la placa sobre `cur_filas` filas (20 ms por omisión, con ~10 ms de retardo). En una
+placa a 3,3 V, como el clon del banco, A1 lee los 5 V del sensor por un divisor y la
+placa usa el cociente A0/A1; el divisor se declara una vez por banco con
+`dev.declarar_divisor(5100, 2000)`. **Un divisor suelto no da error**: corre la
+corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
+Con una ventana corta, `cur_notch = 3` saca la red sin calibrarla. La escala en mA no
+está verificada con un tester y depende de `SENSE_MV_PER_A`, en el sketch, y de la
+relación del divisor. El montaje, los números medidos y qué se le puede creer al
+canal: `hardware.ipynb`, sección 4.
 
 El AS5600 necesita un imán **magnetizado diametralmente** girando sobre el chip,
 a un par de milímetros. Las plaquetas de AS5600 traen su propio regulador y los
@@ -362,8 +281,8 @@ dice en la primera celda.
 `dev.bringup()` verifica el equipo parte por parte, y es lo que conviene correr
 ante cualquier duda. Cada vez que se conecta, `sync_board()` recompila si se editó
 el sketch, graba si cambió el binario y reabre el enlace, lo que resetea la placa
-a los valores del sketch. Después le carga `bidir`, los signos de `cableado.json` y
-el cero de la corriente, que mide ahí mismo; la calibración del sensor la repone la
+a los valores del sketch. Después le carga `bidir`, los signos y el divisor de
+`cableado.json` y el cero de la corriente, que mide ahí mismo; la calibración del sensor la repone la
 computadora (ver *Calibrar el sensor*).
 
 > ⚠️ **Varias celdas hacen girar el motor.** Antes de correrlas, revisar que el
@@ -398,7 +317,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
 | `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
-| `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
+| `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver *Calibrar el sensor* |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |
 | `ang_present`, `ang_status`, `ang_agc`, `ang_mag` | estado del sensor: si contesta en el bus, y qué dice del imán |
@@ -412,8 +331,10 @@ leer entero: `esperar_quieto()` no deja arrancar un ensayo con el eje girando,
 ciento, radianes, radianes por segundo y amperes, y `guardar()` / `cargar()` lo
 llevan a un archivo y lo traen de vuelta. Cada captura registra en
 `df.attrs['config']` la placa y las perillas que cambian lo que se mide
-(`loop_div`, `cur_filas`, los signos, el cero y la compensación de la corriente), y
-`guardar()` lo escribe arriba del CSV en líneas que empiezan con `#`.
+(`loop_div`, `cur_filas`, `cur_notch`, los signos, el cero y el divisor de la
+corriente), y `guardar()` lo escribe arriba del CSV en líneas que empiezan con `#`.
+Para una herramienta que no acepta esas líneas (PID Tuner, APMonitor), se exporta
+sin ellas: `datos[ensayo.COLUMNAS].to_csv(ruta, index=False)`.
 
 No hay ninguna lista de parámetros escrita del lado de Python: la placa declara su
 tabla al conectarse. Poner `dev` en una celda la muestra entera, con el valor de
@@ -483,21 +404,36 @@ de servir; y el ADC, que se maneja directamente, así que no hay que llamar a
 `analogRead()`. El Timer0 queda intacto: `millis()` y el PWM de los pines 5 y 6
 andan como siempre.
 
-**El PWM va a 1050 Hz**, y es `PWM_TOP` en el sketch. En abstracto conviene modular
-más rápido, fuera del rango audible. Pero un L298N alimentado con 5 V no lo
-tolera: es un puente de Darlington bipolares, cae unos 2 V y tarda unos 2 µs en
-conmutar, y a 20 kHz lo que se pierde en cada transición se lleva una fracción
-grande de un tiempo de encendido que ya venía escaso. Medido: **a 20 kHz el motor
-no arranca y a 1 kHz anda**. Y 1050 Hz y no 1 kHz justo para que el PWM no quede
-en fase con el muestreo y lo que queda de su rizado se pliegue a 50 Hz, donde la
-ventana de 20 ms de la corriente tiene un cero. Con un transistor MOSFET o un
-puente MOSFET lo correcto sería subirla: 400 son 20 kHz.
+**El PWM va a 1050 Hz** (`PWM_TOP` en el sketch). Por qué no más rápido, por qué
+no 1000 Hz justos y cómo convendría accionar un L298N: `hardware.ipynb`, sección 2.1.
 
-**Si el banco vuelve a tener un L298N**, conviene accionarlo frenando en lugar de
-soltando: `ENA` en alto y el PWM sobre la entrada del sentido, con la otra en cero,
-de modo que en la parte baja del ciclo el puente cortocircuita el motor en vez de
-abrirlo. Eso deja la planta lineal con un solo comando. Lo que no conviene es
-modular bipolar a 1050 Hz.
+---
+
+## El enlace
+
+La placa y la computadora hablan **CtrlLink**, un protocolo de texto por el puerto
+serie a 1 Mbaud (divisor exacto en un AVR de 16 MHz). Las líneas que empiezan con
+`#` son respuestas y eventos; cualquier otra es una fila de telemetría en
+hexadecimal de ancho fijo, que se decodifica de un solo golpe con numpy y se puede
+leer igual en el Monitor Serie.
+
+| Comando | Respuesta |
+|---|---|
+| `id` | `# id CtrlLink 1 <sketch> chans=<n> row=<bytes> dt_us=<n>` |
+| `params` | `# p <nombre> <tipo> <frac> <valor>`, uno por parámetro |
+| `chans` | `# c <i> <nombre> <tipo> <escala> <unidad>`, uno por canal |
+| `get <nombre>`, `set <nombre> <valor>` | `# v <nombre> <valor>` |
+| `start` | un encabezado terminado en `# data`, y después las filas |
+| `stop` | `# end rows=<n> drops=<n>` |
+
+La placa **declara sola sus parámetros y canales** al conectarse, así que la
+computadora no sabe nada de un sketch en particular: agregar una línea a
+`g_params[]` la hace aparecer en el notebook. Un `set` durante una captura se
+informa con `# mark <tick> <nombre> <valor>`, que es lo que da `t = 0` exacto en un
+escalón. Los bytes que llegan a la placa pueden perderse (el USART guarda dos y la
+ISR del muestreo no espera), así que `set` verifica el eco y reintenta. A 500 Hz la
+fila de `Banco` usa el 14 % del enlace; lo que se acaba primero es la CPU de la
+placa, y por eso `capture(..., canales=[...])` emite sólo lo que se pide.
 
 ---
 
@@ -508,7 +444,7 @@ Banco/                   el banco: PWM afuera, ángulo y corriente adentro, tele
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/Actuator/      el puente en H, o el transistor desde ENA
 libraries/Sampler/       el reloj del muestreo: período rígido y divisor
-libraries/Sense/         el conversor libre, y una corriente alrededor de su cero
+libraries/Sense/         la corriente: ADC libre, promedio por ventana, contra la alimentación del sensor, notch de la red
 libraries/AngleSensor/   ángulo desenrollado, y salud del sensor
 libraries/Calibracion/   la corrección del error de ángulo
 libraries/AS5600Async/   lectura asincrónica del AS5600
@@ -531,7 +467,6 @@ notebooks/hardware.ipynb el banco, cómo está armado y la API para el TP2
 extras/calibracion_as5600/  opcional: calibración del AS5600 (notebook, calib.py, método, pruebas)
 herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
 dyc.yml                  el entorno de conda del curso
-PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
 ```
 
 Compilar y grabar a mano, si hiciera falta:
