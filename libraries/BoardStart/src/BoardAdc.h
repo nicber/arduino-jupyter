@@ -67,23 +67,6 @@ inline void adc_select_vcc(bool doce_bits)
     _SFR_MEM8(LGT_DACON)  &= 0x0C;      // DEFAULT del core: Vcc
 }
 
-// La referencia interna, para quien mida una corriente chica contra ella en lugar
-// de contra Vcc. En el clon es la de 1,024 V con VCAL cargado con su calibración;
-// en el UNO la eligen los bits REFS, que escribe quien arranque el conversor.
-static const uint16_t LGT_VCAL   = 0xC8;
-static const uint16_t LGT_VCAL1  = 0xCD;   // el valor de calibración de 1,024 V
-
-inline void adc_select_internal(bool doce_bits)
-{
-    if (!doce_bits) {
-        return;
-    }
-
-    _SFR_MEM8(LGT_ADCSRD) &= (uint8_t)~_BV(LGT_REFS2);
-    _SFR_MEM8(LGT_DACON)   = (uint8_t)((_SFR_MEM8(LGT_DACON) & 0x0C) | 0x02);
-    _SFR_MEM8(LGT_VCAL)    = _SFR_MEM8(LGT_VCAL1);
-}
-
 // Cuántas cuentas da el ADC a fondo de escala: 1024 en el UNO, 4096 en el clon
 // con LGT8F328P, que trae un ADC de 12 bits. La misma tensión mide cuatro veces
 // más en una placa que en la otra, y en este banco las dos corren el mismo

@@ -423,7 +423,6 @@ class CtrlLink:
         Se llama sola cuando hace falta; está expuesta para poder forzarla a
         mano después de algo que este módulo no vio pasar.
         """
-        self._olvidar()
         with self._hold(heal=False):
             self._resync(timeout)
 
@@ -643,25 +642,6 @@ class CtrlLink:
         return tuple(p for p in self._del_diagnostico('parametros_de_configuracion')
                      if p in self._params)
 
-    def _conocido(self, name):
-        """El último valor leído o fijado de `name`, o leído ahora si no hay ninguno.
-
-        Sirve para registrar la configuración de cada captura sin agregarle una
-        ronda de `get` a cada una: una perilla sólo cambia cuando se la fija, y
-        eso pasa por set(). Lo que el enlace no ve --un evento de una captura,
-        algo después de un resync()-- se olvida y se vuelve a leer.
-        """
-        conocidos = self.__dict__.setdefault('_conocidos', {})
-        if name not in conocidos:
-            self.get(name)
-        return conocidos[name]
-
-    def _olvidar(self, names=None):
-        """Olvida los valores conocidos de `names`, o de todos si es None."""
-        conocidos = self.__dict__.setdefault('_conocidos', {})
-        for name in (list(conocidos) if names is None else names):
-            conocidos.pop(name, None)
-
     @property
     def params(self) -> dict:
         """Cada parámetro y su valor actual, releídos del dispositivo."""
@@ -672,9 +652,7 @@ class CtrlLink:
         for text in self.cmd(f'get {name}'):
             if text.startswith('# v '):
                 _, value = text[4:].split(None, 1)
-                value = self._coerce(name, value)
-                self.__dict__.setdefault('_conocidos', {})[name] = value
-                return value
+                return self._coerce(name, value)
         raise CtrlLinkError(f'no hay valor en la respuesta para {name!r}')
 
     def set(self, name, value, tries=3):
@@ -696,11 +674,6 @@ class CtrlLink:
                 _, echoed = text[4:].split(None, 1)
                 stored = self._coerce(name, echoed)
                 if self._agrees(name, stored, value):
-                    self.__dict__.setdefault('_conocidos', {})[name] = stored
-                    # Una tabla se escribe por `<x>w` y se verifica con `<x>sum`: la
-                    # suma conocida deja de valer.
-                    if name.endswith('w'):
-                        self._olvidar([name[:-1] + 'sum'])
                     return stored
                 break
             if attempt + 1 == tries:
@@ -768,7 +741,7 @@ class CtrlLink:
         Cada canal cuesta bytes de cable y tiempo de CPU del lado del dispositivo
         --en un UNO, del orden de 10 us por byte--, así que emitir sólo los que se
         van a mirar es lo que permite subir la frecuencia del lazo; ver el techo
-        medido en PROTOCOL.md. Las columnas
+        medido en la sección «El enlace» del README. Las columnas
         salen en el orden de la tabla del dispositivo, no en el de la lista, y la
         selección anterior se restituye al terminar, así que la celda siguiente
         recibe lo mismo que habría recibido sin ésta.
@@ -791,8 +764,6 @@ class CtrlLink:
         llegue a la celda: ver _hold().
         """
         previous = None
-        # Lo que fija un evento sale por el cable sin pasar por set().
-        self._olvidar([name for _, name, _ in events])
 
         try:
             with self._hold():
@@ -924,7 +895,7 @@ class CtrlLink:
         # Con qué configuración se midió, tal como quedó al terminar la captura. Es
         # lo que ensayo.guardar() escribe arriba del CSV.
         df.attrs['config'] = dict({'dispositivo': getattr(self, 'info', '')},
-                                  **{p: self._conocido(p) for p in self._config})
+                                  **{p: self.get(p) for p in self._config})
         df.attrs['health'] = self._health_notes(df)
 
         if warn:

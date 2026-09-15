@@ -211,7 +211,7 @@ compensando.
 bootloader viejo del Nano, que escucha a 57600. Elegir mal no da un error legible
 sino diez líneas de «not in sync». `sync_board()` prueba los dos, se queda con el
 que anduvo y lo recuerda por puerto. Un tipo de placa que no esté en la lista se
-agrega en `UPLOAD_FQBNS`, en `bench.py`.
+agrega en `UPLOAD_FQBNS`, en `placa.py`.
 
 **El reloj.** Hay clones armados sobre un LGT8F328P, que no lleva cristal: usa un
 RC interno de 32 MHz y arranca dividido por 8, o sea a 4 MHz. Todo este proyecto
@@ -430,22 +430,16 @@ lugar de descubrirse desde un notebook.
 
 ## Calibrar el sensor
 
-El AS5600 no mide el ángulo que uno cree. Un imán descentrado --la hoja de datos
-pide un cuarto de milímetro-- corre la lectura en una cantidad que depende del
-ángulo y se repite vuelta tras vuelta, y al derivar se presenta como una
-ondulación de velocidad que parece del motor.
+Es un **extra**: el TP2 funciona sin él. El AS5600 no mide exactamente el ángulo
+--un imán descentrado corre la lectura en una cantidad que se repite vuelta tras
+vuelta, y al derivar aparece como una ondulación de velocidad--, y
+[`extras/calibracion_as5600/`](extras/calibracion_as5600/) tiene el notebook que la
+mide y arma una tabla que la corrige adentro del Arduino, el módulo `calib.py` y el
+método completo en `CALIBRACION_AS5600.md`.
 
-`notebooks/calibracion.ipynb` la mide, decide cuánto de lo que midió es el sensor
-y cuánto es el motor, y arma una tabla de 128 bytes que la corrige adentro del
-Arduino. Corre igual sin la placa. El método está en
-`Docs/CALIBRACION_AS5600.md`.
-
-**La tabla no vive en la placa.** El dispositivo arranca siempre sin calibrar y la
-dueña de la tabla es la computadora, que la empuja al conectarse:
-`sync_board_cal()` es `sync_board()` más la calibración de este banco. Una
-calibración es una propiedad de *este banco* --este imán, en este eje-- y no del
-programa, y el caso feo no es la tabla que falta, es la tabla vieja de otro
-montaje aplicándose en silencio.
+La tabla no vive en la placa: la placa arranca siempre sin calibrar, y
+`calib.sync_board_cal()` es `sync_board()` más la calibración de este banco. Si la
+calibración existe, la primera celda de `hardware.ipynb` la aplica sola.
 
 El filtro lento del AS5600 va en 2x, 0,286 ms de retardo en lugar de los 2,2 ms
 de fábrica, y el sketch lo escribe al arrancar. No es una perilla: ese retardo se
@@ -523,21 +517,21 @@ libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 libraries/BoardStart/    el reloj, el ADC y el destrabe del bus, antes de todo lo demás
 test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
 python/ctrllink.py       el protocolo, lado computadora
-python/bench.py          compilación, conexión y verificación de este equipo
+python/bench.py          el banco: conexión, bringup() y lo que significan sus números
+python/placa.py          compilar y grabar el sketch, encontrar el puerto
 python/ensayo.py         esperar al eje, la velocidad, las unidades y el archivo
 python/catalogo.py       qué significa cada parámetro, y cómo mostrarlo
-python/calib.py          calibración del AS5600: medición, decisión y tabla
 python/entorno.py        que el notebook corra en el entorno dyc, y qué hacer si no
 python/banco_simulado.py un banco de mentira que sigue al de verdad, para dar la clase sin la placa
 python/fakeuno.py        simulación del dispositivo, fiel byte a byte
 python/test_*.py         pruebas, no necesitan hardware ni compilar
                          (test_notebooks.py además corre los notebooks simulados)
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje
-notebooks/               los notebooks: hardware y calibración
+notebooks/hardware.ipynb el banco, cómo está armado y la API para el TP2
+extras/calibracion_as5600/  opcional: calibración del AS5600 (notebook, calib.py, método, pruebas)
 herramientas/verificar.py        que la instalación ande sin la placa: entorno, compilación, pruebas, notebooks
 dyc.yml                  el entorno de conda del curso
 PROTOCOL.md              el protocolo: diseño, formato de línea y mediciones
-Docs/CALIBRACION_AS5600.md  por qué la calibración es como es
 ```
 
 Compilar y grabar a mano, si hiciera falta:

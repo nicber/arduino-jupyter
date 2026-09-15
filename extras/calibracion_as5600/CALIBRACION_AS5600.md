@@ -501,10 +501,10 @@ Este plan está implementado. El reparto:
 |---|---|
 | `Banco/Banco.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, el filtro del sensor, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
-| `python/calib.py` | ajuste, compuertas, tabla, archivo |
+| `extras/calibracion_as5600/calib.py` | ajuste, compuertas, tabla, archivo |
 | `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
-| `python/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
-| `notebooks/calibracion.ipynb` | los experimentos en orden de clase |
+| `extras/calibracion_as5600/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
+| `extras/calibracion_as5600/calibracion.ipynb` | los experimentos en orden de clase |
 
 ## 10. Orden de trabajo
 

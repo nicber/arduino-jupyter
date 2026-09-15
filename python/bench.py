@@ -26,11 +26,7 @@ modelo, guardarla-- no está acá: está en `ensayo.py`.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -38,58 +34,18 @@ import serial
 
 import catalogo
 import ensayo
-from ctrllink import CtrlLink, CtrlLinkError, find_port
+import placa
+from ctrllink import CtrlLink, CtrlLinkError
 
-__all__ = ['sync_board', 'sync_board_cal', 'Bench', 'CtrlLinkError', 'CALIBRACION',
-           'CABLEADO']
+__all__ = ['sync_board', 'Bench', 'CtrlLinkError', 'CABLEADO']
 
-FQBN = 'arduino:avr:uno'
-
-# Con qué perfil *cargar*. Compilar es siempre lo mismo --el binario es el mismo
-# ATmega328P a 16 MHz en todos los casos--, pero el bootloader que lo recibe no:
-# un UNO escucha a 115200 y muchos clones baratos traen el bootloader viejo del
-# Nano, que escucha a 57600. Elegir mal no da un error legible sino diez líneas
-# de «not in sync». Así que se prueban en orden y se recuerda cuál anduvo, por
-# puerto, en `sync-state.json`.
-UPLOAD_FQBNS = [
-    ('arduino:avr:uno',                    'UNO'),
-    ('arduino:avr:nano:cpu=atmega328old',  'clon con bootloader viejo'),
-]
-
-_HERE     = Path(__file__).resolve().parent.parent
-LIBRARIES = _HERE / 'libraries'
-BUILD_DIR = _HERE / 'build'
-
-# El sketch que se graba si no se pide otro. `sync_board(sketch=...)` acepta el
-# nombre de una carpeta del repositorio --'Banco'-- o una ruta.
-SKETCH    = _HERE / 'Banco'
-
-# La calibración del sensor de este banco. No entra en el repositorio --es un dato
-# del banco y no del proyecto-- y la ruta se resuelve desde este archivo, así que
-# no depende de desde dónde se corra el notebook. Ver sync_board_cal().
-CALIBRACION = _HERE / 'notebooks' / 'calibracion.json'
+_HERE = Path(__file__).resolve().parent.parent
 
 # Los signos de este banco: de qué lado miran el imán y el sensor de corriente. Los
-# mide `bringup()` y los carga `sync_board()`. Tampoco entra en el repositorio, por
-# lo mismo que la calibración. `bidir` no está acá: no se mide, lo declara quien
+# mide `bringup()` y los carga `sync_board()`. No entra en el repositorio: es un
+# dato del banco y no del proyecto. `bidir` no está acá: no se mide, lo declara quien
 # conecta, y `bringup()` verifica que sea cierto.
 CABLEADO = _HERE / 'notebooks' / 'cableado.json'
-
-# El core de AVR compila con `-Os` --optimizar por tamaño--, y este sketch quiere
-# ciclos y no bytes: el muestreador de 5 kHz y la telemetría comparten el tiempo
-# con el manejador del bus. `-O2` es `-Os` más todo lo que agrande el código, y no
-# `-O3`, que en un AVR de 32 kB se paga con casi todo el espacio que queda.
-#
-# Las banderas van como `extra_flags` y no reemplazando `compiler.*.flags` porque
-# el recipe las pega después de las propias del core, y la última `-O` de la línea
-# es la que manda: así se hereda todo lo demás en lugar de copiarlo a mano. El
-# enlace también lleva `-O2`, porque con `-flto` el grueso de la generación de
-# código pasa ahí.
-BUILD_PROPERTIES = [
-    'compiler.c.extra_flags=-O2',
-    'compiler.cpp.extra_flags=-O2',
-    'compiler.c.elf.extra_flags=-O2',
-]
 
 # Bits del registro STATUS del AS5600.
 _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
@@ -793,166 +749,6 @@ def _borrar_del_cableado(*claves):
     CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
 
 
-# ------------------------------------------------------- compilación y carga
-
-def _sketch_dir(sketch=None):
-    """La carpeta del sketch: `SKETCH` si no se pide otro, una carpeta del
-    repositorio si se da un nombre, o la ruta tal cual si se da una ruta.
-    """
-    if sketch is None:
-        ruta = SKETCH
-    elif isinstance(sketch, Path) or '/' in sketch or '\\' in sketch:
-        ruta = Path(sketch).resolve()
-    else:
-        ruta = _HERE / sketch
-
-    if not (ruta / f'{ruta.name}.ino').exists():
-        raise ValueError(f'no hay ningun sketch en {ruta}: falta {ruta.name}.ino')
-    return ruta
-
-
-def _sources_hash(sketch):
-    """Huella digital de todo aquello a partir de lo cual se construye el sketch.
-
-    Por contenido y no por marca de tiempo: un checkout de git reescribe las
-    mtime sin cambiar una línea, y si no dispararía una recompilación al pedo.
-    Las banderas de compilación entran en la huella junto con las fuentes: un
-    `build/` que quedó de una corrida con otra optimización tiene las mismas
-    fuentes y un binario que ya no es el que corresponde.
-    """
-    digest = hashlib.sha256()
-    digest.update(repr(BUILD_PROPERTIES).encode())
-    files = sorted(list(sketch.glob('*.ino')) + list(sketch.glob('*.h')) +
-                   [p for p in LIBRARIES.rglob('*') if p.suffix in ('.h', '.cpp', '.c')])
-    for path in files:
-        digest.update(path.name.encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
-def _arduino_cli():
-    """La ruta del Arduino CLI: el del PATH si hay uno, y si no el que trae el IDE.
-
-    El IDE 2 compila con un arduino-cli propio, guardado adentro de su instalación
-    y fuera del PATH. Buscarlo ahí es lo que permite que alcance con instalar el
-    IDE, sin tocar variables de entorno. Los dos comparten los cores instalados,
-    así que el core de AVR que baja el IDE sirve igual.
-    """
-    found = shutil.which('arduino-cli')
-    if found:
-        return found
-
-    backend = Path('resources', 'app', 'lib', 'backend', 'resources')
-    candidates = [Path('/Applications/Arduino IDE.app/Contents/Resources/app/lib/'
-                       'backend/resources/arduino-cli')]
-    for var, sub in (('LOCALAPPDATA', Path('Programs', 'arduino-ide')),
-                     ('ProgramFiles', Path('Arduino IDE'))):
-        if os.environ.get(var):
-            candidates.append(Path(os.environ[var]) / sub / backend / 'arduino-cli.exe')
-
-    for path in candidates:
-        if path.is_file():
-            return str(path)
-    return 'arduino-cli'        # que _run() explique que no está
-
-
-def _run(argv, what):
-    """Corre una herramienta de compilación y devuelve su salida, o explica por qué no pudo.
-
-    La codificación se fija en lugar de dejarla al locale: arduino-cli emite
-    UTF-8, y una consola de Windows con cp1252 por omisión convierte un carácter
-    perdido en un diagnóstico del compilador en un UnicodeDecodeError que esconde
-    el error de verdad.
-    """
-    try:
-        done = subprocess.run(argv, capture_output=True,
-                              encoding='utf-8', errors='replace')
-    except FileNotFoundError:
-        raise RuntimeError(
-            f'no se encontro arduino-cli, asi que no se puede {what} el sketch.\n'
-            f'Instalar el Arduino IDE (https://www.arduino.cc/en/software) y abrirlo '
-            f'una vez. Si esta instalado en un lugar poco comun, instalar tambien el '
-            f'Arduino CLI y reiniciar el editor, porque el PATH se lee una sola vez '
-            f'al arrancar.'
-        ) from None
-
-    if done.returncode:
-        output = (done.stdout + done.stderr).strip()
-        if 'platform not installed' in output:
-            output += ('\n\nFalta el soporte para placas AVR. Abrir el Arduino IDE, '
-                       'ir a Herramientas > Placa > Gestor de placas, buscar '
-                       '"Arduino AVR Boards" e instalarlo.')
-        raise RuntimeError(f'fallo al {what}:\n{output}')
-    return done.stdout + done.stderr
-
-
-def _load_state():
-    try:
-        return json.loads((BUILD_DIR / 'sync-state.json').read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_state(state):
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    (BUILD_DIR / 'sync-state.json').write_text(json.dumps(state, indent=1))
-
-
-def _upload(port, state, say, sketch, build):
-    """Carga el binario, averiguando sola con qué bootloader habla esta placa.
-
-    Devuelve el FQBN que anduvo, y lo deja anotado en el estado para la próxima
-    vez. Si la anotación quedó vieja --se cambió la placa de puerto, o el puerto
-    de placa-- el intento falla y se sigue con los otros perfiles, así que la
-    memoria acelera pero no decide.
-    """
-    recordado = state.get('bootloader', {}).get(port)
-    orden = ([f for f in UPLOAD_FQBNS if f[0] == recordado] +
-             [f for f in UPLOAD_FQBNS if f[0] != recordado])
-
-    fallas = []
-    for fqbn, nombre in orden:
-        if fallas:
-            say(f'  no era {dict(UPLOAD_FQBNS)[fallas[-1][0]]}; probando '
-                f'{nombre} ...')
-        try:
-            _run([_arduino_cli(), 'upload', '--fqbn', fqbn, '-p', port,
-                  '--input-dir', str(build), str(sketch)], 'cargar')
-        except RuntimeError as exc:
-            fallas.append((fqbn, exc))
-            continue
-
-        state.setdefault('bootloader', {})[port] = fqbn
-        _save_state(state)
-        return fqbn
-
-    detalle = '\n\n'.join(f'--- como {dict(UPLOAD_FQBNS)[f]}:\n{e}'
-                          for f, e in fallas)
-    raise RuntimeError(
-        f'no se pudo cargar el sketch en {port} con ninguno de los bootloaders '
-        f'conocidos ({", ".join(n for _, n in UPLOAD_FQBNS)}).\n'
-        f'«not in sync» en todos suele ser la placa tomada por otro programa --el '
-        f'monitor serie del IDE, un kernel viejo-- o un cable de solo '
-        f'alimentacion. Si la placa es de un tipo que no esta en la lista, '
-        f'agregarlo a UPLOAD_FQBNS en bench.py.\n\n{detalle}')
-
-
-def _wait_for_port(hint=None, timeout=2.0):
-    """find_port(), pero tolerante con una placa que todavía se está reenumerando.
-
-    Por omisión la espera es corta porque una placa ausente tiene que informarse
-    enseguida; la espera larga sólo vale la pena justo después de una carga.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return find_port(hint)
-        except CtrlLinkError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(0.3)
-
-
 def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
                sketch=None, bidir=None):
     """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
@@ -969,9 +765,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
 
     force_compile y force_upload saltean cada uno su propia verificación.
 
-    `sketch` elige qué se graba: el nombre de una carpeta del repositorio o una
-    ruta. Por omisión `SKETCH`. Cada sketch compila en su
-    propia carpeta de `build/`, así que alternar entre dos no recompila ninguno.
+    `sketch` elige qué se graba; ver `placa.poner_al_dia()`.
     """
     global _link
 
@@ -979,61 +773,14 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
         if verbose:
             print(message)
 
-    sketch = _sketch_dir(sketch)
-    build = BUILD_DIR / sketch.name
-
-    state = _load_state()
-    hex_file = build / f'{sketch.name}.ino.hex'
-    sources = _sources_hash(sketch)
-    notes = []
-
-    # Antes había una sola huella para un solo sketch; un estado de entonces se
-    # descarta y cuesta una compilación.
-    if not isinstance(state.get('sources'), dict):
-        state['sources'] = {}
-
-    if (force_compile or not hex_file.exists()
-            or state['sources'].get(sketch.name) != sources):
-        build_flags = []
-        for prop in BUILD_PROPERTIES:
-            build_flags += ['--build-property', prop]
-
-        _run([_arduino_cli(), 'compile', '--fqbn', FQBN,
-              '--libraries', str(LIBRARIES),
-              '--build-path', str(build)] +
-             build_flags +
-             [str(sketch)], 'compilar')
-        notes.append('compilado')
-        state['sources'][sketch.name] = sources
-        _save_state(state)
-
-    binary = hashlib.sha256(hex_file.read_bytes()).hexdigest()
-
-    if port is None:
-        try:
-            port = _wait_for_port()
-        except CtrlLinkError:
-            raise CtrlLinkError(
-                'el sketch esta compilado, pero no hay ninguna placa alcanzable: '
-                'no se encontro ningun puerto serie USB. Enchufarla y correr esto '
-                'de nuevo; la compilacion esta en cache, asi que va a ir derecho a '
-                'la carga.') from None
-
-    uploaded = state.get('uploaded', {})
-
-    if force_upload or uploaded.get(port) != binary:
-        # La carga necesita el puerto para sí sola, y resetea la placa igual.
+    def soltar_puerto():
+        global _link
         if _link is not None:
             _link.close()
             _link = None
-        perfil = _upload(port, state, say, sketch, build)
-        notes.append('cargado' if perfil == UPLOAD_FQBNS[0][0] else
-                     f'cargado como {dict(UPLOAD_FQBNS)[perfil]}')
-        uploaded[port] = binary
-        state['uploaded'] = uploaded
-        _save_state(state)
-        # algunos puentes se caen del bus mientras se resetean
-        port = _wait_for_port(timeout=15.0)
+
+    port, notes = placa.poner_al_dia(port, force_compile, force_upload, sketch, say,
+                                     antes_de_cargar=soltar_puerto)
 
     if _link is not None:
         _link.close()
@@ -1053,42 +800,3 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))
     _link.configurar(bidir=bidir, say=say)
     return _link
-
-
-def sync_board_cal(*args, calibracion=None, **kw):
-    """`sync_board()` y, encima, la calibración del sensor de este banco.
-
-    `sync_board()` resetea la placa, y la placa arranca siempre **sin calibrar**
-    --a propósito: una tabla vieja aplicándose en silencio es peor que ninguna--,
-    así que sin este paso cada celda mediría con el error de ángulo crudo del
-    sensor. Cargar la tabla son 64 escrituras de parámetro, del orden de un
-    segundo. Si no hay archivo de calibración lo dice y sigue: el banco anda
-    igual, sólo que sobre un ángulo torcido.
-
-    `calibracion` es la ruta del archivo; por omisión el de este repositorio, que
-    se resuelve desde acá y no desde el directorio de trabajo.
-    """
-    dev = sync_board(*args, **kw)
-
-    ruta = Path(calibracion) if calibracion else CALIBRACION
-    verbose = kw.get('verbose', True)
-
-    if not ruta.exists():
-        if verbose:
-            print(f'  sin calibracion ({ruta.name} no existe): el angulo va crudo. '
-                  f'Correr notebooks/calibracion.ipynb para medirla.')
-        return dev
-
-    # El import va acá adentro y no arriba: calib trae el ajuste por mínimos
-    # cuadrados, y nada de eso hace falta para hablar con la placa.
-    import calib
-
-    cal = calib.asegurar(dev, ruta)
-
-    if verbose:
-        pico = max(abs(v) for v in cal.lut) / calib.OCTAVOS
-        print(f'  calibracion "{cal.banco}" del {cal.creada[:10]}: '
-              f'{len(cal.armonicos)} armonicos, corrige hasta '
-              f'{pico * calib.GRADOS_POR_CUENTA:.1f} grados')
-
-    return dev

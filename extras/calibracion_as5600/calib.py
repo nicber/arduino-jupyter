@@ -5,7 +5,7 @@ una cantidad que depende del ángulo y que se repite vuelta tras vuelta. Este
 módulo mide esa función sin tener un encoder de referencia, decide qué parte de lo
 que midió es realmente el sensor, y arma la tabla que la corrige adentro del
 Arduino. El método y por qué cada paso es como es están en
-Docs/CALIBRACION_AS5600.md.
+CALIBRACION_AS5600.md, en esta misma carpeta.
 
     import calib
 
@@ -21,7 +21,9 @@ ejecución-- y esa propiedad se pierde en cuanto se le mete adentro el
 conocimiento de qué significa `lutw`. Acá sí se lo sabe.
 """
 import json
+import sys
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -482,7 +484,7 @@ class Calibracion:
                 f'de la tabla puede representar.\n'
                 f'Cuarenta y cinco grados de error no son un sensor mal calibrado, son un '
                 f'sensor que no esta midiendo: revisar el montaje del iman y volver a '
-                f'medir. Ver la compuerta G0 en Docs/CALIBRACION_AS5600.md.\n'
+                f'medir. Ver la compuerta G0 en CALIBRACION_AS5600.md, en esta misma carpeta.\n'
                 f'permitir_recorte=True si de todas formas se quiere la tabla recortada.')
 
         arms = {k: (float(arm.A[k-1]), float(arm.phi[k-1]))
@@ -620,3 +622,47 @@ def asegurar(dev, ruta='calibracion.json'):
         return cal
 
     return cal.aplicar(dev)
+
+
+# ------------------------------------------------------------------ conectar
+
+# Esta carpeta es un extra del TP2: el banco vive en python/. Se lo agrega al path
+# para que `import bench` ande igual desde el notebook de acá y desde las pruebas.
+_EXTRAS = Path(__file__).resolve().parent
+_PYTHON = _EXTRAS.parent.parent / 'python'
+if str(_PYTHON) not in sys.path:
+    sys.path.insert(0, str(_PYTHON))
+
+# La calibración de este banco. No entra en el repositorio: es un dato del banco
+# --este imán, en este eje-- y no del programa.
+CALIBRACION = _EXTRAS / 'calibracion.json'
+
+
+def sync_board_cal(*args, calibracion=None, **kw):
+    """`bench.sync_board()` y, encima, la calibración del sensor de este banco.
+
+    `sync_board()` resetea la placa, y la placa arranca siempre **sin calibrar**
+    --a propósito: una tabla vieja aplicándose en silencio es peor que ninguna--,
+    así que sin este paso cada celda mediría con el error de ángulo crudo del
+    sensor. Cargar la tabla son 64 escrituras de parámetro, del orden de un
+    segundo. Si no hay archivo de calibración lo dice y sigue.
+    """
+    from bench import sync_board
+
+    dev = sync_board(*args, **kw)
+    ruta = Path(calibracion) if calibracion else CALIBRACION
+    verbose = kw.get('verbose', True)
+
+    if not ruta.exists():
+        if verbose:
+            print(f'  sin calibracion ({ruta.name} no existe): el angulo va crudo. '
+                  f'Correr extras/calibracion_as5600/calibracion.ipynb para medirla.')
+        return dev
+
+    cal = asegurar(dev, ruta)
+    if verbose:
+        pico = max(abs(v) for v in cal.lut) / OCTAVOS
+        print(f'  calibracion "{cal.banco}" del {cal.creada[:10]}: '
+              f'{len(cal.armonicos)} armonicos, corrige hasta '
+              f'{pico * GRADOS_POR_CUENTA:.1f} grados')
+    return dev

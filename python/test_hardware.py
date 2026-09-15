@@ -165,6 +165,7 @@ def main():
           f'{a0["y_rep"].sum()} de {len(a0)}')
 
     # ------------------------------------------------- la tabla de calibracion
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'extras' / 'calibracion_as5600'))
     import calib
 
     cal = calib.Calibracion.vacia()

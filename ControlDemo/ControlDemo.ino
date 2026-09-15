@@ -306,7 +306,7 @@ static uint16_t g_last_writes   = 0;
 
 // La tabla NO se guarda en la placa. El dispositivo arranca siempre sin calibrar,
 // y quien tiene la tabla es la computadora, que la empuja al conectarse --ver
-// python/calib.py--. Es una decisión, no una limitación de memoria:
+// extras/calibracion_as5600/calib.py--. Es una decisión, no una limitación de memoria:
 //
 //   - Una calibración es una propiedad del *banco* --este imán, en este eje, con
 //     este sensor--, no de la placa. En un archivo se lee, se compara, se revisa

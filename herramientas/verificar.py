@@ -9,8 +9,9 @@ Hace, en orden, y sigue aunque algo falle para que la lista de fallas salga ente
 2. **La compilación**: que cada sketch del proyecto compile para el UNO, con el
    mismo arduino-cli y las mismas banderas que usa `sync_board()`. No graba nada.
 3. **Las pruebas de Python** que no necesitan la placa: `python/test_*.py`, menos
-   `test_hardware.py`.
-4. **Los notebooks**, enteros, contra el banco simulado.
+   `test_hardware.py`, y las de `extras/*/`.
+4. **Los notebooks**, enteros, contra el banco simulado: los de `notebooks/` y los
+   de `extras/*/`.
 
 Los notebooks se corren en este mismo proceso y no en un kernel de Jupyter: lo que
 se verifica es su código y el del proyecto, y así no depende de que Jupyter pueda
@@ -34,6 +35,7 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 PYTHON = RAIZ / 'python'
 NOTEBOOKS = RAIZ / 'notebooks'
+EXTRAS = RAIZ / 'extras'
 
 # Las que necesitan la placa enchufada.
 _PRUEBAS_CON_PLACA = {'test_hardware.py'}
@@ -79,9 +81,9 @@ def sketches():
 
 def verificar_compilacion():
     seccion('compilacion (sin grabar)')
-    import bench
+    import placa
 
-    cli = bench._arduino_cli()
+    cli = placa._arduino_cli()
     if cli == 'arduino-cli':
         informar('arduino-cli', False,
                  'no se encontro: instalar el Arduino IDE 2 (ver README, paso 1)')
@@ -89,14 +91,14 @@ def verificar_compilacion():
     informar('arduino-cli', True, cli)
 
     banderas = []
-    for prop in bench.BUILD_PROPERTIES:
+    for prop in placa.BUILD_PROPERTIES:
         banderas += ['--build-property', prop]
 
     with tempfile.TemporaryDirectory(prefix='verificar-build-') as tmp:
         for sketch in sketches():
             inicio = time.monotonic()
             corrida = subprocess.run(
-                [cli, 'compile', '--fqbn', bench.FQBN,
+                [cli, 'compile', '--fqbn', placa.FQBN,
                  '--libraries', str(RAIZ / 'libraries'),
                  '--build-path', str(Path(tmp) / sketch.name)] + banderas + [str(sketch)],
                 capture_output=True, encoding='utf-8', errors='replace')
@@ -119,6 +121,7 @@ def verificar_compilacion():
 def verificar_pruebas():
     seccion('pruebas de Python (sin placa)')
     pruebas = sorted(p for p in PYTHON.glob('test_*.py') if p.name not in _PRUEBAS_CON_PLACA)
+    pruebas += sorted(EXTRAS.glob('*/test_*.py'))
     entorno = dict(os.environ, PYTHONIOENCODING='utf-8', MPLBACKEND='Agg')
 
     for prueba in pruebas:
@@ -128,7 +131,7 @@ def verificar_pruebas():
             argumentos.append('--sin-ejecutar')
 
         inicio = time.monotonic()
-        corrida = subprocess.run(argumentos, cwd=str(PYTHON), env=entorno,
+        corrida = subprocess.run(argumentos, cwd=str(prueba.parent), env=entorno,
                                  capture_output=True, encoding='utf-8', errors='replace')
         salida = corrida.stdout + corrida.stderr
         ok = corrida.returncode == 0
@@ -185,7 +188,9 @@ def verificar_notebooks():
     with tempfile.TemporaryDirectory(prefix='verificar-nb-') as tmp:
         carpeta = Path(tmp) / 'notebooks'
         carpeta.mkdir()
-        for ruta in sorted(NOTEBOOKS.glob('*.ipynb')):
+        for ruta in sorted(NOTEBOOKS.glob('*.ipynb')) + sorted(EXTRAS.glob('*/*.ipynb')):
+            # Los de extras/ importan su propio módulo desde su carpeta.
+            sys.path.insert(0, str(ruta.parent))
             inicio = time.monotonic()
             # Lo que imprimen las celdas no es el resultado de la verificación.
             with contextlib.redirect_stdout(io.StringIO()), \

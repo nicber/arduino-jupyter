@@ -33,7 +33,8 @@ import tempfile
 from pathlib import Path
 
 _AQUI     = Path(__file__).resolve().parent
-NOTEBOOKS = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb'))
+NOTEBOOKS = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb')) + \
+            sorted((_AQUI.parent / 'extras').glob('*/*.ipynb'))
 
 sys.path.insert(0, str(_AQUI))
 

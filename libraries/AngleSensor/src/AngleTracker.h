@@ -37,8 +37,8 @@ class AngleTracker
     }
 
     // El camino más corto de `b` hasta `a` en la circunferencia. Vale mientras el
-    // eje gire menos de media vuelta entre dos muestras, que a 5 kHz son 150
-    // vueltas por segundo.
+    // eje gire menos de media vuelta entre dos llamadas a update(): llamado a 5 kHz,
+    // como lo llama Banco, son 2500 vueltas por segundo (15 700 rad/s).
     static Counts wrapped_error(Counts a, Counts b)
     {
         const Counts half = (Counts)(PerRev / 2);

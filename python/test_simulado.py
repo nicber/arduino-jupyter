@@ -21,7 +21,8 @@ import sys
 from pathlib import Path
 
 _AQUI      = Path(__file__).resolve().parent
-NOTEBOOKS  = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb'))
+NOTEBOOKS  = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb')) + \
+            sorted((_AQUI.parent / 'extras').glob('*/*.ipynb'))
 
 # Lo que se le pide al objeto del banco pero no es de él. `simulado` lo pone el
 # propio simulado, y los notebooks lo consultan justamente para saber si hay placa.

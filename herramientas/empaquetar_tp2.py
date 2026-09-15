@@ -22,18 +22,19 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 CARPETA = 'arduino-jupyter'
 
-# Lo que hace falta para el TP2. Una entrada que termina en / es una carpeta entera.
+# Lo mínimo indispensable para el TP2. Una entrada que termina en / es una carpeta
+# entera. Lo que queda afuera sigue en el repositorio: ControlDemo y las bibliotecas
+# del lazo (Control, ControlMath), PROTOCOL.md (el README trae «El enlace»), Docs/ y
+# las pruebas de tests_banco/.
 INCLUIR = [
     'README.md',
-    'PROTOCOL.md',
     'dyc.yml',
     'Banco/',                       # el sketch que graba el notebook
     'test/',                        # las pruebas de los módulos, que corre tasks.json
     'libraries/',
     'python/',
     'notebooks/hardware.ipynb',
-    'notebooks/calibracion.ipynb',
-    'Docs/CALIBRACION_AS5600.md',
+    'extras/calibracion_as5600/',   # opcional; hardware.ipynb la aplica si está medida
     'herramientas/verificar.py',
     '.vscode/extensions.json',      # abrir la carpeta en VS Code y que ofrezca todo
     '.vscode/settings.json',
@@ -43,7 +44,8 @@ INCLUIR = [
 
 # Adentro de lo incluido, lo que igual sobra. Se busca en la ruta con una / adelante,
 # así que '/.vscode/' saca la de cada sketch; la de la raíz entra por su nombre.
-EXCLUIR = ('/.vscode/', '/examples/', '.gitignore', '.gitmodules')
+EXCLUIR = ('/.vscode/', '/examples/', '.gitignore', '.gitmodules',
+           '/libraries/Control/', '/libraries/ControlMath/')
 
 
 def git(*argumentos):
