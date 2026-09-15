@@ -88,7 +88,8 @@ placa a 3,3 V, como el clon del banco, A1 lee los 5 V del sensor por un divisor 
 placa usa el cociente A0/A1; el divisor se declara una vez por banco con
 `dev.declarar_divisor(5100, 2000)`. **Un divisor suelto no da error**: corre la
 corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
-Con una ventana corta, `cur_notch = 3` saca la red sin calibrarla. La escala en mA no
+El notch de la red arranca prendido (`cur_notch = 3`) y no hay que calibrarlo; `cur_notch = 0`
+lo apaga. La escala en mA no
 está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
 relación del divisor. El montaje, los números medidos y la confiabilidad del
 canal: `hardware.ipynb`, sección 4.
@@ -295,7 +296,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
-| `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
+| `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver *Calibrar el sensor* |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |

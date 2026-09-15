@@ -15,10 +15,11 @@
 // ningún filtro. Derivar, filtrar y ajustar se hace en la computadora. La corriente
 // es la única excepción: cada fila publica el promedio de las conversiones de las
 // últimas `cur_filas` filas --lo que hay que sacarle, el rizado del PWM y la red, ya
-// no se puede sacar de filas de 2 ms, que lo traen plegado--, y `cur_notch` saca la red
-// con una ventana corta. Por qué el hardware es como es --actuador, PWM, medición de
-// corriente-- está explicado una sola vez, en notebooks/hardware.ipynb; acá quedan
-// sólo las decisiones de implementación.
+// no se puede sacar de filas de 2 ms, que lo traen plegado--, y el notch de la red
+// (`cur_notch`, prendido por omisión) saca lo que queda con una ventana corta. Por
+// qué el hardware es como es --actuador, PWM, medición de corriente-- está explicado
+// una sola vez, en notebooks/hardware.ipynb; acá quedan sólo las decisiones de
+// implementación.
 //
 // Lo que se fija con cables lo carga la computadora al conectar: cuántos cuadrantes
 // tiene el actuador (`mot_bidir`), los signos del imán y del sensor de corriente
@@ -186,8 +187,9 @@ static uint8_t g_cur_inv = 0;
 // relación es del cableado de cada banco y la carga la computadora.
 static SupplyRatio g_ratio;
 
-// El notch de la red sobre la corriente, fila por fila. Arranca apagado: con la
-// ventana de 20 ms por omisión no hace falta. Ver Sense/MainsNotch.h.
+// El notch de la red sobre la corriente, fila por fila. Arranca prendido en 50, 100 y
+// 150 Hz; `cur_notch = 0` lo apaga. Ver Sense/MainsNotch.h.
+static const uint8_t MAINS_HARMONICS = 3;
 static MainsNotch g_notch;
 
 // Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
@@ -492,6 +494,7 @@ void setup()
                     g_channels, sizeof(g_channels) / sizeof(g_channels[0]),
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
+    g_notch.harmonics = MAINS_HARMONICS;
     refresh_tuning();
 
     g_adc.begin(adc_full);

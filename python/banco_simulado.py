@@ -133,7 +133,7 @@ class BancoSimulado:
         self.cur_filas = 10
         self.cur_div = 0                # sin divisor: el banco simulado no tiene caída
         self.cur_a1 = 0
-        self.cur_notch = 0              # el banco simulado no tiene red
+        self.cur_notch = 3              # prendido como en la placa; el simulado no tiene red
         self.cur_notchr = 950
         self.cur_zero = 2048
         self.loop_div = 10

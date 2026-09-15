@@ -44,7 +44,7 @@ _CATALOGO = {
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
     'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
     'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
-    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150; dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
+    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150 (por omisión); dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
     'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
     'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y el PWM; 1 = sólo la fila'),
 
