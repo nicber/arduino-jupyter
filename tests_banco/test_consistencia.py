@@ -1,9 +1,9 @@
 """Que la documentación, las tablas y las imitaciones digan lo mismo que el código.
 
-Entre versiones del banco lo que más se rompió no fue el código sino lo que se dice
-de él: el PWM «a 1 kHz» con PWM_TOP = 7619, funciones que ya no existían
-(`ensayo.signo()`), archivos mencionados que no venían en el zip,
-un límite de desenrollado escrito con otra cuenta. Esto lo mira todo con el texto.
+Lo que se dice del código se desactualiza con más facilidad que el código mismo:
+una frecuencia de PWM que no coincide con PWM_TOP, funciones nombradas que no
+existen, archivos mencionados que no vienen en el zip, un límite de desenrollado
+escrito con otra cuenta. Esto lo verifica todo sobre el texto.
 """
 import json
 import re
@@ -47,7 +47,7 @@ for nombre, t in todo.items():
 check('ninguna línea dice que el PWM va a 1 kHz', not malas, ' | '.join(malas[:4]))
 
 import banco_simulado  # noqa: E402
-check('el banco simulado integra con el período del PWM de verdad',
+check('el banco simulado integra con el período real del PWM',
       abs(banco_simulado.PWM_T * f_pwm - 1) < 1e-3, f'{1 / banco_simulado.PWM_T:.1f} Hz')
 
 # ----------------------------------------------------- los parámetros de la placa

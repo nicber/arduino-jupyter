@@ -37,7 +37,7 @@ def leer(ruta):
 tmp = Path(tempfile.mkdtemp(prefix='tests-banco-'))
 
 # ------------------------------------------------------------------ los signos
-# Sin divisor es el caso de la v2: la caída de AVCC sube la lectura con el PWM, así
+# Sin divisor, la caída de AVCC sube la lectura con el PWM, así
 # que la media del tirón puede salir positiva con el sensor al revés; sólo comparando
 # el arranque con el final se ve el signo. Con el divisor, la caída se cancela.
 for div in (0, DIV_E4):
@@ -76,7 +76,7 @@ check('y bringup no pasa', not ok)
 
 # ------------------------------------------------------- sin fuente del motor
 # Sin divisor, el PWM solo corre la lectura cientos de mA: el pico no prueba que el
-# motor ande. Con el sensor de ángulo, la prueba es que gire.
+# motor funcione. Con el sensor de ángulo, la prueba es que gire.
 for div in (0, DIV_E4):
     banco = BancoConFallas(fuente_prendida=False, semilla=3)
     cab = tmp / f'cableado_sinfuente_{div}.json'
@@ -100,7 +100,7 @@ guardado = leer(cab)
 check('declarar_divisor fija la relación del divisor en la placa', rel == DIV_E4 and rig.cur_div == DIV_E4,
       f'{rel} contra {DIV_E4}')
 check('mide el cero contra la alimentación del sensor, cerca de 2000 cuentas equivalentes',
-      abs(rig.cur_zero / 2000 - 1) < 0.08 and 'OJO' not in texto, texto.strip().replace('\n', ' | '))
+      abs(rig.cur_zero / 2000 - 1) < 0.08 and 'Atención' not in texto, texto.strip().replace('\n', ' | '))
 check('lo guarda en cableado.json, sin tocar los signos, y borra la calibración vieja',
       guardado.get('cur_div') == DIV_E4 and guardado.get('ang_inv') == 1
       and 'cur_sag' not in guardado and 'cur_red' not in guardado, str(guardado))
@@ -166,7 +166,7 @@ rig = bench_sobre(banco, tmp / 'no_existe.json')
 dichos = []
 rig.configurar(bidir=None, say=dichos.append)
 texto = ' '.join(dichos)
-check('sin bidir declarado, configurar avisa', 'no se declaro bidir' in texto)
+check('sin bidir declarado, configurar avisa', 'no se declaró bidir' in texto)
 check('sin cableado.json, avisa que faltan el divisor y los signos',
       'no hay divisor de A1 declarado' in texto and 'sin signos medidos' in texto, texto)
 

@@ -1,10 +1,10 @@
-"""Un banco simulado con las fallas que tiene el hardware de verdad, y un Bench encima.
+"""Un banco simulado con las fallas que tiene el hardware real, y un Bench encima.
 
 `BancoSimulado` (python/banco_simulado.py) sigue al banco en lo mecánico, pero su
 cableado es perfecto: una placa a 5 V, los signos ya bien y la fuente del motor
 siempre prendida. Justamente eso es lo que la lógica de `bench.py` tiene que
-resolver, y lo que rompió en la v2 (`cur_inv` mal medido con la caída encima). Acá
-se agregan, a nivel de lo que ven los pines:
+resolver, y donde es fácil equivocarse (medir `cur_inv` con la caída de AVCC
+superpuesta). Acá se agregan, a nivel de lo que ven los pines:
 
 - `angulo_invertido`: el imán mira al revés, así que la cuenta cruda baja con +u;
 - `sensor_invertido`: el ACS712 está insertado al revés;
@@ -126,7 +126,7 @@ class BancoConFallas(bs.BancoSimulado):
 
 
 def bench_sobre(banco, cableado):
-    """Un `bench.Bench` de verdad sobre `banco`, con `cableado.json` en `cableado`."""
+    """Un `bench.Bench` real sobre `banco`, con `cableado.json` en `cableado`."""
     rig = bench.Bench.__new__(bench.Bench)
     object.__setattr__(rig, 'link', banco)
     # Los caminos de cableado.json quedan fijados como argumentos por omisión al

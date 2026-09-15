@@ -22,7 +22,7 @@
 #include "WindowMean.h"
 #include "SupplyRatio.h"
 
-// ------------------------------------------------------ el Arduino de mentira
+// ------------------------------------------------------- el Arduino simulado
 uint8_t  TCCR1A, TCCR1B;
 uint16_t TCNT1, ICR1, OCR1A;
 uint8_t  TCCR2A, TCCR2B, OCR2A, TCNT2, TIMSK2;

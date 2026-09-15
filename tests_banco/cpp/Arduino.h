@@ -1,11 +1,11 @@
-// Un Arduino.h de mentira para probar en la PC los módulos que tocan registros.
+// Un Arduino.h simulado para probar en la PC los módulos que tocan registros.
 //
 // Los registros son variables globales y las funciones de pines anotan lo que se
 // les pidió en un registro de eventos, para poder verificar el orden de las
 // escrituras (que un cambio de sentido apague el puente antes de mover IN1/IN2).
 
-#ifndef ARDUINO_H_DE_MENTIRA
-#define ARDUINO_H_DE_MENTIRA
+#ifndef ARDUINO_H_SIMULADO
+#define ARDUINO_H_SIMULADO
 
 #include <stdint.h>
 
