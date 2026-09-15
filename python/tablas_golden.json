@@ -86,6 +86,11 @@
       "frac": "0"
     },
     {
+      "nombre": "cur_aa",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
       "nombre": "cur_notch",
       "tipo": "CTRL_U8",
       "frac": "0"

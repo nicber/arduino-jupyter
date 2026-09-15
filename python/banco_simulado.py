@@ -133,6 +133,7 @@ class BancoSimulado:
         self.cur_filas = 10
         self.cur_div = 0                # sin divisor: el banco de mentira no tiene caída
         self.cur_a1 = 0
+        self.cur_aa = 0
         self.cur_notch = 0              # el banco de mentira no tiene red
         self.cur_notchr = 950
         self.cur_zero = 2048

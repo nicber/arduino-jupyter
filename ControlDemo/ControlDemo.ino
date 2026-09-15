@@ -215,6 +215,7 @@ typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 static SampleClock  g_clock(10);
 static Adc          g_adc;
 static SupplyRatio  g_ratio;
+static uint8_t      g_cur_aa = 0;     // los dos polos por canal: ver Sense/RowAdc.h
 static WindowMean   g_window(1);      // un período: una ventana larga atrasa el lazo
 static WindowMean   g_supply_window(1);
 static MainsNotch   g_notch;
@@ -361,6 +362,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
     { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0                 },
     { "cur_a1",      CTRL_U16, &g_ratio.supply,      0                 },
+    { "cur_aa",      CTRL_U8,  &g_cur_aa,            0                 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0                 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0                 },
     { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
@@ -611,6 +613,7 @@ static void refresh_tuning(void)
     g_lut.apply(g_lutw);
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
+    g_adc.smooth(g_cur_aa);
 
     g_window.apply();
     g_supply_window.rows = g_window.rows;

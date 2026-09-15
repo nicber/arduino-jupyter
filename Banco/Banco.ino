@@ -210,6 +210,10 @@ static uint8_t g_cur_inv = 0;
 // relación es del cableado de cada banco y la carga la computadora.
 static SupplyRatio g_ratio;
 
+// Los dos polos por canal antes de sumar la fila: el corrimiento k, 0 = sin filtro.
+// Ver Sense/RowAdc.h.
+static uint8_t g_cur_aa = 0;
+
 // El notch de la red sobre la corriente, fila por fila. Arranca apagado: con la
 // ventana de 20 ms por omisión no hace falta. Ver Sense/MainsNotch.h.
 static MainsNotch g_notch;
@@ -266,6 +270,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
     { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0 },
     { "cur_a1",      CTRL_U16, &g_ratio.supply,      0 },
+    { "cur_aa",      CTRL_U8,  &g_cur_aa,            0 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
 
@@ -417,6 +422,7 @@ static void refresh_tuning(void)
 
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
+    g_adc.smooth(g_cur_aa);
 
     g_window.apply();
     g_supply_window.rows = g_window.rows;

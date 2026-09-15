@@ -17,19 +17,27 @@
 // el lazo cuando quiera. Así la ventana de cada fila queda pegada a su tick, igual
 // que el ángulo.
 //
-// Alternando canales hay que saber de cuál es cada conversión. Corriendo libre, la
-// conversión siguiente arranca apenas termina una, antes de que corra la
-// interrupción, así que el canal que se escribe en la interrupción rige para la
-// conversión después de la que ya empezó: se lleva el canal de las dos.
+// Opcionalmente, cada canal pasa por dos polos antes de sumarse, y += (x - y) >> k dos
+// veces, en cuartos de cuenta y 16 bits, redondeando: sólo sumas y corrimientos. Baja el
+// ruido de una fila sola y agrega retardo, ~2 · 2^k conversiones de ese canal. El
+// corrimiento --un redondeo, y cuándo arranca cada conversión-- mueve el cero unos mA:
+// el cero se mide con el mismo `k` que se va a usar.
 //
-// El preescalador depende de la placa y del modo. La hoja de datos del LGT8F328P pide
-// un reloj de 300 kHz a 3 MHz: /32 son 500 kHz, y una conversión libre de 22 relojes
-// son 44 us; medido en el clon, la interrupción que sólo acumula se lleva el 16 % de
-// la CPU. Alternando con A1, en cambio, va a /64 (88 us): medido en el banco con el
-// divisor de A1 sin capacitor, el ruido de la corriente con 10 filas es de 31 mA a
-// /32, de 9 mA a /64 y de 120 mA a /128 --contra 5 mA midiendo sólo A0 a /32--, y a
-// /64 siguen cayendo unas 11 conversiones por período de PWM. El ATmega328P quiere
-// 50 a 200 kHz para sus 10 bits: /128, 104 us, en los dos modos.
+// Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
+// sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
+// cambio de canal escrito en la interrupción alcanza a la que ya arrancó o a la
+// siguiente según cuánto tarde la interrupción. Medido en el banco: moviendo la
+// escritura unos µs dentro de la interrupción, A1 pasó de leer 1735 a leer 2400, una
+// mezcla con A0. Así que el conversor no corre libre: cada interrupción lee, escribe
+// el canal de la próxima y recién ahí la arranca. El período queda un poco menos
+// parejo, lo que para promediar no importa, y cada conversión es del canal que dice.
+//
+// El preescalador depende de la placa. La hoja de datos del LGT8F328P pide un reloj
+// de 300 kHz a 3 MHz: /32 son 500 kHz, y una conversión de 22 relojes son 44 us más
+// lo que tarde la interrupción en arrancar la siguiente. El ATmega328P quiere 50 a
+// 200 kHz para sus 10 bits: /128, 104 us. Medido en el clon con el divisor de A1
+// sin capacitor, a /32: el ruido de la corriente es de 17 mA por fila y 6 mA con 10
+// filas midiendo A0/A1, y de 21 y 5 mA midiendo sólo A0 contra AVCC.
 //
 // Siempre contra AVCC. Lo que se probó para la referencia y no sirvió, para no
 // volver a probarlo:
@@ -67,10 +75,13 @@ class RowAdc
         , m_n()
         , m_row_sum()
         , m_row_n()
-        , m_done(0)
-        , m_running(0)
+        , m_channel(0)
         , m_alternate(false)
         , m_lgt(false)
+        , m_k(0)
+        , m_y1()
+        , m_y2()
+        , m_fresh()
         , m_shift(0)
     {
     }
@@ -88,9 +99,10 @@ class RowAdc
 
         ADCSRA = 0;
         ADMUX  = (uint8_t)(_BV(REFS0) | (Channel & 0x1F));
-        ADCSRB = (uint8_t)(ADCSRB & ~0x07);                  // libre
-        m_done = m_running = 0;
-        ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | _BV(ADATE) | prescaler);
+        ADCSRB = (uint8_t)(ADCSRB & ~0x07);
+        m_channel = 0;
+        m_fresh[0] = m_fresh[1] = true;
+        ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | prescaler);     // sin ADATE: a mano
         ADCSRA |= _BV(ADSC);
     }
 
@@ -102,21 +114,54 @@ class RowAdc
             return;
         }
         m_alternate = on;
-        ADCSRA = (uint8_t)((ADCSRA & ~0x07) | prescaler());
+        m_fresh[0] = m_fresh[1] = true;
+    }
+
+    // Los dos polos: `k` de 1 a 6, o 0 para no filtrar. El filtro arranca de nuevo.
+    void smooth(uint8_t k)
+    {
+        if (k > 6) k = 6;
+        if (k == m_k)
+        {
+            return;
+        }
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+        {
+            m_k = k;
+            m_fresh[0] = m_fresh[1] = true;
+        }
     }
 
     // Llamar desde ISR(ADC_vect).
     void on_conversion(void)
     {
-        const uint8_t k = m_done;
-        m_sum[k] += ADC;
-        m_n[k]++;
+        const uint8_t k = m_channel;
+        uint16_t v = ADC;
 
-        // La que terminó ahora era la que corría; la que ya arrancó pasa a ser la
-        // próxima en terminar; y lo que se escribe ahora rige para la siguiente.
-        m_done    = m_running;
-        m_running = (m_alternate && !m_running) ? 1 : 0;
-        ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_running ? SupplyChannel : Channel) & 0x1F));
+        // La próxima: su canal primero, y recién después arrancarla.
+        m_channel = (m_alternate && !k) ? 1 : 0;
+        ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_channel ? SupplyChannel : Channel) & 0x1F));
+        ADCSRA |= _BV(ADSC);
+
+        if (m_k)
+        {
+            // En cuartos de cuenta y 16 bits: 4095 · 4 y cualquier diferencia entran.
+            // Redondeando al más cercano: el corrimiento pelado redondea hacia abajo y
+            // deja la salida corrida.
+            const int16_t x = (int16_t)(v << 2);
+            const int16_t h = (int16_t)(1 << (m_k - 1));
+            if (m_fresh[k])
+            {
+                m_y1[k] = m_y2[k] = x;
+                m_fresh[k] = false;
+            }
+            m_y1[k] = (int16_t)(m_y1[k] + ((int16_t)(x - m_y1[k] + h) >> m_k));
+            m_y2[k] = (int16_t)(m_y2[k] + ((int16_t)(m_y1[k] - m_y2[k] + h) >> m_k));
+            v = (uint16_t)((m_y2[k] + 2) >> 2);
+        }
+
+        m_sum[k] += v;
+        m_n[k]++;
     }
 
     // Llamar desde la ISR del muestreador, en el tick de la fila.
@@ -156,22 +201,21 @@ class RowAdc
 
     uint8_t prescaler(void) const
     {
-        if (!m_lgt)
-        {
-            return (uint8_t)(_BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0));            // /128
-        }
-        return m_alternate ? (uint8_t)(_BV(ADPS2) | _BV(ADPS1))                // /64
-                           : (uint8_t)(_BV(ADPS2) | _BV(ADPS0));               // /32
+        return m_lgt ? (uint8_t)(_BV(ADPS2) | _BV(ADPS0))                      // /32
+                     : (uint8_t)(_BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0));        // /128
     }
 
     volatile uint32_t m_sum[2];
     volatile uint16_t m_n[2];
     volatile uint32_t m_row_sum[2];
     volatile uint16_t m_row_n[2];
-    volatile uint8_t  m_done;       // de qué canal es la conversión que termina ahora
-    volatile uint8_t  m_running;    // de qué canal es la que ya arrancó
+    volatile uint8_t  m_channel;    // de qué canal es la conversión en curso
     volatile bool     m_alternate;
     bool              m_lgt;
+    volatile uint8_t  m_k;
+    int16_t           m_y1[2];      // los dos polos de cada canal, en cuartos de cuenta
+    int16_t           m_y2[2];
+    volatile bool     m_fresh[2];
     uint8_t           m_shift;
 };
 
