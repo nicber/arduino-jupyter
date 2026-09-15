@@ -9,7 +9,7 @@ tocar el banco.
 
     import ensayo
 
-    ensayo.esperar_quieto(dev)                            # el eje, parado de verdad
+    ensayo.esperar_quieto(dev)                            # el eje, efectivamente parado
     df = dev.step('ctl_uff', 200, pre=0.3, post=2.0, back=0)
     t, w = ensayo.velocidad(df)                           # rad/s
     ensayo.guardar(df, 'datos/escalon_200.csv')           # t, u, theta, omega, i
@@ -17,8 +17,8 @@ tocar el banco.
 
 El archivo lleva las columnas en las unidades en las que se escribe un modelo:
 segundos, por ciento de PWM, radianes, radianes por segundo y amperes. Es lo que
-espera cualquier herramienta de identificación, y lo que se puede leer dentro de
-un año sin acordarse de nada de esto.
+espera cualquier herramienta de identificación, y permite interpretar el archivo
+más adelante sin depender de este código.
 """
 from datetime import datetime
 from pathlib import Path
@@ -65,7 +65,7 @@ def esperar_quieto(dev, quieto=0.5, ventana=0.3, limite=60.0):
             return esperado
 
         if esperado >= limite:
-            print(f'  OJO: despues de {limite:.0f} s el eje sigue girando a '
+            print(f'  Atención: después de {limite:.0f} s el eje sigue girando a '
                   f'{giro:.1f} rad/s')
             return esperado
 
@@ -82,7 +82,7 @@ def velocidad(df, ventana=0.02, canal='y_uw'):
     que la ventana tiene que ser corta contra la constante de tiempo que se quiere
     ver. Y no es causal: sirve para procesar una captura, no para un lazo.
 
-    Con `ventana = 0` no se promedia, y se ve la cuantización desnuda: una cuenta
+    Con `ventana = 0` no se promedia, y se ve la cuantización sin filtrar: una cuenta
     del sensor en dos períodos, a 500 Hz, son 0,38 rad/s. Devuelve una muestra
     menos que la captura, alineada con t[1:]; en la última fila, que no tiene
     siguiente, la diferencia es hacia atrás.
@@ -102,7 +102,7 @@ def velocidad(df, ventana=0.02, canal='y_uw'):
     w[-1] = (theta[-1] - theta[-2]) / (t[-1] - t[-2])
 
     n = max(1, int(round(ventana / _dt(t))))
-    n += (n + 1) % 2                                    # impar: centrado de verdad
+    n += (n + 1) % 2                                    # impar: efectivamente centrado
     if n > 1:
         # En los extremos la ventana se achica a las muestras que hay. Ni ceros
         # --hunden las puntas, y de ahí salen los regímenes de un escalón-- ni
@@ -142,7 +142,7 @@ def guardar(df, ruta, ventana=0.02):
     Arriba de las columnas van unas líneas que empiezan con `#` y dicen con qué se
     midió: la placa, la fecha, la `ventana` y las perillas de la captura
     (`df.attrs['config']`). Un modelo ajustado con `cur_filas = 10` y otro con
-    `cur_filas = 1` no se comparan igual, y dentro de un mes eso ya no se recuerda.
+    `cur_filas = 1` no se comparan igual, y ese dato no queda registrado en otro lugar.
     Para leerlo con otra cosa que `cargar()`: `pd.read_csv(ruta, comment='#')`.
 
     Una captura que ya está normalizada --tiene `omega`-- se escribe tal cual.

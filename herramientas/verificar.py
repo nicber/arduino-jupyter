@@ -1,4 +1,4 @@
-"""Verifica que la instalación anda, sin la placa: el entorno, la compilación y el Python.
+"""Verifica que la instalación funciona, sin la placa: el entorno, la compilación y el Python.
 
     conda activate C:\\envs\\dyc
     python herramientas\\verificar.py
@@ -17,7 +17,7 @@ Los notebooks se corren en este mismo proceso y no en un kernel de Jupyter: lo q
 se verifica es su código y el del proyecto, y así no depende de que Jupyter pueda
 arrancar un kernel. Se corren sobre una copia en una carpeta temporal, para que lo
 que escriben --datos de ensayo, una calibración simulada-- no quede mezclado con las
-mediciones de verdad.
+mediciones reales.
 
 La primera compilación tarda uno o dos minutos. Devuelve 0 si todo pasó.
 """
@@ -80,13 +80,13 @@ def sketches():
 
 
 def verificar_compilacion():
-    seccion('compilacion (sin grabar)')
+    seccion('compilación (sin grabar)')
     import placa
 
     cli = placa._arduino_cli()
     if cli == 'arduino-cli':
         informar('arduino-cli', False,
-                 'no se encontro: instalar el Arduino IDE 2 (ver README, paso 1)')
+                 'no se encontró: instalar el Arduino IDE 2 (ver README, paso 1)')
         return
     informar('arduino-cli', True, cli)
 
@@ -206,8 +206,8 @@ def main():
     print(f'verificando {RAIZ}')
 
     if not verificar_entorno():
-        print('\nSin los paquetes no se puede verificar el resto. Lo mas probable es que '
-              'el entorno dyc no este activado:\n\n    conda activate C:\\envs\\dyc\n')
+        print('\nSin los paquetes no se puede verificar el resto. Lo más probable es que '
+              'el entorno dyc no esté activado:\n\n    conda activate C:\\envs\\dyc\n')
         return 1
 
     verificar_compilacion()

@@ -20,13 +20,13 @@ FQBN = 'arduino:avr:uno'
 
 # Con qué perfil *cargar*. Compilar es siempre lo mismo --el binario es el mismo
 # ATmega328P a 16 MHz en todos los casos--, pero el bootloader que lo recibe no:
-# un UNO escucha a 115200 y muchos clones baratos traen el bootloader viejo del
+# un UNO escucha a 115200 y muchos clones baratos traen el bootloader antiguo del
 # Nano, que escucha a 57600. Elegir mal no da un error legible sino diez líneas
-# de «not in sync». Así que se prueban en orden y se recuerda cuál anduvo, por
+# de «not in sync». Así que se prueban en orden y se recuerda cuál funcionó, por
 # puerto, en `sync-state.json`.
 UPLOAD_FQBNS = [
     ('arduino:avr:uno',                    'UNO'),
-    ('arduino:avr:nano:cpu=atmega328old',  'clon con bootloader viejo'),
+    ('arduino:avr:nano:cpu=atmega328old',  'clon con bootloader antiguo'),
 ]
 
 _HERE     = Path(__file__).resolve().parent.parent
@@ -67,7 +67,7 @@ def _sketch_dir(sketch=None):
         ruta = _HERE / sketch
 
     if not (ruta / f'{ruta.name}.ino').exists():
-        raise ValueError(f'no hay ningun sketch en {ruta}: falta {ruta.name}.ino')
+        raise ValueError(f'no hay ningún sketch en {ruta}: falta {ruta.name}.ino')
     return ruta
 
 
@@ -75,7 +75,7 @@ def _sources_hash(sketch):
     """Huella digital de todo aquello a partir de lo cual se construye el sketch.
 
     Por contenido y no por marca de tiempo: un checkout de git reescribe las
-    mtime sin cambiar una línea, y si no dispararía una recompilación al pedo.
+    mtime sin cambiar una línea, y si no dispararía una recompilación innecesaria.
     Las banderas de compilación entran en la huella junto con las fuentes: un
     `build/` que quedó de una corrida con otra optimización tiene las mismas
     fuentes y un binario que ya no es el que corresponde.
@@ -122,16 +122,16 @@ def _run(argv, what):
     La codificación se fija en lugar de dejarla al locale: arduino-cli emite
     UTF-8, y una consola de Windows con cp1252 por omisión convierte un carácter
     perdido en un diagnóstico del compilador en un UnicodeDecodeError que esconde
-    el error de verdad.
+    el error real.
     """
     try:
         done = subprocess.run(argv, capture_output=True,
                               encoding='utf-8', errors='replace')
     except FileNotFoundError:
         raise RuntimeError(
-            f'no se encontro arduino-cli, asi que no se puede {what} el sketch.\n'
+            f'no se encontró arduino-cli, así que no se puede {what} el sketch.\n'
             f'Instalar el Arduino IDE (https://www.arduino.cc/en/software) y abrirlo '
-            f'una vez. Si esta instalado en un lugar poco comun, instalar tambien el '
+            f'una vez. Si está instalado en un lugar poco común, instalar también el '
             f'Arduino CLI y reiniciar el editor, porque el PATH se lee una sola vez '
             f'al arrancar.'
         ) from None
@@ -142,7 +142,7 @@ def _run(argv, what):
             output += ('\n\nFalta el soporte para placas AVR. Abrir el Arduino IDE, '
                        'ir a Herramientas > Placa > Gestor de placas, buscar '
                        '"Arduino AVR Boards" e instalarlo.')
-        raise RuntimeError(f'fallo al {what}:\n{output}')
+        raise RuntimeError(f'falló al {what}:\n{output}')
     return done.stdout + done.stderr
 
 
@@ -161,8 +161,8 @@ def _save_state(state):
 def _upload(port, state, say, sketch, build):
     """Carga el binario, averiguando sola con qué bootloader habla esta placa.
 
-    Devuelve el FQBN que anduvo, y lo deja anotado en el estado para la próxima
-    vez. Si la anotación quedó vieja --se cambió la placa de puerto, o el puerto
+    Devuelve el FQBN que funcionó, y lo deja anotado en el estado para la próxima
+    vez. Si la anotación quedó desactualizada --se cambió la placa de puerto, o el puerto
     de placa-- el intento falla y se sigue con los otros perfiles, así que la
     memoria acelera pero no decide.
     """
@@ -192,8 +192,8 @@ def _upload(port, state, say, sketch, build):
         f'no se pudo cargar el sketch en {port} con ninguno de los bootloaders '
         f'conocidos ({", ".join(n for _, n in UPLOAD_FQBNS)}).\n'
         f'«not in sync» en todos suele ser la placa tomada por otro programa --el '
-        f'monitor serie del IDE, un kernel viejo-- o un cable de solo '
-        f'alimentacion. Si la placa es de un tipo que no esta en la lista, '
+        f'monitor serie del IDE, un kernel de una sesión anterior-- o un cable de sólo '
+        f'alimentación. Si la placa es de un tipo que no está en la lista, '
         f'agregarlo a UPLOAD_FQBNS en placa.py.\n\n{detalle}')
 
 
@@ -217,7 +217,7 @@ def poner_al_dia(port=None, force_compile=False, force_upload=False, sketch=None
                  say=print, antes_de_cargar=lambda: None):
     """Compila si cambió alguna fuente y graba si cambió el binario. Devuelve (puerto, notas).
 
-    Compila sólo cuando algún archivo fuente cambió de verdad y carga sólo cuando
+    Compila sólo cuando algún archivo fuente cambió efectivamente y carga sólo cuando
     el binario resultante difiere del que este puerto recibió por última vez.
     `antes_de_cargar` se llama justo antes de grabar, para soltar el puerto: la
     carga lo necesita para sí sola.
@@ -234,7 +234,7 @@ def poner_al_dia(port=None, force_compile=False, force_upload=False, sketch=None
     sources = _sources_hash(sketch)
     notes = []
 
-    # Antes había una sola huella para un solo sketch; un estado de entonces se
+    # `sources` guarda una huella por sketch; un estado con otro formato se
     # descarta y cuesta una compilación.
     if not isinstance(state.get('sources'), dict):
         state['sources'] = {}
@@ -261,10 +261,10 @@ def poner_al_dia(port=None, force_compile=False, force_upload=False, sketch=None
             port = _wait_for_port()
         except CtrlLinkError:
             raise CtrlLinkError(
-                'el sketch esta compilado, pero no hay ninguna placa alcanzable: '
-                'no se encontro ningun puerto serie USB. Enchufarla y correr esto '
-                'de nuevo; la compilacion esta en cache, asi que va a ir derecho a '
-                'la carga.') from None
+                'el sketch está compilado, pero no hay ninguna placa alcanzable: '
+                'no se encontró ningún puerto serie USB. Enchufarla y correr esto '
+                'de nuevo; la compilación está en caché, así que va a pasar directamente '
+                'a la carga.') from None
 
     uploaded = state.get('uploaded', {})
 

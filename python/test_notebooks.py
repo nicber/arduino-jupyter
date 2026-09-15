@@ -1,20 +1,20 @@
 """Todo lo que los notebooks le piden al banco tiene que existir.
 
-Este test nació de un error concreto. Renombrar los parámetros de la placa tocó los
-accesos por atributo --`dev.pid_kp`-- pero no los que viajan como cadena:
-`dev.step('uff', 200)` quedó nombrando un parámetro que ya no existe, y eso no se ve
-leyendo el diff. Se ve cuando alguien corre la celda, que en este proyecto suele ser
-en clase.
+Un nombre de parámetro puede aparecer de dos formas en una celda: como acceso por
+atributo --`dev.ctl_uff`-- o como cadena --`dev.step('ctl_uff', 200)`--. Al renombrar
+un parámetro es fácil actualizar la primera y no la segunda, y eso no se ve leyendo
+el diff: se ve cuando alguien corre la celda, que en este proyecto suele ser en
+clase.
 
 Así que se verifica, sin placa y sin abrir Jupyter. Cada `dev.algo` de cada celda de
 código tiene que ser un parámetro de la placa o algo que el banco sepa hacer, y cada
 nombre que se le pase a `step()`, `set()` o `get()` tiene que ser un parámetro. Un
-nombre inventado falla acá en lugar de fallar adelante de un curso.
+nombre inexistente falla acá en lugar de fallar durante la clase.
 
 Del lado de la placa la tabla se lee del sketch, con el mismo parser que
 `test_tablas.py`, así que esto no necesita compilar ni conectar nada.
 
-Y además corre de verdad los notebooks que pueden correr sin placa --los que usan
+Y además ejecuta los notebooks que pueden correr sin placa --los que usan
 `conseguir_banco()`, que cae al banco simulado-- porque es la única forma de atrapar
 un error que no está en un nombre: un gráfico que se queda sin columna, una celda que
 depende de otra que se movió. Tarda unos segundos, así que va por omisión;
@@ -173,7 +173,7 @@ def main():
             print(f'{"PASA  " if ok else "FALLA "} {ruta.name}: {etiqueta}'
                   + ('' if ok else f'  -- no existen: {sorted(malos)}'))
 
-    # Y correrlos de verdad, los que puedan.
+    # Y ejecutarlos, los que puedan.
     if '--sin-ejecutar' not in sys.argv:
         for ruta in NOTEBOOKS:
             if not _simulable(ruta):

@@ -6,7 +6,7 @@ está lo que hace falta para entenderla. Unidad, si se puede mover o sólo mirar
 línea de qué es.
 
 Vive en un módulo propio y sin una sola dependencia, y eso importa por dos razones.
-Lo usan las dos puntas, el banco de verdad y el simulado, y el simulado tiene que
+Lo usan las dos puntas, el banco real y el simulado, y el simulado tiene que
 poder correr sin pyserial para que la clase se pueda dar con el cable desenchufado.
 
 Que no se desactualice no depende de la buena voluntad: `test_catalogo.py` compara
@@ -22,13 +22,13 @@ idea que el golden de `test_tablas.py`.
 #   cuenta    un total acumulado; ponerla en cero empieza a contar de nuevo
 _CATALOGO = {
     # Lo único que mueve el motor.
-    'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió de verdad es el canal u'),
+    'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió efectivamente es el canal u'),
 
     # El actuador.
     'mot_bidir':   ('perilla', '0, 1',        '1 con puente en H; 0 con un solo cuadrante, y un comando negativo sale como cero'),
 
     # El sensor de ángulo y su calibración.
-    'ang_inv':     ('perilla', '0, 1',        '1 si el ángulo se publica dado vuelta; lo mide bringup()'),
+    'ang_inv':     ('perilla', '0, 1',        '1 si el ángulo se publica con el signo invertido; lo mide bringup()'),
     'ang_cal':     ('perilla', '0, 1',        '1 si la corrección de la tabla está aplicada'),
     'ang_lutw':    ('perilla', 'empaquetado', 'una entrada de la tabla: (índice << 16) | valor'),
     'ang_lutsum':  ('lectura', '',            'suma de Fletcher de la tabla: verifica las 64 con una lectura'),
@@ -41,7 +41,7 @@ _CATALOGO = {
 
     # La medición de corriente.
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
-    'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica dada vuelta; lo mide bringup()'),
+    'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
     'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
     'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
     'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150; dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
@@ -129,7 +129,7 @@ def por_grupo(nombres):
 #
 # Las dos formas de mostrar lo mismo: texto para una terminal y una tabla para
 # Jupyter. Las dos toman los mismos datos en lugar de un objeto, así que sirven igual
-# para el banco de verdad y para el simulado, y ninguna de las dos puntas tiene que
+# para el banco real y para el simulado, y ninguna de las dos puntas tiene que
 # saber de la otra.
 #
 #   encabezado  qué dispositivo es, en una línea
@@ -140,7 +140,7 @@ def por_grupo(nombres):
 
 _AYUDA = (
     'para verificar el equipo: rest()  zero_current()  bringup()',
-    'para medir: capture(segundos)  step(parametro, valor)',
+    'para medir: capture(segundos)  step(parámetro, valor)',
     'para procesar: ensayo.velocidad()  ensayo.normalizar()  ensayo.guardar()',
 )
 

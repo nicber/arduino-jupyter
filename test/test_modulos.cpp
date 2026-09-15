@@ -1,9 +1,9 @@
 // Comprobaciones de escritorio para los módulos que son aritmética pura: la tabla
 // de calibración, el seguimiento de ángulo, la medición de corriente y el notch.
-// Las del lazo y el PID van con la biblioteca Control, que no entra en el zip del TP2.
+// Las del lazo y el PID van con la biblioteca Control, que no forma parte del TP2.
 //
-// Que se puedan probar acá es la mitad del punto de haberlos separado. Ninguno
-// toca un registro ni pregunta nada a nadie: reciben números por update(), por
+// Poder probarlos acá es una de las razones para tenerlos separados. Ninguno
+// accede a un registro ni espera respuesta de otro componente: reciben números por update(), por
 // corrected() o por step() y devuelven números, así que un error de signo o de
 // redondeo se encuentra en un segundo en lugar de en un banco con un motor girando.
 //
@@ -85,7 +85,7 @@ int main()
     // Una tabla en cero no corrige nada, en ninguna parte de la vuelta.
     bool flat = true;
     for (int raw = 0; raw < 4096; raw++) { if (lut.correction(raw) != 0) flat = false; }
-    check(flat, "una tabla vacia no corrige en ninguna cuenta");
+    check(flat, "una tabla vacía no corrige en ninguna cuenta");
 
     // Una entrada sola, en octavos, sale en cuentas donde tiene que salir.
     lut.entry[0] = 8;                       // una cuenta entera
@@ -96,8 +96,8 @@ int main()
     // regla que la computadora tiene que reproducir para que las dos coincidan.
     check_eq(lut.correction(32), 1, "media cuenta redondea al medio hacia arriba");
 
-    // Y del lado negativo la misma regla, que es donde el `e < 0 ? -4 : 4` que uno
-    // escribe de reflejo se equivoca: -3/8 tiene que dar 0 y no -1.
+    // Y del lado negativo la misma regla, que es donde el `e < 0 ? -4 : 4`, que
+    // parece la opción natural, se equivoca: -3/8 tiene que dar 0 y no -1.
     lut.entry[0] = -3;
     lut.entry[1] = -3;
     check_eq(lut.correction(0), 0, "menos tres octavos redondean a cero, no a -1");
@@ -105,9 +105,9 @@ int main()
     // El recorte, y el caso que motivó que las entradas sean int16.
     lut.entry[1] = 32000;
     check(!lut.write_packed(((uint32_t)64 << 16) | 5),
-          "un indice que no existe se rechaza");
+          "un índice que no existe se rechaza");
     check(lut.write_packed(((uint32_t)1 << 16) | (uint32_t)(uint16_t)32000),
-          "una entrada valida se acepta");
+          "una entrada válida se acepta");
     check_eq(lut.entry[1], Lut::MAX, "y un valor fuera de rango queda recortado");
 
     // Paridad con la referencia sobre toda la vuelta, con una tabla de armónicos
@@ -126,11 +126,11 @@ int main()
         const int ref  = reference_correction(lut, raw);
         if (mine != ref) { parity = false; if (abs(mine - ref) > worst) worst = abs(mine - ref); }
     }
-    check(parity, "la interpolacion coincide con la referencia en las 4096 cuentas");
-    if (!parity) { printf("       peor desvio: %d cuentas\n", worst); }
+    check(parity, "la interpolación coincide con la referencia en las 4096 cuentas");
+    if (!parity) { printf("       peor desvío: %d cuentas\n", worst); }
 
     // El checksum distingue dos entradas intercambiadas, que es el error que se
-    // comete cargando una tabla y que una suma pelada no ve.
+    // comete cargando una tabla y que una suma simple no detecta.
     const uint16_t before = lut.checksum();
     const Lut::Eighths tmp = lut.entry[3];
     lut.entry[3] = lut.entry[4];
@@ -148,7 +148,7 @@ int main()
 
     // Tres vueltas enteras hacia adelante, de a 100 cuentas: el desenrollado tiene
     // que sumar 3 * 4096 sin un solo salto, y con el mismo signo que la cuenta. El
-    // signo no se da vuelta en la placa: se elige en la computadora.
+    // signo no se invierte en la placa: se elige en la computadora.
     for (int k = 1; k <= 3 * 4096 / 100; k++) { ang.update((Tracker::Counts)((k * 100) % 4096)); }
     check(ang.y_uw > 3 * 4096 - 200 && ang.y_uw <= 3 * 4096,
           "tres vueltas desenrolladas dan tres vueltas, hacia arriba");
@@ -181,19 +181,19 @@ int main()
     // Promedia conversiones, no filas: 10 conversiones en 200 pesan más que 2 en 0.
     WindowMean pesos(2);
     pesos.push(10 * 200, 10);
-    check_eq(pesos.push(0, 2), 167, "una fila con mas conversiones pesa mas");
+    check_eq(pesos.push(0, 2), 167, "una fila con más conversiones pesa más");
 
-    // Las filas viejas salen de la ventana.
+    // Las filas más antiguas salen de la ventana.
     win.push(3 * 100, 3);
     win.push(3 * 100, 3);
     win.push(3 * 400, 3);
     win.push(3 * 400, 3);
-    check_eq(win.push(3 * 400, 3), 400, "despues de rows filas la vieja ya no cuenta");
+    check_eq(win.push(3 * 400, 3), 400, "después de rows filas la más antigua ya no cuenta");
 
     // Una fila sin conversiones --el ADC no corrió-- no inventa un cero.
     WindowMean vacia(1);
     vacia.push(4 * 250, 4);
-    check_eq(vacia.push(0, 0), 250, "una fila vacia deja el ultimo promedio");
+    check_eq(vacia.push(0, 0), 250, "una fila vacía deja el último promedio");
 
     // Cambiar rows empieza de nuevo y recorta al rango.
     win.rows = 0;
@@ -232,7 +232,7 @@ int main()
              "A0/A1 medidos en el banco: 1979 cuentas equivalentes");
     check_eq(ratio.supply, 1792, "y A1 queda como lectura");
     check_eq(ratio.counts(200000UL, 100UL, 112700UL, 100UL), 2000,
-             "el sensor en la mitad de su alimentacion da 2000 cualquiera sea el divisor");
+             "el sensor en la mitad de su alimentación da 2000 cualquiera sea el divisor");
     check_eq(ratio.counts(200000UL, 100UL, 0UL, 100UL), INT16_MAX,
              "A1 en cero (divisor suelto) satura en lugar de dividir por cero");
     check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3150,
@@ -240,21 +240,21 @@ int main()
 
     ratio.div_e4 = 20000;
     ratio.apply();
-    check_eq(ratio.div_e4, 10000, "una relacion mayor que 1 se acota");
+    check_eq(ratio.div_e4, 10000, "una relación mayor que 1 se acota");
 
     // ------------------------------------------------------------ el notch de la red
 
     MainsNotch notch;
     notch.apply(500.0f);
-    check_eq(notch.active(), 0, "apagado por omision");
+    check_eq(notch.active(), 0, "apagado por omisión");
     notch.harmonics = 1;
     notch.apply(500.0f);
-    check_eq(notch.active(), 2, "dos notch por armonico");
+    check_eq(notch.active(), 2, "dos notch por armónico");
     notch.harmonics = 3;
     notch.apply(500.0f);
-    check_eq(notch.active(), 6, "tres armonicos, seis notch");
+    check_eq(notch.active(), 6, "tres armónicos, seis notch");
     notch.apply(100.0f);
-    check_eq(notch.active(), 1, "a 100 Hz de filas solo entra el de 49,5");
+    check_eq(notch.active(), 1, "a 100 Hz de filas sólo entra el de 49,5");
 
     notch.harmonics = 1;
     notch.apply(500.0f);

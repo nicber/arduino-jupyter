@@ -91,12 +91,13 @@ _HEALTH = (('missed', 'loop_missed'),
 # vive acá.
 #
 # Quien sí lo sepa se lo pasa a __init__ como `diagnostico`, un colaborador con
-# cuatro métodos, todos opcionales:
+# cinco métodos, todos opcionales:
 #
 #   parametros_de_salud()  -> ((clave, parametro), ...)  cuentas, se ponen en cero
+#   parametros_de_estado() -> ((clave, parametro), ...)  lecturas de ahora, no se
+#                          ponen en cero
 #   parametros_de_configuracion() -> (parametro, ...)  perillas que cambian lo
 #                          que se mide; van en df.attrs['config']
-#   parametros_de_estado() -> ((clave, parametro), ...)  lecturas de ahora, no
 #   notas_primero(df)      -> [texto, ...]   antes de las genéricas
 #   notas_despues(df)      -> [texto, ...]   después
 #
@@ -122,7 +123,8 @@ _LATE_WARN = 0.5
 # deshabilitadas durante más que eso. Enviados de corrido, unos pocos por ciento
 # de los bytes de comando se pierden sin más. Espaciarlos lo soluciona por
 # completo, y los comandos son demasiado raros y cortos como para que el retardo
-# importe: un `set` tarda unos 6 ms en enviarse.
+# importe: a medio milisegundo por byte, un `set` tarda del orden de 10 ms en
+# enviarse.
 _BYTE_GAP = 0.0005
 
 # Los retardos más cortos que esto se esperan en vacío en lugar de dormirse. Ver
@@ -131,18 +133,18 @@ _SPIN_UNDER = 0.002
 
 
 def _pause(seconds):
-    """Un retardo corto que de verdad es corto.
+    """Un retardo corto que efectivamente es corto.
 
     Antes de Python 3.11, time.sleep() en Windows redondea hacia arriba hasta el
     tic del temporizador del sistema —15,6 ms por omisión, treinta veces la
-    separación entre bytes de comando—. Dormir _BYTE_GAP ahí convertiría un `set`
-    de seis milisegundos en uno de seiscientos, y a capture(), que envía ocho
-    comandos alrededor de cada corrida, en algo que parecería roto.
+    separación entre bytes de comando—. Dormir _BYTE_GAP ahí haría que un `set`
+    tardara unas treinta veces más, y capture(), que envía ocho comandos
+    alrededor de cada corrida, sumaría segundos de espera.
 
     Así que cualquier cosa por debajo de un par de milisegundos se espera en vacío
     sobre perf_counter(), que tiene alta resolución en todas partes. Cuesta tener
-    la CPU ocupada durante los veinte milisegundos que tarda en enviarse un
-    comando, que es un precio justo por comportarse igual en cualquier máquina.
+    la CPU ocupada durante los milisegundos que tarda en enviarse un comando, un
+    costo aceptable a cambio de comportarse igual en cualquier máquina.
     """
     if seconds >= _SPIN_UNDER:
         time.sleep(seconds)
@@ -158,7 +160,7 @@ class CtrlLinkError(RuntimeError):
 
 
 def find_port(hint=None):
-    """Adivina en qué puerto serie está la placa.
+    """Busca en qué puerto serie está la placa.
 
     Los adaptadores Bluetooth y las consolas de depuración también se presentan
     como puertos serie, así que la búsqueda se limita a los de USB, y por
@@ -176,7 +178,7 @@ def find_port(hint=None):
     usb = [p for p in found if p.vid is not None]
 
     if not usb:
-        # Algunas plataformas y algunas versiones viejas de pyserial dejan vid sin
+        # Algunas plataformas y algunas versiones antiguas de pyserial dejan vid sin
         # cargar. Se recurre entonces a los nombres que suele tener un puerto serie
         # USB, puertos COM incluidos.
         usb = [p for p in found
@@ -190,11 +192,11 @@ def find_port(hint=None):
         ports = [p for p in ports if hint in p]
 
     if not ports:
-        raise CtrlLinkError('no se encontro ningun puerto serie USB '
-                            '-- esta enchufada la placa?')
+        raise CtrlLinkError('no se encontró ningún puerto serie USB '
+                            '-- ¿está enchufada la placa?')
     if len(ports) > 1:
         raise CtrlLinkError(f'se encontraron varios puertos serie USB '
-                            f'({", ".join(ports)}); pasar uno explicitamente '
+                            f'({", ".join(ports)}); pasar uno explícitamente '
                             f'o acotarlo con un hint')
     return ports[0]
 
@@ -205,9 +207,9 @@ def _ended(buf):
     El dispositivo contesta "# end rows=... drops=..." y **después** "# ok".
     Darse por satisfecho con la línea "# end" deja el "# ok" todavía en el
     puerto, y entonces el comando siguiente lo lee como si fuera su propio
-    terminador y vuelve sin datos: de ahí un "no hay valor en la respuesta para
-    'missed'" intermitente al terminar una captura. Así que se espera también la
-    línea que cierra.
+    terminador y vuelve sin datos, lo que se manifiesta como un "no hay valor en
+    la respuesta para 'missed'" intermitente al terminar una captura. Así que se
+    espera también la línea que cierra.
     """
     at = buf.find(b'# end ')
     if at < 0:
@@ -307,7 +309,7 @@ class CtrlLink:
             self.ser.close()
             raise
 
-    # ------------------------------------------------------------- cañerías
+    # ------------------------------------------------------ gestión del puerto
 
     def _reset_board(self, wait):
         """Resetea la placa y espera a que arranque el sketch.
@@ -319,12 +321,10 @@ class CtrlLink:
         la línea se queda activada entre un cierre y la apertura siguiente, así
         que reabrir el puerto no genera ningún flanco y la placa no se entera.
 
-        Eso hacía que reconectar pareciera resetear la placa sin hacerlo. La
-        segunda corrida del notebook heredaba `tickdiv`, las ganancias y el modo
-        de la primera —el lazo entero a 100 Hz porque una celda anterior lo había
-        dejado ahí—, y la puesta en marcha lo informaba como «100 Hz reales
-        contra 100 nominales, ok», porque el dispositivo contesta el período en
-        el que efectivamente está corriendo.
+        Sin el flanco, reconectar parecería resetear la placa sin hacerlo: una
+        segunda corrida del notebook heredaría `tickdiv`, las ganancias y el modo
+        de la primera, y la puesta en marcha no lo detectaría, porque el
+        dispositivo contesta el período en el que efectivamente está corriendo.
 
         Así que el flanco se produce a mano. Después hay que esperar: el
         bootloader tarda, y nada de lo que diga el dispositivo antes de correr
@@ -343,7 +343,7 @@ class CtrlLink:
 
         # Cerrar en medio de una captura deja al dispositivo emitiendo contra un
         # puerto que ya nadie lee. Reabrir lo resetea, así que no es fatal, pero
-        # callarlo cuesta un comando y no vale la pena dejarlo hablando solo.
+        # detenerlo cuesta un comando y no vale la pena dejarlo emitiendo.
         if self._broken or self._depth:
             try:
                 self._send('stop')
@@ -367,8 +367,8 @@ class CtrlLink:
     # que sale de algo que no tiene nada que ver. El enlace queda entonces en un
     # estado que ninguna de las dos puntas conoce del todo —el dispositivo
     # emitiendo filas que nadie lee, media línea de comando en su buffer de
-    # entrada, media respuesta en el nuestro— y la celda siguiente hereda el
-    # desastre: los datos de una captura aparecen como respuesta a un `get`, y
+    # entrada, media respuesta en el nuestro— y la celda siguiente hereda ese
+    # estado: los datos de una captura aparecen como respuesta a un `get`, y
     # el enlace parece pedir un reinicio del kernel.
     #
     # Así que toda operación toma el enlace, y si sale por una excepción lo deja
@@ -450,7 +450,7 @@ class CtrlLink:
                 break
         else:
             raise CtrlLinkError('el dispositivo no contesta a "stop" -- sigue '
-                                'emitiendo, o dejo de escuchar; desenchufar y '
+                                'emitiendo, o dejó de escuchar; desenchufar y '
                                 'volver a enchufar la placa')
 
         return self.sync(timeout=max(1.0, deadline - time.monotonic()))
@@ -529,9 +529,9 @@ class CtrlLink:
             while True:
                 text = self._readline(deadline)
                 if text is None:
-                    raise CtrlLinkError(f'se agoto la espera de una respuesta a {line!r}')
+                    raise CtrlLinkError(f'se agotó la espera de una respuesta a {line!r}')
                 if not text.startswith('#'):
-                    continue  # una fila de telemetria que se adelanto a la respuesta
+                    continue  # una fila de telemetría que se adelantó a la respuesta
                 reply.append(text)
                 if not text.startswith(_TERMINATORS):
                     continue
@@ -541,7 +541,7 @@ class CtrlLink:
 
                 reason = text[6:]
                 if attempt + 1 < tries and any(g in reason for g in _GARBLED):
-                    break  # el comando se deformo en transito; se manda de nuevo
+                    break  # el comando se deformó en tránsito; se manda de nuevo
                 raise CtrlLinkError(f'{line!r}: {reason}')
 
     def sync(self, timeout=4.0) -> str:
@@ -556,7 +556,7 @@ class CtrlLink:
             except CtrlLinkError:
                 continue
         raise CtrlLinkError('no hubo respuesta a "id" -- puerto equivocado, '
-                            'velocidad equivocada, o el sketch no esta '
+                            'velocidad equivocada, o el sketch no está '
                             'corriendo CtrlLink')
 
     # ----------------------------------------------------------- descubrimiento
@@ -576,13 +576,13 @@ class CtrlLink:
 
             fields = text[4:].split(None, 3)
             if len(fields) < 4:
-                # Antes de que los parámetros cruzaran el cable en punto fijo no
-                # existía la columna de bits fraccionarios. Vale la pena decirlo
-                # con todas las letras: lo que se ve si no es un ValueError de
-                # desempaquetado, que no lleva a ninguna parte.
+                # Un sketch grabado con una versión de CtrlLink anterior al
+                # punto fijo declara los parámetros sin la columna de bits
+                # fraccionarios. Conviene decirlo explícitamente: si no, lo que
+                # se ve es un ValueError de desempaquetado, que no indica la causa.
                 raise CtrlLinkError(
-                    f'el dispositivo declara sus parametros en un formato '
-                    f'anterior ({text!r}): tiene grabado un sketch viejo. '
+                    f'el dispositivo declara sus parámetros en un formato '
+                    f'anterior ({text!r}): tiene grabado un sketch desactualizado. '
                     f'Volver a grabarlo -- sync_board(force_upload=True) lo hace.')
 
             name, type_, frac, _value = fields
@@ -608,7 +608,7 @@ class CtrlLink:
         for field in self.cmd('id')[0].split():
             if field.startswith('dt_us='):
                 return int(field[6:]) * 1e-6
-        raise CtrlLinkError('el dispositivo no informo su periodo de control')
+        raise CtrlLinkError('el dispositivo no informó su período de control')
 
     def _del_diagnostico(self, metodo):
         """Lo que el colaborador conteste a `metodo`, o nada si no hay colaborador.
@@ -754,8 +754,8 @@ class CtrlLink:
 
         Los contadores de salud del dispositivo se ponen en cero antes de la
         corrida y se leen después, así que `df.attrs` dice si el lazo realmente
-        llegó mientras se producían estas filas en particular. Todo lo que ande mal
-        además se imprime, porque una captura que perdió períodos en silencio se ve
+        llegó mientras se producían estas filas en particular. Todo problema
+        detectado además se imprime, porque una captura que perdió períodos en silencio se ve
         exactamente igual que una que no hasta que uno va a fijarse. Pasar
         `warn=False` para tener los números sin el comentario.
 
@@ -795,7 +795,7 @@ class CtrlLink:
         if 'chans' not in self._params:
             raise CtrlLinkError(
                 'el dispositivo no permite elegir canales: tiene grabada una '
-                'version de CtrlLink anterior a `chans`. Volver a grabar el sketch.')
+                'versión de CtrlLink anterior a `chans`. Volver a grabar el sketch.')
 
         names = [c.name for c in self.channels]
         unknown = [c for c in canales if c not in names]
@@ -873,7 +873,7 @@ class CtrlLink:
             if _ended(buf):
                 break
         else:
-            raise CtrlLinkError('el dispositivo no dejo de emitir')
+            raise CtrlLinkError('el dispositivo no dejó de emitir')
 
         # Duración real de la ventana de emisión, medida entre el momento en que
         # el dispositivo confirmó `start` y aquel en que confirmó `stop`. Es la
@@ -913,7 +913,7 @@ class CtrlLink:
                 for clave, param in self._health + self._state}
 
     def _health_notes(self, df):
-        """Quejas en castellano llano sobre una captura, la peor primero.
+        """Avisos legibles sobre una captura, el más grave primero.
 
         Todo lo que hay acá es una forma de que la serie temporal esté mal sin
         parecerlo: un período perdido es una muestra que el controlador nunca
@@ -931,32 +931,32 @@ class CtrlLink:
         missed = df.attrs.get('missed') or 0
         if missed:
             notes.append(
-                f'se perdieron {missed} periodo(s) de control '
+                f'se perdieron {missed} período(s) de control '
                 f'({missed / max(rate, 1):.3f} s de tiempo de lazo): el '
-                f'muestreador volvio a pasar antes de que se atendiera el tick '
-                f'anterior, asi que esos periodos directamente no corrieron. '
+                f'muestreador volvió a pasar antes de que se atendiera el tick '
+                f'anterior, así que esos períodos directamente no corrieron. '
                 f'Emitir menos canales con capture(..., canales=[...]) --cada '
-                f'fila le cuesta al lazo mas que el calculo de control--, bajar '
+                f'fila le cuesta al lazo más que el cálculo de control--, bajar '
                 f'la frecuencia del lazo, o sacarle trabajo al paso de control.')
 
         late = df.attrs.get('maxlate')
         if late is not None and dt_us and late > dt_us * _LATE_WARN:
             notes.append(
-                f'peor retardo de atencion {late} us contra un periodo de '
-                f'{dt_us} us ({late / dt_us:.0%}): el lazo llego, pero por poco.')
+                f'peor retardo de atención {late} us contra un período de '
+                f'{dt_us} us ({late / dt_us:.0%}): el lazo llegó, pero por poco.')
 
         drops = df.attrs.get('drops') or 0
         if drops:
             notes.append(
-                f'se descartaron {drops} fila(s) de telemetria: el dispositivo no '
-                f'tenia lugar en su buffer de transmision. Subir dec, o emitir '
+                f'se descartaron {drops} fila(s) de telemetría: el dispositivo no '
+                f'tenía lugar en su buffer de transmisión. Subir dec, o emitir '
                 f'menos canales con capture(..., canales=[...]).')
 
         sent = df.attrs.get('rows')
         if sent and len(df) < sent:
             notes.append(
                 f'{sent - len(df)} de {sent} fila(s) enviadas nunca llegaron: se '
-                f'perdieron bytes entre el dispositivo y aca.')
+                f'perdieron bytes entre el dispositivo y acá.')
 
         gaps = df.attrs.get('gaps') or 0
         if gaps and not (drops or (sent and len(df) < sent)):
@@ -1045,7 +1045,7 @@ class CtrlLink:
                 dec = int(fields['dec'])
 
         if not columns or dt_us is None:
-            raise CtrlLinkError('el dispositivo no envio un encabezado de flujo utilizable')
+            raise CtrlLinkError('el dispositivo no envió un encabezado de flujo utilizable')
 
         return columns, dt_us, dec
 
@@ -1055,7 +1055,7 @@ class CtrlLink:
         dtype = np.dtype([(c.name, c.dtype) for c in columns])
         width = sum(c.width for c in columns)
 
-        # println() emite CRLF y las filas emiten LF pelado; el hexadecimal nunca
+        # println() emite CRLF y las filas emiten sólo LF; el hexadecimal nunca
         # contiene CR, así que descartar todos los CR de entrada uniformiza los dos
         # tipos de línea.
         lines = buf.replace(b'\r', b'').split(b'\n')

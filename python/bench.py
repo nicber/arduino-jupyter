@@ -1,6 +1,6 @@
 """El banco: compilación, conexión y las verificaciones de este equipo.
 
-Todo lo que hay acá es cañería. Vive fuera del notebook para que una celda del
+Todo lo que hay acá es infraestructura. Vive fuera del notebook para que una celda del
 notebook contenga un experimento y nada más.
 
     from bench import *
@@ -65,9 +65,9 @@ _GIRO_MINIMO = 0.05   # vueltas
 
 # Cuánto residuo se le tolera al cero de la corriente, en cuentas. No una: medido en
 # el banco del clon, doce ciclos de medir el cero y volver a mirar dan de -2,1 a
-# +1,7 cuentas, una deriva lenta entre captura y captura que no se promedia. Pedir
-# menos que la repetibilidad del canal hacía fallar la verificación en un equipo
-# sano, que es la peor clase de verificación: la que enseña a ignorarla.
+# +1,7 cuentas, una deriva lenta entre captura y captura que no se promedia. Una
+# tolerancia menor que la repetibilidad del canal haría fallar la verificación en
+# un equipo sano.
 _RESIDUO_MAX = 3.0
 
 _link = None
@@ -97,7 +97,7 @@ def leer_cableado(ruta=CABLEADO):
 # ------------------------------------------------------- el diagnóstico del banco
 
 class DiagnosticoDeBanco:
-    """Lo que hay que saber de este equipo para creerle una captura.
+    """Lo que hay que saber de este equipo para validar una captura.
 
     Existe porque `ctrllink` no tiene que saber qué hay del otro lado del cable. El
     protocolo habla de períodos perdidos y de filas descartadas; que además haya un
@@ -135,9 +135,9 @@ class DiagnosticoDeBanco:
             return []
 
         return ['el AS5600 no contesta en el bus I2C: revisar SDA (A4), '
-                'SCL (A5), la alimentacion y los pull-ups. La placa sigue '
-                'emitiendo, pero el angulo queda congelado y todo lo que se '
-                'mida de posicion no significa nada.']
+                'SCL (A5), la alimentación y los pull-ups. La placa sigue '
+                'emitiendo, pero el ángulo queda congelado y las mediciones '
+                'de posición no son válidas.']
 
     def notas_despues(self, df):
         """Lo del sensor que importa menos que un período perdido."""
@@ -146,8 +146,8 @@ class DiagnosticoDeBanco:
         sovr = df.attrs.get('sovr') or 0
         if sovr:
             notas.append(
-                f'{sovr} desborde(s) del sensor: una transferencia de I2C no habia '
-                f'terminado cuando vencia la muestra siguiente, asi que esa muestra '
+                f'{sovr} desborde(s) del sensor: una transferencia de I2C no había '
+                f'terminado cuando vencía la muestra siguiente, así que esa muestra '
                 f'repite la anterior.')
 
         # Con el sensor ausente las fallas son las del sondeo espaciado, que ya
@@ -213,9 +213,9 @@ class Bench:
         for column in self.channels:
             if column.name == name:
                 return column
-        raise CtrlLinkError(f'no hay ningun canal llamado {name!r}')
+        raise CtrlLinkError(f'no hay ningún canal llamado {name!r}')
 
-    # ------------------------------------------------------ contarse solo
+    # ------------------------------------------------------ autodescripción
     #
     # La placa declara su tabla de parámetros al conectarse, así que la lista de
     # perillas no está escrita en ninguna parte de este lado: se pregunta. En un
@@ -297,7 +297,7 @@ class Bench:
             / self.channel('i').scale
 
     def _signo_corriente(self):
-        """-1 si la placa publica la corriente dada vuelta (`cur_inv`)."""
+        """-1 si la placa publica la corriente con el signo invertido (`cur_inv`)."""
         return -1 if 'cur_inv' in self.link._params and self.cur_inv else 1
 
     def _tiron(self, u, seconds=0.4):
@@ -328,7 +328,7 @@ class Bench:
 
         if 'mot_bidir' in params:
             if bidir is None:
-                say('  OJO: no se declaro bidir, asi que el actuador queda en un solo '
+                say('  Atención: no se declaró bidir, así que el actuador queda en un solo '
                     'cuadrante y un comando negativo sale como cero. Conectar con '
                     'sync_board(bidir=True) o bidir=False.')
             else:
@@ -339,19 +339,19 @@ class Bench:
         if 'cur_div' in params:
             if 'cur_div' in guardado:
                 self.cur_div = int(guardado['cur_div'])
-                say(f'  corriente contra la alimentacion del sensor: divisor de A1 con relacion '
+                say(f'  corriente contra la alimentación del sensor: divisor de A1 con relación '
                     f'{self.cur_div / 10000:.4f} ({Path(cableado).name})')
                 # Un divisor suelto no da error: A1 queda saturado o en cero y la
                 # corriente sale de un cociente sin sentido, con un cero corrido.
                 time.sleep(0.2)
                 a1 = int(self.cur_a1)
                 if not 0.05 * (_ADC_FULL + 1) < a1 < 0.95 * (_ADC_FULL + 1):
-                    say(f'  OJO: A1 lee {a1} cuentas, fuera de lo que da un divisor de 5 V: esta '
-                        f'suelto o mal conectado, y la corriente no es valida. Revisar las dos '
+                    say(f'  Atención: A1 lee {a1} cuentas, fuera de lo que da un divisor de 5 V: está '
+                        f'suelto o mal conectado, y la corriente no es válida. Revisar las dos '
                         f'resistencias del divisor.')
             else:
                 say('  corriente contra AVCC: no hay divisor de A1 declarado. Si la placa '
-                    'funciona a 3,3 V, poner el divisor de 5V a A1 y declararlo con '
+                    'funciona a 3,3 V, poner el divisor de 5 V a A1 y declararlo con '
                     'dev.declarar_divisor(arriba_ohm, abajo_ohm).')
 
         # Cada signo por separado, y sólo los que el sketch declare: uno que cierre un
@@ -360,7 +360,7 @@ class Bench:
         if signos:
             if not all(n in guardado for n in signos):
                 say(f'  sin signos medidos ({Path(cableado).name} no los tiene): el '
-                    f'angulo y la corriente van con el signo del cableado. Correr '
+                    f'ángulo y la corriente van con el signo del cableado. Correr '
                     f'dev.bringup().')
             else:
                 for n in signos:
@@ -399,22 +399,22 @@ class Bench:
 
         a1 = int(self.cur_a1)
         fondo = _ADC_FULL + 1
-        print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relacion {relacion:.4f}; '
+        print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relación {relacion:.4f}; '
               f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala)')
         if a1 < 0.05 * fondo or a1 > 0.97 * fondo:
             self.cur_div = 0
             raise RuntimeError(
-                f'A1 lee {a1} cuentas: el divisor no esta conectado, o la salida supera la '
-                f'alimentacion del micro. La placa vuelve a medir contra AVCC; revisar el '
+                f'A1 lee {a1} cuentas: el divisor no está conectado, o la salida supera la '
+                f'alimentación del micro. La placa vuelve a medir contra AVCC; revisar el '
                 f'cableado y volver a declararlo.')
 
         # El sensor reposa en la mitad de su alimentación, que en cuentas equivalentes
         # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto.
         desvio = self.cur_zero / 2000 - 1
         print(f'el sensor reposa en {self.cur_zero} cuentas equivalentes: '
-              f'{desvio:+.1%} de la mitad de su alimentacion')
+              f'{desvio:+.1%} de la mitad de su alimentación')
         if abs(desvio) > 0.08:
-            print('  OJO: mas de un 8 %. O la relacion declarada no es la del divisor, o el '
+            print('  Atención: más de un 8 %. O la relación declarada no es la del divisor, o el '
                   'sensor no reposa en la mitad: revisar las resistencias.')
 
         if guardar:
@@ -467,7 +467,7 @@ class Bench:
         margin = late / df.attrs['dt_us']
         report('margen de tiempo',
                True if margin < 0.5 else (None if margin < 1.0 else False),
-               f'peor retardo de atencion {late} us de {df.attrs["dt_us"]:.0f} us '
+               f'peor retardo de atención {late} us de {df.attrs["dt_us"]:.0f} us '
                f'({margin:.0%})')
 
         # 2. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
@@ -475,7 +475,7 @@ class Bench:
         present = bool(df.attrs.get('spres', 1))
         report('sensor', present,
                'contesta en el bus' if present else
-               'no contesta -- revisar SDA (A4), SCL (A5), alimentacion y pull-ups')
+               'no contesta -- revisar SDA (A4), SCL (A5), alimentación y pull-ups')
 
         # 3. El imán, tal como lo ve el propio AS5600. El AGC en números, porque es
         #    la compuerta de la calibración: contra un borde el imán está a la
@@ -483,18 +483,18 @@ class Bench:
         status = df.attrs.get('mstat', 0)
         agc = df.attrs.get('agc')
         if not present:
-            report('iman', None, 'no se puede evaluar sin el sensor')
+            report('imán', None, 'no se puede evaluar sin el sensor')
         elif not status & _MAGNET_PRESENT:
-            report('iman', False, 'no se detecta -- esta montado sobre el chip?')
+            report('imán', False, 'no se detecta -- ¿está montado sobre el chip?')
         elif status & _MAGNET_WEAK:
-            report('iman', False, 'muy debil (AGC al maximo) -- acercarlo')
+            report('imán', False, 'muy débil (AGC al máximo) -- acercarlo')
         elif status & _MAGNET_STRONG:
-            report('iman', False, 'muy fuerte (AGC al minimo) -- alejarlo')
+            report('imán', False, 'muy fuerte (AGC al mínimo) -- alejarlo')
         elif agc is None:
-            report('iman', True, 'detectado, AGC en rango')
+            report('imán', True, 'detectado, AGC en rango')
         else:
             comodo = 32 <= agc <= 224
-            report('iman', True if comodo else None,
+            report('imán', True if comodo else None,
                    f'detectado, AGC {agc:.0f}/255, campo {df.attrs.get("mag", 0):.0f}'
                    + ('' if comodo else '  (cerca del borde: centrar la distancia)'))
 
@@ -513,9 +513,9 @@ class Bench:
                    f'{df.attrs["serr"]} fallas, todas del sondeo al sensor ausente')
 
         spread = df['y_uw'].max() - df['y_uw'].min()
-        report('angulo', None if spread < 0.5 else True,
-               f'{df["y_uw"].iloc[-1]:.1f} grados, se movio {spread:.2f} grados '
-               f'en el segundo' + ('  (girar el iman para verlo seguir)'
+        report('ángulo', None if spread < 0.5 else True,
+               f'{df["y_uw"].iloc[-1]:.1f} grados, se movió {spread:.2f} grados '
+               f'en el segundo' + ('  (girar el imán para verlo seguir)'
                                    if spread < 0.5 else ''))
 
         # 5. El cero de la medición de corriente, que acá se mide y se calibra.
@@ -539,12 +539,12 @@ class Bench:
                 report('referencia de i', None,
                        f'el sensor reposa en el {adc / (_ADC_FULL + 1):.0%} de la escala y '
                        f'no en la mitad: la placa probablemente no funciona a 5 V. Poner el '
-                       f'divisor de 5V a A1 y dev.declarar_divisor()')
+                       f'divisor de 5 V a A1 y dev.declarar_divisor()')
             report('cero de i', min(up, down) >= _ADC_HEADROOM,
                    f'{adc:.0f} de {_ADC_FULL}, margen +{up * lsb / 1000:.1f} A / '
                    f'-{down * lsb / 1000:.1f} A'
                    + ('' if min(up, down) >= _ADC_HEADROOM else
-                      '  -- el reposo esta muy cerca del tope: sin lugar para medir'))
+                      '  -- el reposo está muy cerca del tope: sin lugar para medir'))
 
             # Con el eje quieto, aunque con el actuador abierto no debería importar:
             # si importa, es algo del montaje que conviene ver en este residuo.
@@ -556,12 +556,12 @@ class Bench:
 
             # Un canal demasiado quieto es tan sospechoso como uno ruidoso: un ruido
             # de cero exacto es una señal más chica que un escalón del ADC.
-            report('calibracion de i',
+            report('calibración de i',
                    abs(rest_ma) < _RESIDUO_MAX * lsb and noise > 0.1 * lsb,
                    f'cur_zero = {self.cur_zero}, {lsb:.1f} mA por cuenta, quedan '
                    f'{rest_ma:+.1f} mA en reposo, ruido {noise:.0f} mA RMS'
                    + ('' if noise > 0.1 * lsb else
-                      '  -- sin dither: la senal no llega a un escalon del ADC'))
+                      '  -- sin dither: la señal no llega a un escalon del ADC'))
 
         # 6. El actuador, y con él toda la cadena: un comando que sale, movimiento y
         #    corriente que vuelven. Sólo se usa la evidencia cuyo sensor está.
@@ -571,7 +571,7 @@ class Bench:
             self._verificar_actuador(report, u, present, sensed, rest_ma, noise)
 
         bad = results.count(False)
-        print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificacion(es)"}')
+        print(f'\n{"todas las verificaciones pasaron" if not bad else f"FALLARON {bad} verificación(es)"}')
         return not bad
 
     def _verificar_actuador(self, report, u, present, sensed, rest_ma, noise):
@@ -620,8 +620,8 @@ class Bench:
         gira = present and abs(v_pos) > _GIRO_MINIMO
 
         if not evidence:
-            report('motor', None, 'no se puede evaluar: no hay sensor de angulo ni '
-                                  'medicion de corriente')
+            report('motor', None, 'no se puede evaluar: no hay sensor de ángulo ni '
+                                  'medición de corriente')
         else:
             # Con el sensor de ángulo, que gire es la prueba. La corriente sola no
             # alcanza: sin divisor en A1, el PWM corre la lectura por la caída de AVCC
@@ -642,12 +642,12 @@ class Bench:
 
         # ---- el actuador contra lo declarado
         if not gira:
-            report('actuador', None, 'el eje no giro con +u: no se puede verificar bidir')
+            report('actuador', None, 'el eje no giró con +u: no se puede verificar bidir')
         elif abs(v_neg) <= _GIRO_MINIMO:
             report('actuador', False,
                    f'con -{u} el eje no gira ({v_neg:+.2f} vueltas): '
                    + ('revisar IN1 (6) e IN2 (7)' if bidir else
-                      'un transistor tendria que empujar igual que con +u'))
+                      'un transistor tendría que empujar igual que con +u'))
         else:
             invierte = (v_pos > 0) != (v_neg > 0)
             tipo = ('invierte el giro: puente en H (B)' if invierte else
@@ -656,7 +656,7 @@ class Bench:
                 report('actuador', True, f'-u {tipo}, como declara bidir = {bidir}')
             else:
                 report('actuador', False,
-                       f'-u {tipo}, pero se conecto con bidir = {bidir}. '
+                       f'-u {tipo}, pero se conectó con bidir = {bidir}. '
                        f'Conectar con sync_board(bidir={invierte}).')
 
         # ---- los signos
@@ -687,7 +687,7 @@ class Bench:
         v_neg, df_neg = self._tiron(-u)
         i_pos = _arranque_menos_final(df_pos)
 
-        # Sin `ang_inv` la placa no da vuelta el ángulo, así que sólo se exige que gire.
+        # Sin `ang_inv` la placa no invierte el signo del ángulo, así que sólo se exige que gire.
         sube = v_pos > _GIRO_MINIMO if 'ang_inv' in medidos else abs(v_pos) > _GIRO_MINIMO
         ok = sube and (not mide_i or 'cur_inv' not in medidos or i_pos > 0)
         report('signos', ok,
@@ -757,7 +757,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
                sketch=None, bidir=None):
     """Pone al día la placa y el enlace, y reconecta. Devuelve un Bench.
 
-    Compila sólo cuando algún archivo fuente cambió de verdad, carga sólo cuando
+    Compila sólo cuando algún archivo fuente cambió efectivamente, carga sólo cuando
     el binario resultante difiere del que este puerto recibió por última vez, y
     siempre reabre el enlace, lo que resetea la placa, así que el sketch arranca
     desde sus valores por omisión haya hecho falta o no grabar. Ese reset es el
@@ -795,10 +795,10 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
     except serial.SerialException as exc:
         raise CtrlLinkError(
             f'no se pudo abrir {port}: {exc}\n'
-            f'Algo mas lo tiene tomado: el monitor serie del IDE de Arduino, o un '
-            f'kernel de una sesion anterior. Cerrarlo, o reiniciar este kernel, y '
-            f'volver a correr esta celda. Un puerto serie es exclusivo en todas '
-            f'las plataformas, e implacable al respecto en Windows.'
+            f'Otro programa tiene el puerto abierto: el monitor serie del IDE de '
+            f'Arduino, o un kernel de una sesión anterior. Cerrarlo, o reiniciar este '
+            f'kernel, y volver a correr esta celda. Un puerto serie sólo puede estar '
+            f'abierto por un programa a la vez.'
         ) from None
 
     say(f'{port}: {_link.info}' + (f'  ({", ".join(notes)})' if notes else ''))

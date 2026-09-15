@@ -17,10 +17,10 @@ PARAMS = {'dec': ('u16', 0, 1), 'chans': ('u16', 0, 0xFFFF), 'kp': ('f32', 0, 0.
           # Contadores de salud, con los nombres que les pone Banco. La
           # computadora los descubre por nombre y los pone en cero antes de cada
           # captura. Los dos primeros son del lazo y los conoce ctrllink; los otros
-          # dos son del sensor, asi que solo los pide quien sepa que hay un sensor.
+          # dos son del sensor, así que sólo los pide quien sepa que hay un sensor.
           'loop_missed': ('u16', 0, 0), 'loop_late': ('u16', 0, 0),
           'ang_busovr': ('u16', 0, 0), 'ang_buserr': ('u16', 0, 0),
-          # Estado, no cuentas: la computadora los lee despues de una captura
+          # Estado, no cuentas: la computadora los lee después de una captura
           # pero no los pone en cero antes.
           'ang_present': ('u8', 0, 1), 'ang_status': ('u8', 0, 0x20)}
 CHANS = [('ref', 'i16', 0.0878906, 'deg'), ('y', 'i16', 0.0878906, 'deg'),
@@ -38,12 +38,12 @@ class FakeUno:
         self.streaming = False
         self.tick = start_tick
         self.rows = 0          # filas realmente escritas, como las cuenta CtrlLink
-        self.produced = 0      # periodos de control transcurridos, diezmados o no
+        self.produced = 0      # períodos de control transcurridos, diezmados o no
         self.rate = rate_hz
         self.t0 = None
         self.y = 0
         # Valores de contador que el dispositivo "descubre" una vez que la corrida
-        # esta en marcha, de modo que una captura que primero los pone en cero
+        # está en marcha, de modo que una captura que primero los pone en cero
         # igual los encuentre distintos de cero al final.
         self.unhealthy = unhealthy or {}
         self.drops = drops
@@ -65,7 +65,7 @@ class FakeUno:
     def command(self, cmd):
         head, _, rest = cmd.partition(' ')
         if head == '':
-            return                 # linea vacia: un empujon para resincronizar
+            return                 # línea vacía: un empujón para resincronizar
         if head == 'id':
             self.println('# id CtrlLink 1 Banco chans=4 row=21 dt_us=1000')
             self.println('# ok')
@@ -130,7 +130,7 @@ class FakeUno:
         self.println(f'# v {name} {shown}')
 
     def _pump(self):
-        """Emite las filas que a esta altura tendrian que haberse producido."""
+        """Emite las filas que a esta altura tendrían que haberse producido."""
         if not self.streaming:
             return
         due = int((time.monotonic() - self.t0) * self.rate)
@@ -144,16 +144,15 @@ class FakeUno:
                 values = (ref, self.y, err, u)
                 row = ''.join(f'{v & 0xFFFF:04X}'
                               for v in (self.tick, *(values[i] for i in self.active)))
-                self.out += (row + '\n').encode()  # las filas usan LF pelado
+                self.out += (row + '\n').encode()  # las filas terminan sólo en LF
                 self.rows += 1
             self.tick = (self.tick + 1) & 0xFFFF
             self.produced += 1
 
 
 class OldFakeUno(FakeUno):
-    """Un dispositivo con el sketch anterior a que los parametros cruzaran el
-    cable en punto fijo: las lineas `# p` no traen la columna de bits
-    fraccionarios."""
+    """Un dispositivo con un sketch desactualizado: las líneas `# p` no traen la
+    columna de bits fraccionarios."""
 
     def command(self, cmd):
         head, _, _rest = cmd.partition(' ')
@@ -170,16 +169,16 @@ class FakeSerial:
         self.uno = uno
         self.is_open = True
         self.pos = 0
-        # Cuantas lecturas (o escrituras de un byte) faltan para que el puerto
-        # simule que la celda se corto por el medio. Es la unica forma fiel de
-        # probar la recuperacion: una interrupcion cae dentro de una llamada al
+        # Cuántas lecturas (o escrituras de un byte) faltan para que el puerto
+        # simule que la celda se cortó por el medio. Es la única forma fiel de
+        # probar la recuperación: una interrupción cae dentro de una llamada al
         # puerto, no entre dos operaciones prolijas.
         self.fail_read_after = None
         self.fail_write_after = None
         self.fail_with = KeyboardInterrupt
         # Bytes salientes que el enlace se traga antes de empezar a entregar. El
-        # camino de ida pierde bytes de verdad; ver _BYTE_GAP. `deaf_after_fail`
-        # los arma recien al cortarse la operacion, que es donde interesan: el
+        # camino de ida efectivamente pierde bytes; ver _BYTE_GAP. `deaf_after_fail`
+        # los arma recién al cortarse la operación, que es donde interesan: el
         # comando que se pierde es el que manda la limpieza.
         self.deaf_writes = 0
         self.deaf_after_fail = 0
@@ -239,7 +238,7 @@ class FakeSerial:
 
 
 def connect(uno, diagnostico=None):
-    """Un CtrlLink enganchado a un dispositivo de mentira.
+    """Un CtrlLink enganchado a un dispositivo simulado.
 
     `diagnostico` es el colaborador que sepa qué equipo hay del otro lado. Sin él
     el enlace informa lo del lazo y nada más, que es justamente lo que hay que
@@ -252,8 +251,8 @@ def connect(uno, diagnostico=None):
     dev.info = dev.sync()
     dev._params = dev._read_params()
     dev.channels = dev._read_channels()
-    # Permite que una verificacion mire lo que el dispositivo realmente guardo, en
-    # lugar de lo que informa la computadora despues de reescalarlo.
+    # Permite que una verificación mire lo que el dispositivo realmente guardó, en
+    # lugar de lo que informa la computadora después de reescalarlo.
     dev._uno_raw = lambda name: uno.params[name][2]
     return dev
 

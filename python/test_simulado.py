@@ -3,13 +3,13 @@
 `BancoSimulado` no hereda de `Bench` ni comparte contrato con él: reimplementa a mano
 la superficie que los notebooks usan, y eso es a propósito --lo que se muestra en
 clase tiene que correr sin la placa, y hacer que ese archivo importe el del enlace
-serie lo ataría a pyserial para nada--. El precio es que el día que `Bench` gane un
-método, el simulado no falla: calla, y las celdas que corren sin placa dejan de
-probar lo que creen probar.
+serie lo ataría a pyserial sin necesidad--. La contrapartida es que si `Bench` gana
+un método, el simulado no falla ni avisa, y las celdas que corren sin placa dejan de
+probar lo que se supone que prueban.
 
-Este test cobra ese precio. En lugar de una lista escrita a mano, que envejece igual
-que el simulado, saca la superficie de los propios notebooks: todo lo que aparezca
-como `dev.algo` o `banco.algo` en una celda de código tiene que existir en el banco
+Este test cubre esa contrapartida. En lugar de una lista escrita a mano, que se
+desactualiza igual que el simulado, saca la superficie de los propios notebooks:
+todo lo que aparezca como `dev.algo` o `banco.algo` en una celda de código tiene que existir en el banco
 simulado. Así el contrato se actualiza solo cuando alguien escribe una celda nueva.
 
     python test_simulado.py
@@ -24,8 +24,10 @@ _AQUI      = Path(__file__).resolve().parent
 NOTEBOOKS  = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb')) + \
             sorted((_AQUI.parent / 'extras').glob('*/*.ipynb'))
 
-# Lo que se le pide al objeto del banco pero no es de él. `simulado` lo pone el
-# propio simulado, y los notebooks lo consultan justamente para saber si hay placa.
+# Los atributos que se piden sobre el objeto del banco y que se eximen de la
+# verificación. Por ahora no hay ninguno: todo lo que los notebooks piden como
+# `dev.algo` existe en BancoSimulado. (`simulado`, que indica si hay placa, se
+# consulta con getattr() y no aparece como acceso a atributo.)
 _AJENOS = frozenset()
 
 

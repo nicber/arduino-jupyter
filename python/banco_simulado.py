@@ -1,21 +1,21 @@
-"""Un banco de mentira, para poder dar la clase sin la placa.
+"""Un banco simulado, para poder dar la clase sin la placa.
 
 Expone lo mismo que `Bench` --los parámetros como atributos, `capture()`,
 `step()`, `bringup()`-- pero las capturas salen de un modelo en lugar de un
-motor. Los notebooks no se enteran: corren el mismo código en los dos casos, y lo
-único que cambia es de dónde vienen las filas.
+motor. Los notebooks corren el mismo código en los dos casos, y lo único que
+cambia es de dónde vienen las filas.
 
-El modelo sigue al banco de verdad, no al de un libro, y eso incluye lo
-incómodo. El actuador es un transistor a masa con su diodo de rueda libre:
+El modelo sigue al banco real, no al de un libro, incluidas sus no
+idealidades. El actuador es un transistor a masa con su diodo de rueda libre:
 empuja y no frena, un comando negativo empujaría para el mismo lado --por eso,
 con `mot_bidir` en cero, se recorta a cero igual que en la placa--, y con el
 comando en cero el eje sigue por inercia hasta que lo para el rozamiento, que
 tarda segundos. El motor no se reinicia entre capturas --sigue girando mientras
-la computadora hace otra cosa, igual que el de verdad--, así que un ensayo que no
+la computadora hace otra cosa, igual que el real--, así que un ensayo que no
 espere a que el eje pare mide la cola del anterior.
 
-Es de mentira y lo dice. Tiene adentro un error de sensor y un motor que alguien
-eligió, así que "descubrirlos" no prueba nada sobre ningún banco; lo que prueba
+Es simulado y lo indica. Tiene adentro un error de sensor y un motor elegidos de
+antemano, así que "descubrirlos" no prueba nada sobre ningún banco; lo que prueba
 es que el procedimiento encuentra lo que hay que encontrar. Cuando el banco
 está, se usa el banco.
 """
@@ -34,11 +34,11 @@ GRADOS_POR_CUENTA = 360.0 / CUENTAS
 
 # El error de ángulo que este banco imaginario tiene adentro, en cuentas. El
 # primero es el imán descentrado, el segundo la inclinación. Son los órdenes que
-# la literatura anticipa y las amplitudes son las de un montaje mediocre pero
-# creíble: 6 cuentas son 0,53 grados.
+# la literatura anticipa y las amplitudes son las de un montaje imperfecto pero
+# realista: 6 cuentas son 0,53 grados.
 ERROR_SENSOR = {1: (6.0, 0.7), 2: (2.5, -2.0)}
 
-# Y la trampa: una ondulación de par del motor, enganchada al ángulo igual que el
+# Además, una ondulación de par del motor, enganchada al ángulo igual que el
 # error del sensor, con la amplitud referida a 5 vueltas por segundo. Cae como
 # omega^-2, que es lo que hace la inercia, y es lo único que distingue una cosa
 # de la otra. Un notebook que la calibre como si fuera el sensor está mal.
@@ -131,9 +131,9 @@ class BancoSimulado:
         self.ang_inv = 0                # el cableado imaginario ya tiene los signos bien
         self.cur_inv = 0
         self.cur_filas = 10
-        self.cur_div = 0                # sin divisor: el banco de mentira no tiene caída
+        self.cur_div = 0                # sin divisor: el banco simulado no tiene caída
         self.cur_a1 = 0
-        self.cur_notch = 0              # el banco de mentira no tiene red
+        self.cur_notch = 0              # el banco simulado no tiene red
         self.cur_notchr = 950
         self.cur_zero = 2048
         self.loop_div = 10
@@ -210,7 +210,7 @@ class BancoSimulado:
         try:
             return CANALES[name]
         except KeyError:
-            raise KeyError(f'no hay ningun canal llamado {name!r}') from None
+            raise KeyError(f'no hay ningún canal llamado {name!r}') from None
 
     @property
     def channels(self):
@@ -224,7 +224,7 @@ class BancoSimulado:
         self.ctl_uff = 0
 
     def zero_current(self, seconds=0.3, canales=None):
-        """Lo mismo que en el banco de verdad: el reposo de ahora pasa a ser el cero."""
+        """Lo mismo que en el banco real: el reposo de ahora pasa a ser el cero."""
         self.rest()
         df = self.capture(seconds, warn=False, canales=canales)
         signo = -1 if self.cur_inv else 1
@@ -232,14 +232,14 @@ class BancoSimulado:
         return self.cur_zero
 
     def configurar(self, bidir=None, cero=True, say=print, **_):
-        """Lo mismo que `Bench.configurar()`. El motor de mentira es de un cuadrante
+        """Lo mismo que `Bench.configurar()`. El motor simulado es de un cuadrante
         diga lo que diga `bidir`: declararlo al revés se ve igual que en un banco B′."""
         if bidir is not None:
             self.mot_bidir = int(bool(bidir))
         if cero:
             self.zero_current()
 
-    # ------------------------------------------------------ contarse solo
+    # ------------------------------------------------------ autodescripción
 
     def _nombres(self, filtro=''):
         tiene = {n for n in catalogo.nombres_conocidos() if hasattr(self, n)}
@@ -250,7 +250,7 @@ class BancoSimulado:
         canales = ([(c.name, c.scale, c.unit) for c in CANALES.values()]
                    if not filtro else ())
         resumen = (f'filas a {1 / self.dt:.0f} Hz, {len(CANALES)} canales de '
-                   f'telemetría  -- NADA DE ESTO ES REAL: es el banco simulado')
+                   f'telemetría  -- Datos simulados: no provienen de una medición.')
         return self.info, resumen, self._nombres(filtro), self._valor_legible, canales
 
     def _valor_legible(self, nombre):
@@ -477,21 +477,22 @@ class BancoSimulado:
         for etiqueta, detalle in [
                 ('muestreo', '500 Hz reales contra 500 nominales, 0 perdidos'),
                 ('sensor', 'contesta en el bus'),
-                ('iman', 'detectado, AGC 128/255, campo 1800'),
+                ('imán', 'detectado, AGC 128/255, campo 1800'),
                 ('bus i2c', '0 errores de transferencia, 0 desbordes'),
                 ('motor', f'gira con u={u}'),
                 ('actuador', f'bidir = {bool(self.mot_bidir)}; el simulado no lo verifica')]:
             print(f'  [   ok]  {etiqueta:<18}  {detalle}')
-        print('\n  NADA DE ESTO ES REAL: es el banco simulado.')
+        print('\n  Datos simulados: no provienen de una medición.')
         return True
 
 
 def conseguir_banco(forzar_simulado=False, bidir=None, **kw):
-    """El banco de verdad si está, y si no uno simulado, avisando cuál es.
+    """El banco real si está, y si no uno simulado, indicando cuál es.
 
     Un notebook que se muestra en clase no puede depender de que el cable esté
     enchufado, pero tampoco puede hacer pasar un modelo por una medición. Así
-    que cae solo, y lo dice fuerte. `bidir` es el de `sync_board()`.
+    que recurre al simulado automáticamente, con un aviso destacado. `bidir` es
+    el de `sync_board()`.
     """
     if not forzar_simulado:
         try:
@@ -501,8 +502,9 @@ def conseguir_banco(forzar_simulado=False, bidir=None, **kw):
             print(f'no hay banco: {type(exc).__name__}: {exc}')
 
     print('=' * 68)
-    print('BANCO SIMULADO. Las capturas salen de un modelo, no de un motor.')
-    print('El motor y el error de sensor los puso banco_simulado.py.')
+    print('Banco simulado: las capturas salen de un modelo, no de un motor.')
+    print('Datos simulados: no provienen de una medición. El motor y el error de')
+    print('sensor están definidos en banco_simulado.py.')
     print('=' * 68)
     banco = BancoSimulado(**kw)
     banco.configurar(bidir=bidir)
