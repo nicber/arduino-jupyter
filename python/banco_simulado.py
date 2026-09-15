@@ -106,7 +106,7 @@ _PONERSE_AL_DIA_S = 20.0
 
 
 def _fletcher(valores):
-    """La suma de Fletcher de 16 bits de AngleLut y SupplySag, byte bajo primero."""
+    """La suma de Fletcher de 16 bits de AngleLut, byte bajo primero."""
     a = b = 0
     for v in valores:
         for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
@@ -131,10 +131,9 @@ class BancoSimulado:
         self.ang_inv = 0                # el cableado imaginario ya tiene los signos bien
         self.cur_inv = 0
         self.cur_filas = 10
-        self.cur_sagw = 0xFFFFFFFF      # el banco de mentira no tiene la caída de AVCC,
-        self.sag = [0] * 17             # pero la tabla se carga y se verifica igual
+        self.cur_div = 0                # sin divisor: el banco de mentira no tiene caída
+        self.cur_a1 = 0
         self.cur_notch = 0              # el banco de mentira no tiene red
-        self.cur_red = 4980
         self.cur_notchr = 950
         self.cur_zero = 2048
         self.loop_div = 10
@@ -195,21 +194,12 @@ class BancoSimulado:
                     self.lut[i] = v - 65536 if v > 32767 else v
             return value
 
-        if name == 'cur_sagw':
-            value = int(value) & 0xFFFFFFFF
-            self.cur_sagw = value
-            if (value >> 16) < 17:
-                self.sag[value >> 16] = min(value & 0xFFFF, 2000)
-            return value
-
         setattr(self, name, value)
         return getattr(self, name)
 
     def get(self, name):
         if name == 'ang_lutsum':
             return _fletcher(self.lut)
-        if name == 'cur_sagsum':
-            return _fletcher(self.sag)
         return getattr(self, name)
 
     @property
@@ -253,7 +243,7 @@ class BancoSimulado:
 
     def _nombres(self, filtro=''):
         tiene = {n for n in catalogo.nombres_conocidos() if hasattr(self, n)}
-        tiene.update(('ang_lutsum', 'cur_sagsum'))
+        tiene.add('ang_lutsum')
         return sorted(n for n in tiene if filtro in n)
 
     def _para_describir(self, filtro=''):

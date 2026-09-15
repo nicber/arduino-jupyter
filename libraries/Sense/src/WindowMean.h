@@ -78,6 +78,11 @@ class WindowMean
         return mean;
     }
 
+    // La suma de las conversiones de la ventana y cuántas son: para quien necesite
+    // más resolución que el promedio redondeado (SupplyRatio).
+    uint32_t total(void) const { return m_total; }
+    uint32_t count(void) const { return m_count; }
+
     private:
 
     uint32_t m_sums[MAX_ROWS];

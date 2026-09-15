@@ -62,6 +62,7 @@ muestra en clase.
 | AS5600 SCL | A5 | |
 | AS5600 VDD / GND | 5V / GND | |
 | Salida del ACS712 | A0 | opcional |
+| Divisor de 5V a A1: 5,1 kΩ de 5V a A1, 2 kΩ de A1 a GND | A1 | con el ACS712, si la placa funciona a 3,3 V |
 | `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1050 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
@@ -100,55 +101,62 @@ pone a la placa (`ang_inv`, `cur_inv`) y los guarda en `notebooks/cableado.json`
 de donde los carga cada conexión; desde ahí un comando positivo sube el ángulo en
 cualquier banco.
 
-**La medición de corriente lee A0 contra Vcc.** Un ACS712 es bipolar y
-ratiométrico: reposa en la mitad de su alimentación para poder bajar cuando la
-corriente cambia de sentido, así que contra la referencia interna de 1,1 V
-satura en reposo. Contra Vcc reposa en media escala por construcción. Lo que se
-paga es resolución: con 185 mV/A son 6,8 mA por cuenta en el clon y 27 en el UNO,
-que cuenta de a cuatro.
+**La corriente se mide contra la alimentación del sensor.** Un ACS712 es bipolar y
+ratiométrico: reposa en la mitad de su alimentación, los 5 V del USB, y su
+sensibilidad es proporcional a ella. En una placa que funciona a 5 V, medir A0
+contra AVCC alcanza. **El clon del banco funciona a 3,3 V**, y ahí la lectura
+contra AVCC se corre con cualquier consumo de la placa, porque lo que se mueve es la
+referencia del ADC y no el sensor: con la fuente del motor apagada, la corriente de
+base del transistor hace leer -137 a -341 mA según el comando, y prender un LED de
+1 mA corre la lectura 45 cuentas.
+
+Por eso **A1 lee los 5 V del sensor por un divisor** (5,1 kΩ / 2 kΩ) y la placa usa
+el cociente A0/A1, en el que las dos alimentaciones se cancelan. Medido con la
+fuente del motor apagada: la lectura con el PWM queda entre -0,6 y +2,6 mA a
+cualquier comando, el reposo se mueve menos de 3 mA entre capturas, y los tonos de
+la red, que entraban por la alimentación, bajan de 67 a 0,6 mA. El resultado sale en
+cuentas equivalentes a las de 1,25 mV contra 5 V, así que la escala es la de siempre:
+6,8 mA por cuenta con 185 mV/A (27 en el UNO, que cuenta de a cuatro), con el sensor
+en reposo en ~2000.
+
+El divisor se declara una vez por banco, como el actuador: `dev.declarar_divisor(5100,
+2000)` pone la relación en la placa (`cur_div`), verifica que A1 lea y que el sensor
+repose en la mitad de su alimentación, y la guarda en `notebooks/cableado.json`, de
+donde la carga cada conexión. Sin divisor declarado, la placa mide contra AVCC como
+antes, y `bringup()` avisa si el sensor no reposa en media escala. La escala depende
+de la relación del divisor, así que la tolerancia de las resistencias entra en ella
+(±7 % con resistencias del 5 %). Conviene un capacitor de 100 nF de A1 a GND; el
+banco se midió sin él.
 
 **Cada fila de corriente es un promedio.** Adentro de un período de PWM la
 corriente es un escalón de cientos de mA, y el PWM y el muestreo salen del mismo
 cristal: una conversión por fila cae siempre en la misma fase y se desvía de la
-media hasta 300 mA. Así que el ADC corre libre (a /32 en el clon, /128 en el UNO),
+media hasta 300 mA. Así que el ADC corre libre (en el clon a /32, o a /64 alternando
+con A1; a /128 en el UNO),
 la placa suma todas sus conversiones y publica el promedio de las últimas
 `cur_filas` filas: 10 por omisión, 20 ms, que anulan el PWM y los 50/100 Hz de la
-red y dejan unos 5 mA de ruido. **Eso atrasa la corriente ~10 ms** (media ventana)
+red y dejan unos 9 mA de ruido por fila con el divisor (5 mA contra AVCC). **Eso atrasa la corriente ~10 ms** (media ventana)
 respecto del ángulo y del comando, y redondea sus escalones en 20 ms: al ajustar
 un modelo eléctrico, o se tiene en cuenta ese retardo, o se baja `cur_filas`. Con
-`cur_filas = 1` la corriente no atrasa, pero trae la red; `cur_notch = 3` la saca
-con un notch en la frecuencia de la red y sus armónicos, que `dev.calibrar_red()`
-mide sin carga. Es el único filtro de la placa, y está porque lo que saca no se puede
+`cur_filas = 1` la corriente no atrasa, pero trae ~30 mA de ruido por fila y lo que
+quede de la red; `cur_notch = 3` saca 50, 100 y 150 Hz con dos notch por armónico, en
+49,5 y 50,5 Hz, que cubren la red vista desde la placa --el cristal del clon adelanta
+y la ve en ~49,7 Hz-- sin tener que medirla: al menos 36 dB de atenuación en toda esa
+banda. Es el único filtro de la placa, y está porque lo que saca no se puede
 sacar de filas que ya lo traen plegado.
 
-**El PWM corre la lectura.** La corriente de base del transistor sale de la misma
-placa y hunde su alimentación, que es la referencia del ADC: con la fuente del motor
-apagada y el comando al 30 %, sin compensar, se leen ~160 mA que no existen. Una
-tabla de 17 puntos contra el ciclo de trabajo lo compensa en la placa (`cur_sagw`,
-verificada con `cur_sagsum`), y `dev.calibrar_caida()` la mide **con la fuente del
-motor apagada** --si el eje gira, aborta--, en una sola captura de poco más de un
-minuto: los puntos en escalera, referidos a la recta entre el reposo de antes y el de
-después. Se guarda en `cableado.json` y la carga cada conexión. Que alcance con
-medirla sin corriente está medido: con el sensor fuera del circuito, la caída dio
-lo mismo con la fuente apagada, con el eje trabado --mucha corriente de colector--
-y con el eje libre, dentro de 3 y 10 mA respectivamente. Lo que no está verificado
-es la escala en mA. Y **el reposo deriva**: arrancar una captura lo corre unos
-20 mA que se van en ~20 s, y después se mueve algunos mA por minuto, también con la
-fuente del motor apagada y sin causa conocida. Eso limita la calibración --tres
-calibraciones seguidas difirieron en ±15 mA-- y cualquier medición de corriente
-absoluta: la corriente sirve para comparar dentro de una misma captura. Lo que sí evitaría
-la caída es un MOSFET de compuerta lógica (IRLB8721, IRLZ44N) en lugar del BD139,
-que casi no le pide corriente a la placa.
-La escala en mA sigue sin verificar con un tester: ver la nota al pie de la sección
-4 de `hardware.ipynb`.
+**Lo que queda de la corriente.** La escala en mA sigue sin verificar con un tester:
+ver la nota al pie de la sección 4 de `hardware.ipynb`. Y con el motor andando, con el
+divisor puesto, todavía no está medido cuánto se aparta la lectura de la corriente
+real.
 
 Un número que conviene verificar una vez por banco, en el sketch:
 `SENSE_MV_PER_A`, la sensibilidad del sensor, que es lo único que convierte cuentas
 en amperes. `bringup()` calibra el cero, que tiene una condición conocida --el
 actuador abierto--, pero para la ganancia haría falta una corriente conocida. Un
-tester en serie con el motor, una vez, alcanza. La escala supone Vcc = 5 V; no hay
-una constante para corregirla porque la referencia es la misma alimentación que
-se hunde con el PWM.
+tester en serie con el motor, una vez, alcanza. Con el divisor en A1, la escala
+depende también de su relación, así que el mismo tester sirve para verificar las dos
+cosas juntas.
 
 El AS5600 necesita un imán **magnetizado diametralmente** girando sobre el chip,
 a un par de milímetros. Las plaquetas de AS5600 traen su propio regulador y los
@@ -372,8 +380,8 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
-| `cur_sagw`, `cur_sagsum` | la tabla de la compensación de la caída de Vcc con el PWM, una entrada por escritura, y su suma; `calibrar_caida()` la mide con la fuente del motor apagada |
-| `cur_notch`, `cur_red`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), la frecuencia en centésimas de Hz (la mide `calibrar_red()`) y el radio del polo |
+| `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
+| `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |

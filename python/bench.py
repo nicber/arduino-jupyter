@@ -380,28 +380,15 @@ class Bench:
 
         guardado = leer_cableado(cableado) or {}
 
-        if 'cur_sagw' in params:
-            tabla = guardado.get('cur_sag')
-            if tabla is None and 'cur_sagd' in guardado:
-                # La recta de antes, evaluada en los puntos de la tabla.
-                tabla = _tabla_de_recta(int(guardado['cur_sagc']), int(guardado['cur_sagd']))
-                say('  OJO: la caida de AVCC esta calibrada con la recta vieja '
-                    '(cur_sagc, cur_sagd), que deja 10 a 40 mA de error. Con la fuente '
-                    'del motor APAGADA, correr dev.calibrar_caida().')
-            if tabla is not None:
-                self._poner_caida(tabla)
-                say(f'  caida de AVCC compensada: {tabla[1] / 100:.2f} % a duty 16, '
-                    f'{tabla[_SAG_PUNTOS.index(128) + 1] / 100:.2f} % a 128, '
-                    f'{tabla[-1] / 100:.2f} % a fondo')
+        if 'cur_div' in params:
+            if 'cur_div' in guardado:
+                self.cur_div = int(guardado['cur_div'])
+                say(f'  corriente contra la alimentacion del sensor: divisor de A1 con relacion '
+                    f'{self.cur_div / 10000:.4f} ({Path(cableado).name})')
             else:
-                say('  sin compensar la caida de AVCC con el PWM: la corriente lee de mas '
-                    'mientras el transistor conduce. Con la fuente del motor APAGADA, '
-                    'correr dev.calibrar_caida().')
-
-        if 'cur_red' in params and 'cur_red' in guardado:
-            self.cur_red = int(guardado['cur_red'])
-            say(f'  la red vista desde la placa: {self.cur_red / 100:.2f} Hz (para el notch, '
-                f'cur_notch)')
+                say('  corriente contra AVCC: no hay divisor de A1 declarado. Si la placa '
+                    'funciona a 3,3 V, poner el divisor de 5V a A1 y declararlo con '
+                    'dev.declarar_divisor(arriba_ohm, abajo_ohm).')
 
         # Cada signo por separado, y sólo los que el sketch declare: uno que cierre un
         # lazo de ángulo puede tener `cur_inv` y no `ang_inv`.
@@ -426,167 +413,50 @@ class Bench:
             if _ADC_RAIL <= adc <= _ADC_FULL - _ADC_RAIL:
                 self.cur_zero = round(adc)
 
-    def calibrar_red(self, segundos=20.0, armonicos=3, guardar=True):
-        """Mide la frecuencia de la red tal como la ve la placa y se la pone al notch.
+    def declarar_divisor(self, arriba_ohm, abajo_ohm, guardar=True):
+        """Declara el divisor de los 5 V del sensor en A1, y mide la corriente contra ellos.
 
-        Con el motor quieto y sin comando: lo que se mida es la corriente en reposo,
-        que es donde los tonos de la red se ven solos. Se captura sin notch y sin
-        promediar filas, y se busca la frecuencia que junta más energía en la
-        fundamental y sus `armonicos` a la vez, sobre el tiempo de la propia placa:
-        la red medida con el cristal del clon no da 50 Hz, y eso es lo que el notch
-        necesita. Devuelve (Hz, amplitudes en mA de cada armónico).
+        Hace falta cuando la placa no funciona a 5 V --el clon del banco va a 3,3 V--:
+        el ACS712 reposa en la mitad de su alimentación, y medido contra la del micro
+        la lectura se corre con cualquier consumo de la placa. Con A1 leyendo una
+        fracción fija de los 5 V del sensor, la placa usa el cociente A0/A1 y las dos
+        alimentaciones se cancelan. Ver Sense/SupplyRatio.h.
+
+        `arriba_ohm` va del pin 5V a A1 y `abajo_ohm` de A1 a GND. La escala de la
+        corriente depende de su relación, así que la tolerancia de las resistencias
+        entra en ella. Con el eje quieto, verifica que A1 lea algo y que el sensor
+        repose cerca de la mitad de su alimentación, mide el cero de nuevo y lo guarda
+        en `CABLEADO`. Devuelve la relación en diezmilésimas.
         """
-        import numpy as np
+        relacion = abajo_ohm / (arriba_ohm + abajo_ohm)
+        self.cur_div = int(round(relacion * 10000))
+        ensayo.esperar_quieto(self, limite=15.0)
+        self.zero_current()
 
-        ensayo.esperar_quieto(self, limite=40.0)
-        antes = (self.cur_filas, self.cur_notch)
-        self.cur_filas, self.cur_notch = 1, 0
-        try:
-            time.sleep(0.2)
-            df = self.capture(segundos, warn=False, canales=['i'])
-        finally:
-            self.cur_filas, self.cur_notch = antes
+        a1 = int(self.cur_a1)
+        fondo = _ADC_FULL + 1
+        print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relacion {relacion:.4f}; '
+              f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala)')
+        if a1 < 0.05 * fondo or a1 > 0.97 * fondo:
+            self.cur_div = 0
+            raise RuntimeError(
+                f'A1 lee {a1} cuentas: el divisor no esta conectado, o la salida supera la '
+                f'alimentacion del micro. La placa vuelve a medir contra AVCC; revisar el '
+                f'cableado y volver a declararlo.')
 
-        t = df['t'].to_numpy(dtype=float)
-        x = df['i'].to_numpy(dtype=float)
-        x = x - x.mean()
-
-        def energia(f):
-            return sum(abs(np.sum(x * np.exp(-2j * np.pi * k * f * t))) ** 2
-                       for k in range(1, armonicos + 1))
-
-        # Grueso de a 0,01 Hz alrededor de 50, fino de a 0,001 alrededor del máximo.
-        grilla = np.arange(49.0, 51.0, 0.01)
-        f = grilla[int(np.argmax([energia(g) for g in grilla]))]
-        fina = np.arange(f - 0.01, f + 0.01, 0.001)
-        f = float(fina[int(np.argmax([energia(g) for g in fina]))])
-
-        amplitudes = [2 * abs(np.sum(x * np.exp(-2j * np.pi * k * f * t))) / len(x)
-                      for k in range(1, armonicos + 1)]
-        print(f'red vista desde la placa: {f:.3f} Hz; tonos de '
-              + ', '.join(f'{a:.1f} mA' for a in amplitudes)
-              + f' en {", ".join(f"{k * f:.1f}" for k in range(1, armonicos + 1))} Hz')
-
-        self.cur_red = int(round(f * 100))
-        if guardar:
-            _actualizar_cableado(cur_red=self.cur_red)
-        return f, amplitudes
-
-    def _poner_caida(self, tabla):
-        """Carga la tabla de la caída de AVCC en la placa y la verifica con su suma."""
-        tabla = [int(v) for v in tabla]
-        if len(tabla) != _SAG_TAMANO:
-            raise ValueError(f'la tabla de la caida tiene {_SAG_TAMANO} valores, no {len(tabla)}')
-        for k, v in enumerate(tabla):
-            self.set('cur_sagw', (k << 16) | (min(max(v, 0), _SAG_MAXIMO) & 0xFFFF))
-        leida = int(self.get('cur_sagsum'))
-        propia = _fletcher([min(max(v, 0), _SAG_MAXIMO) for v in tabla])
-        if leida != propia:
-            raise RuntimeError(f'la tabla de la caida no llego entera: la placa dice '
-                               f'{leida:#06x} y la tabla es {propia:#06x}')
-
-    def calibrar_caida(self, seconds=1.0, guardar=True, verificar=True):
-        """Mide cuánto sube la lectura de corriente con el PWM, y lo compensa en la placa.
-
-        **Con la fuente del motor apagada**, o el motor desconectado: si circula
-        corriente, se la calibra como si fuera error. Si el eje gira durante la
-        medición se aborta y la placa vuelve a la tabla de `CABLEADO`.
-
-        Mientras el transistor conduce, su corriente de base carga la alimentación
-        del micro, y como el ADC mide contra ella la lectura sube. Con el sensor fuera
-        del circuito se midió que eso depende del ciclo de trabajo y no de la
-        corriente del motor --fuente apagada, eje libre y eje trabado dan lo mismo a
-        pocos mA--, así que alcanza con medirlo sin corriente.
-
-        El reposo no se queda quieto: arrancar el flujo de telemetría lo corre unos
-        20 mA que se van en unos 20 s, y después deriva de a unos mA por minuto. Así que
-        todo es una sola captura, sin arrancar y parar el flujo entre puntos: 20 s de
-        reposo para que se asiente, los puntos en escalera --con el PWM prendido la
-        lectura llega a su valor en menos de 0,1 s--, y 10 s de reposo al final. Cada
-        punto se refiere a la recta entre el reposo de antes y el de después. Es
-        poco más de un minuto, y la verificación otro tanto.
-
-        Los puntos son los de la tabla de la placa (duty 16, 32, ..., 240 y 255). La
-        tabla se carga, se verifica con `cur_sagsum` y se guarda en `CABLEADO`. Con
-        `verificar`, se mide con la tabla puesta qué queda en cuatro puntos.
-        Devuelve la tabla, en partes por diez mil.
-        """
-        import numpy as np
-
-        lsb = self.channel('i').scale
-        signo = self._signo_corriente()
-        anterior = (leer_cableado() or {}).get('cur_sag')
-        asentar, despues, paso = 20.0, 10.0, seconds + 0.3
-
-        def escalera(us):
-            """Los mA de cada punto menos el reposo interpolado, en una sola captura."""
-            eventos = [(asentar + k * paso, 'ctl_uff', u) for k, u in enumerate(us)]
-            fin = asentar + len(us) * paso
-            eventos.append((fin, 'ctl_uff', 0))
-            df = self.capture(fin + despues, events=eventos, warn=False,
-                              canales=['y_uw', 'u', 'i'])
-            vueltas = abs(df['y_uw'].iloc[-1] - df['y_uw'].iloc[0]) / 360.0
-            if vueltas > _GIRO_MINIMO:
-                raise RuntimeError(
-                    f'el eje giro {vueltas:.1f} vueltas con el PWM: la fuente del motor '
-                    f'esta prendida. Apagarla (o desconectar el motor) y volver a correr '
-                    f'calibrar_caida().')
-
-            t = df['t'].to_numpy() - df['t'].iloc[0]
-            u = df['u'].to_numpy()
-            i = df['i'].to_numpy()
-            prende = t[np.flatnonzero(u != 0)[0]]
-            apaga = t[np.flatnonzero(u != 0)[-1]]
-            antes = (t > prende - 5.0) & (t < prende) & (u == 0)
-            luego = (t > apaga + 4.0) & (u == 0)
-            ta, ia = t[antes].mean(), i[antes].mean()
-            tb, ib = t[luego].mean(), i[luego].mean()
-
-            puntos = []
-            for k, uk in enumerate(us):
-                m = (u == uk) & (t >= prende + k * paso + 0.3) & (t < prende + (k + 1) * paso)
-                tk = t[m].mean()
-                ref = ia + (ib - ia) * (tk - ta) / (tb - ta)
-                puntos.append((float(i[m].mean()), float(ref)))
-            return puntos, ib - ia
-
-        def caida(lectura, ref):
-            cuentas_ref = self.cur_zero + signo * ref / lsb
-            return signo * (lectura - ref) / lsb / cuentas_ref * 10000
-
-        self.rest()
-        tabla = [0] * _SAG_TAMANO
-        try:
-            self._poner_caida(tabla)
-            puntos, deriva = escalera(_SAG_PUNTOS)
-        except BaseException:
-            self.rest()
-            self._poner_caida(anterior if anterior is not None else [0] * _SAG_TAMANO)
-            print('calibrar_caida abortada: la placa quedo con la tabla de '
-                  + ('cableado.json' if anterior is not None else 'cero, sin compensar'))
-            raise
-
-        for k, (lectura, ref) in enumerate(puntos, start=1):
-            tabla[k] = int(round(min(max(caida(lectura, ref), 0), _SAG_MAXIMO)))
-        self._poner_caida(tabla)
-
-        print('caida de AVCC, por duty:')
-        print('  ' + '  '.join(f'{u}: {v / 100:.2f} %'
-                               for u, v in zip((0,) + _SAG_PUNTOS, tabla)))
-        print(f'el reposo se corrio {deriva:+.1f} mA entre antes y despues de la escalera')
-
-        if verificar:
-            us = (48, 128, 208, 255)
-            restos, deriva = escalera(us)
-            print('con la tabla puesta queda: '
-                  + ', '.join(f'{lectura - ref:+.0f} mA a {u}'
-                              for u, (lectura, ref) in zip(us, restos))
-                  + f' (reposo corrido {deriva:+.1f} mA)')
+        # El sensor reposa en la mitad de su alimentación, que en cuentas equivalentes
+        # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto.
+        desvio = self.cur_zero / 2000 - 1
+        print(f'el sensor reposa en {self.cur_zero} cuentas equivalentes: '
+              f'{desvio:+.1%} de la mitad de su alimentacion')
+        if abs(desvio) > 0.08:
+            print('  OJO: mas de un 8 %. O la relacion declarada no es la del divisor, o el '
+                  'sensor no reposa en la mitad: revisar las resistencias.')
 
         if guardar:
-            _actualizar_cableado(cur_sag=tabla)
-            _borrar_del_cableado('cur_sagc', 'cur_sagd')
-        return tabla
+            _actualizar_cableado(cur_div=self.cur_div)
+            _borrar_del_cableado('cur_sag', 'cur_sagc', 'cur_sagd', 'cur_red')
+        return self.cur_div
 
     # ------------------------------------------------------- puesta en marcha
 
@@ -700,6 +570,12 @@ class Bench:
                    f'parece haber nada conectado en A0')
         else:
             up, down = _ADC_FULL - adc, adc
+            if 'cur_div' in self.link._params and not self.cur_div and \
+                    abs(adc / (_ADC_FULL + 1) - 0.5) > 0.1:
+                report('referencia de i', None,
+                       f'el sensor reposa en el {adc / (_ADC_FULL + 1):.0%} de la escala y '
+                       f'no en la mitad: la placa probablemente no funciona a 5 V. Poner el '
+                       f'divisor de 5V a A1 y dev.declarar_divisor()')
             report('cero de i', min(up, down) >= _ADC_HEADROOM,
                    f'{adc:.0f} de {_ADC_FULL}, margen +{up * lsb / 1000:.1f} A / '
                    f'-{down * lsb / 1000:.1f} A'
@@ -826,8 +702,8 @@ class Bench:
             medidos['ang_inv'] = int(v_pos < 0)
 
         # No la media del tirón, que mezcla la corriente del motor con lo que corre
-        # la lectura el propio PWM --la caída de AVCC, y si `calibrar_caida()` no
-        # corrió todavía eso son cientos de mA--. El arranque contra el final: los
+        # la lectura el propio PWM --la caída de AVCC, si no hay divisor en A1, son
+        # cientos de mA--. El arranque contra el final: los
         # dos con el mismo comando, así que el artefacto es el mismo, pero al
         # arrancar el motor pide mucha más corriente que cuando ya giró.
         umbral = max(3 * lsb, 5 * noise * (2 / max(len(df_pos) / 4, 1)) ** 0.5)
@@ -907,30 +783,6 @@ def _borrar_del_cableado(*claves):
     for c in claves:
         datos.pop(c, None)
     CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
-
-
-# La tabla de la caída de AVCC de Sense/SupplySag.h: 17 puntos en partes por diez
-# mil, el primero en duty 0 --que vale cero: con el pin en bajo no hay caída--, uno
-# cada 16 cuentas hasta 240, y el último con el pin siempre en alto.
-_SAG_TAMANO = 17
-_SAG_PUNTOS = tuple(range(16, 241, 16)) + (255,)
-_SAG_MAXIMO = 2000
-
-
-def _tabla_de_recta(fijo, pendiente):
-    """La recta de la compensación anterior, `fijo · [0 < D < 1] + pendiente · D`, en los puntos de la tabla."""
-    return [0] + [int(round((fijo if u < 255 else 0) + pendiente * u / 255)) for u in _SAG_PUNTOS]
-
-
-def _fletcher(valores):
-    """La suma de Fletcher de 16 bits de las tablas de la placa, byte bajo primero."""
-    a = b = 0
-    for v in valores:
-        v = int(v) & 0xFFFF
-        for byte in (v & 0xFF, v >> 8):
-            a = (a + byte) & 0xFF
-            b = (b + a) & 0xFF
-    return (b << 8) | a
 
 
 # ------------------------------------------------------- compilación y carga

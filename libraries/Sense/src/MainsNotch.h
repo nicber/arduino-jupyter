@@ -1,5 +1,5 @@
 // Notch para la red: 50 Hz y sus primeros armónicos, sobre la corriente fila por
-// fila.
+// fila, sin tener que medir la frecuencia de la red.
 //
 // Medido en el banco, en reposo y sin motor: la corriente trae tonos de 67 mA a
 // 50 Hz, 44 mA a 100 Hz y 7,5 mA a 150 Hz, que se meten por la alimentación y la
@@ -7,19 +7,20 @@
 // redondea el pico de un arranque. Con una ventana corta --para mirar un
 // transitorio-- los tonos quedan, y esto los saca.
 //
-// Una sección por armónico, cada una un biquad
+// La red no cae justo en 50 Hz vista desde la placa: el cristal del clon adelanta un
+// 0,6 % --las filas salen a 503 Hz y no a 500--, así que se ve en ~49,7 Hz, y además
+// se mueve unas decenas de mHz. Un notch angosto en 50 Hz deja pasar buena parte de
+// eso. En lugar de medir la red y sintonizar el notch, cada armónico k tiene dos
+// notch en serie, en k · 49,5 y k · 50,5 Hz: entre los dos cubren la banda de
+// ±0,5 Hz alrededor de 50 (±k · 0,5 alrededor de cada armónico) con una atenuación
+// que varía poco adentro de ella.
+//
+// Cada notch es un biquad
 //
 //   H(z) = g · (1 - 2 cos w0 z^-1 + z^-2) / (1 - 2 r cos w0 z^-1 + r^2 z^-2)
 //
 // con ceros sobre la circunferencia en w0 y polos a radio r: cuanto más cerca de 1,
-// más angosto el notch y más largo el transitorio. g deja la ganancia en continua en
-// 1. La red se ve desde la placa en ~49,7 Hz y no en 50: el cristal del clon adelanta
-// un 0,6 % --las filas salen a 503 Hz y no a 500--, y la red además se mueve unas
-// decenas de mHz. La calibra la computadora con una captura sin carga: ver
-// Bench.calibrar_red(). Medido en el banco con r = 0,95 y la red calibrada: los tonos
-// bajan de 83/48/10 mA a 0,5/0,1/0,1 mA (con el centro 0,1 Hz corrido quedan 2 mA),
-// un escalón asienta en ~80 ms con 15 % de sobrepico, y el ruido blanco no baja --eso
-// lo hace la ventana--.
+// más angosto y más largo el transitorio. g deja la ganancia en continua en 1.
 //
 // Aritmética: coeficientes en Q12 y señal en cuartos de cuenta, los dos en 16 bits,
 // así que cada producto es de 16 x 16 bits, que es lo barato en un AVR. Lo que la
@@ -40,21 +41,23 @@ class MainsNotch
     public:
 
     static const uint8_t MAX_HARMONICS = 3;
+    static const uint8_t MAX_SECTIONS  = 2 * MAX_HARMONICS;
+
+    // Los dos notch de cada armónico, en centésimas de Hz.
+    static const uint16_t LOW_CHZ  = 4950;
+    static const uint16_t HIGH_CHZ = 5050;
 
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección. Mover y llamar a apply().
 
-    uint16_t mains_chz;     // la red vista desde la placa, en centésimas de Hz
-    uint8_t  harmonics;     // cuántas secciones: 0 apaga, 1 = 50, 2 = 50+100, 3 = +150
+    uint8_t  harmonics;     // 0 apaga; 1 = 50 Hz, 2 = +100, 3 = +150, cada uno con dos notch
     uint16_t pole_milli;    // r, en milésimas
 
     constexpr MainsNotch()
-        : mains_chz(4980)
-        , harmonics(0)
+        : harmonics(0)
         , pole_milli(950)
         , m_active(0)
         , m_fresh(true)
-        , m_applied_chz(0)
         , m_applied_harmonics(0xFF)
         , m_applied_milli(0)
         , m_applied_row_hz(0.0f)
@@ -62,8 +65,8 @@ class MainsNotch
     {
     }
 
-    // Recalcula los coeficientes para filas de `row_hz`. Una sección cuyo armónico
-    // queda por encima de la mitad de la frecuencia de las filas no se usa.
+    // Recalcula los coeficientes para filas de `row_hz`. Un notch que queda por
+    // encima de la mitad de la frecuencia de las filas no se usa.
     //
     // Sólo si algo de lo suyo cambió: el sketch lo llama después de cada escritura
     // de parámetro, `ctl_uff` incluido, y recalcular reinicia el estado --que en
@@ -74,12 +77,11 @@ class MainsNotch
         if (harmonics > MAX_HARMONICS) harmonics = MAX_HARMONICS;
         if (pole_milli > 999)          pole_milli = 999;
 
-        if (mains_chz == m_applied_chz && harmonics == m_applied_harmonics &&
-            pole_milli == m_applied_milli && row_hz == m_applied_row_hz)
+        if (harmonics == m_applied_harmonics && pole_milli == m_applied_milli &&
+            row_hz == m_applied_row_hz)
         {
             return;
         }
-        m_applied_chz       = mains_chz;
         m_applied_harmonics = harmonics;
         m_applied_milli     = pole_milli;
         m_applied_row_hz    = row_hz;
@@ -87,28 +89,34 @@ class MainsNotch
         const float r = pole_milli / 1000.0f;
         m_active = 0;
 
-        for (uint8_t k = 0; k < harmonics; k++)
+        for (uint8_t k = 1; k <= harmonics; k++)
         {
-            const float f0 = mains_chz / 100.0f * (k + 1);
-            if (f0 <= 0.0f || f0 >= row_hz / 2.0f)
+            for (uint8_t lado = 0; lado < 2; lado++)
             {
-                break;
+                const float f0 = (lado ? HIGH_CHZ : LOW_CHZ) / 100.0f * k;
+                if (f0 >= row_hz / 2.0f)
+                {
+                    continue;
+                }
+
+                const float c  = cos(2.0f * M_PI * f0 / row_hz);
+                const float a1 = -2.0f * r * c;
+                const float a2 = r * r;
+                const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
+
+                Section& s = m_sec[m_active++];
+                s.b0 = q12(g);
+                s.b1 = q12(-2.0f * c * g);
+                s.a1 = q12(a1);
+                s.a2 = q12(a2);
             }
-
-            const float c  = cos(2.0f * M_PI * f0 / row_hz);
-            const float a1 = -2.0f * r * c;
-            const float a2 = r * r;
-            const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
-
-            Section& s = m_sec[m_active++];
-            s.b0 = q12(g);
-            s.b1 = q12(-2.0f * c * g);
-            s.a1 = q12(a1);
-            s.a2 = q12(a2);
         }
 
         m_fresh = true;
     }
+
+    // Cuántos notch quedaron activos: dos por armónico, menos los que no entran.
+    uint8_t active(void) const { return m_active; }
 
     // Una fila, en cuentas. Sin secciones activas devuelve la entrada tal cual.
     int16_t step(int16_t counts)
@@ -183,11 +191,10 @@ class MainsNotch
 
     uint8_t  m_active;
     bool     m_fresh;
-    uint16_t m_applied_chz;         // con qué se calcularon los coeficientes de ahora
-    uint8_t  m_applied_harmonics;
+    uint8_t  m_applied_harmonics;   // con qué se calcularon los coeficientes de ahora
     uint16_t m_applied_milli;
     float    m_applied_row_hz;
-    Section  m_sec[MAX_HARMONICS];
+    Section  m_sec[MAX_SECTIONS];
 };
 
 #endif  // SENSE_MAINSNOTCH_H

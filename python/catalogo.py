@@ -42,10 +42,9 @@ _CATALOGO = {
     # La medición de corriente.
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica dada vuelta; lo mide bringup()'),
-    'cur_sagw':    ('perilla', 'empaquetado', 'una entrada de la tabla de la caída de AVCC contra el ciclo de trabajo: (índice << 16) | partes por 10000; la calibra calibrar_caida()'),
-    'cur_sagsum':  ('lectura', '',            'suma de Fletcher de la tabla de la caída: verifica las 17 con una lectura'),
-    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150'),
-    'cur_red':     ('perilla', '0,01 Hz',     'la red vista desde la placa, para el notch: la mide calibrar_red()'),
+    'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
+    'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
+    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150; dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
     'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
     'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y el PWM; 1 = sólo la fila'),
 
@@ -62,10 +61,10 @@ _CATALOGO = {
 # Las perillas que no son de configuración: el comando es el experimento mismo --y
 # ya viene en el canal u--, `ang_lutw` es un registro de escritura y las dos del
 # enlace no cambian lo que se mide.
-_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'cur_sagw', 'dec', 'chans')
+_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'dec', 'chans')
 
-# Y dos lecturas que sí configuran: las sumas dicen qué tabla estaba puesta.
-_TABLAS = ('ang_lutsum', 'cur_sagsum')
+# Y una lectura que sí configura: la suma dice qué tabla estaba puesta.
+_TABLAS = ('ang_lutsum',)
 
 
 def de_configuracion():

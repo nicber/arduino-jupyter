@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cmath>
+#include <cstdlib>
 
 #include "FixedPoint.h"
 #include "FirstOrderFilter.h"
@@ -24,7 +25,8 @@
 #include "AngleTracker.h"
 #include "CurrentSense.h"
 #include "WindowMean.h"
-#include "SupplySag.h"
+#include "SupplyRatio.h"
+#include "MainsNotch.h"
 #include "LoopAngle.h"
 #include "LoopCurrent.h"
 #include "Pid.h"
@@ -248,40 +250,68 @@ int main()
     for (int k = 0; k < 40; k++) { ultimo = llena.push(91UL * 4095UL, 91); }
     check_eq(ultimo, 4095, "la ventana llena a fondo de escala no desborda");
 
-    // ----------------------------------------------- la caída de la referencia
+    // Los totales de la ventana, que usa SupplyRatio.
+    WindowMean tot(2);
+    tot.push(1000UL, 10);
+    tot.push(3000UL, 20);
+    check_eq((long)tot.total(), 4000L, "la ventana suma las conversiones");
+    check_eq((long)tot.count(), 30L, "y las cuenta");
 
-    SupplySag sag;
-    check_eq(sag.correct(300000UL, 128, 255), 300000L, "sin calibrar no corrige nada");
-    check_eq(sag.checksum(), 0, "la tabla vacia suma cero");
+    // ----------------------------------------- contra la alimentación del sensor
 
-    // 100 partes por punto hasta duty 240, y 2000 con el pin siempre en alto.
-    for (uint32_t k = 0; k < SupplySag::SIZE - 1; k++)
+    SupplyRatio ratio;
+    ratio.apply();
+    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3150, "sin divisor, la media de A0");
+    check_eq(ratio.counts(0UL, 0UL, 0UL, 0UL), 0, "sin conversiones, cero");
+
+    ratio.div_e4 = 2817;        // 2 k / (5,1 k + 2 k)
+    ratio.apply();
+    check(ratio.active(), "con divisor, activo");
+    check_eq(ratio.counts(314820UL, 100UL, 179220UL, 100UL), 1979,
+             "A0/A1 medidos en el banco: 1979 cuentas equivalentes");
+    check_eq(ratio.supply, 1792, "y A1 queda como lectura");
+    check_eq(ratio.counts(200000UL, 100UL, 112700UL, 100UL), 2000,
+             "el sensor en la mitad de su alimentacion da 2000 cualquiera sea el divisor");
+    check_eq(ratio.counts(200000UL, 100UL, 0UL, 100UL), INT16_MAX,
+             "A1 en cero (divisor suelto) satura en lugar de dividir por cero");
+    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3150,
+             "sin conversiones de A1, la media de A0");
+
+    ratio.div_e4 = 20000;
+    ratio.apply();
+    check_eq(ratio.div_e4, 10000, "una relacion mayor que 1 se acota");
+
+    // ------------------------------------------------------------ el notch de la red
+
+    MainsNotch notch;
+    notch.apply(500.0f);
+    check_eq(notch.active(), 0, "apagado por omision");
+    notch.harmonics = 1;
+    notch.apply(500.0f);
+    check_eq(notch.active(), 2, "dos notch por armonico");
+    notch.harmonics = 3;
+    notch.apply(500.0f);
+    check_eq(notch.active(), 6, "tres armonicos, seis notch");
+    notch.apply(100.0f);
+    check_eq(notch.active(), 1, "a 100 Hz de filas solo entra el de 49,5");
+
+    notch.harmonics = 1;
+    notch.apply(500.0f);
+    int16_t dc = 0;
+    for (int k = 0; k < 2000; k++) { dc = notch.step(1000); }
+    check(dc >= 999 && dc <= 1001, "la continua pasa entera");
+
+    // La red vista desde el clon, 49,68 Hz, con 400 cuentas de amplitud: los dos notch
+    // la bajan unos 40 dB sin haberla calibrado.
+    notch.apply(250.0f);
+    notch.apply(500.0f);
+    int16_t pico = 0;
+    for (int k = 0; k < 4000; k++)
     {
-        check(sag.apply((k << 16) | (100 * k)), "cada entrada se escribe");
+        const int16_t y = notch.step((int16_t)lround(2000.0 + 400.0 * sin(2.0 * M_PI * 49.68 * k / 500.0)));
+        if (k > 2000 && abs(y - 2000) > pico) { pico = (int16_t)abs(y - 2000); }
     }
-    check(sag.apply(((uint32_t)(SupplySag::SIZE - 1) << 16) | 2000UL), "y la del pin en alto");
-    check(!sag.apply(((uint32_t)(SupplySag::SIZE - 1) << 16) | 2000UL),
-          "la misma escritura dos veces no hace nada");
-    check(!sag.write_packed((17UL << 16) | 5UL), "un indice que no existe se rechaza");
-    check_eq(sag.checksum(), 0x64de, "la suma de Fletcher es la que calcula Python");
-
-    check_eq(sag.error(0, 255), 0, "con el pin en bajo no hay caida");
-    check_eq(sag.error(24, 255), 150, "entre dos puntos, interpola");
-    check_eq(sag.error(240, 255), 1500, "en un punto, el punto");
-    check_eq(sag.error(248, 255), 1767, "el ultimo tramo va de 240 a full");
-    check_eq(sag.error(255, 255), 2000, "a fondo, el ultimo punto");
-    check_eq(sag.error(300, 255), 2000, "por arriba de full, el ultimo punto");
-    check_eq(sag.correct(100000UL, 24, 255), 100000L - 1500L, "corrige la suma entera");
-    check(sag.correct(4000000000UL, 200, 255) < 4000000000UL,
-          "una suma enorme no desborda");
-
-    SupplySag baja;
-    baja.write_packed((1UL << 16) | 50UL);
-    check_eq(baja.error(8, 255), 25, "una tabla que sube redondea bien");
-    baja.write_packed((2UL << 16) | 0UL);
-    check_eq(baja.error(24, 255), 25, "y una que baja, tambien");
-    check((uint16_t)baja.write_packed((3UL << 16) | 60000UL) && baja.entry[3] == SupplySag::MAX_ENTRY,
-          "una entrada enorme se acota");
+    check(pico < 20, "49,68 Hz baja a menos de 20 cuentas de 400");
 
     // ------------------------------------------------------------------- el PID
 

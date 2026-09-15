@@ -459,7 +459,7 @@ check('guardar y cargar devuelven lo mismo',
       np.allclose(_leido.to_numpy(), _n.to_numpy(), rtol=1e-5, atol=1e-6))
 
 # El archivo dice con qué configuración se midió.
-_df.attrs['config'] = {'dispositivo': 'CtrlLink 1 Banco', 'loop_div': 10, 'cur_red': 49.8}
+_df.attrs['config'] = {'dispositivo': 'CtrlLink 1 Banco', 'loop_div': 10, 'cur_div': 0.2817}
 with tempfile.TemporaryDirectory() as _tmp:
     _ruta = ensayo.guardar(_df, Path(_tmp) / 'c.csv', ventana=0.02)
     _texto = _ruta.read_text(encoding='utf-8')
@@ -468,27 +468,10 @@ with tempfile.TemporaryDirectory() as _tmp:
 check('guardar escribe la configuracion arriba de las columnas',
       '# loop_div: 10' in _texto and _texto.index('# loop_div') < _texto.index('t,u,'), _texto[:200])
 check('cargar devuelve la configuracion en attrs',
-      _leido.attrs['config'].get('loop_div') == 10 and _leido.attrs['config'].get('cur_red') == 49.8
+      _leido.attrs['config'].get('loop_div') == 10 and _leido.attrs['config'].get('cur_div') == 0.2817
       and _leido.attrs['config'].get('ventana') == 0.02
       and _leido.attrs['config'].get('dispositivo') == 'CtrlLink 1 Banco', str(_leido.attrs['config']))
 check('pandas lo lee salteando el encabezado', list(_pandas.columns) == ensayo.COLUMNAS)
-
-
-# La tabla de la caída de AVCC: la misma suma que SupplySag::checksum() en
-# test_modulos.cpp, y la recta vieja pasada a la tabla.
-_tabla = [100 * k for k in range(16)] + [2000]
-check('la suma de la tabla de la caida es la de la placa', bench._fletcher(_tabla) == 0x64de,
-      hex(bench._fletcher(_tabla)))
-_recta = bench._tabla_de_recta(27, 174)
-check('la recta vieja pasa a la tabla: cero en 0, fija + pendiente mientras conmuta, sin fija a fondo',
-      len(_recta) == 17 and _recta[0] == 0 and _recta[8] == round(27 + 174 * 128 / 255)
-      and _recta[-1] == 174, str(_recta))
-import banco_simulado
-_sim = banco_simulado.BancoSimulado()
-for _k, _v in enumerate(_tabla):
-    _sim.set('cur_sagw', (_k << 16) | _v)
-check('el simulador carga y verifica la tabla de la caida',
-      _sim.get('cur_sagsum') == bench._fletcher(_tabla), hex(_sim.get('cur_sagsum')))
 
 
 class _DiagConKp:

@@ -4,7 +4,8 @@
 // Hardware:
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
-// Medición de corriente (opcional): ACS712 en A0
+// Medición de corriente (opcional): ACS712 en A0, y en A1 los 5 V que lo alimentan
+// por un divisor resistivo (5,1 k arriba, 2 k abajo), si la placa no funciona a 5 V
 // Actuador: ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
 // banco un BD139, NPN, con 220 Ω en la base).
@@ -20,8 +21,8 @@
 // traen plegado. Así que cada fila publica el promedio de todas las conversiones de
 // su ventana, y la ventana abarca `cur_filas` filas: una caja con retardo conocido,
 // que con 10 filas a 500 Hz (20 ms) anula la red y el PWM. Para mirar un transitorio
-// con una ventana corta, `cur_notch` saca la red con un notch en 50 Hz y sus
-// armónicos. Ver Sense/RowAdc.h, Sense/WindowMean.h y Sense/MainsNotch.h.
+// con una ventana corta, `cur_notch` saca la red con dos notch alrededor de 50 Hz y
+// de sus armónicos. Ver Sense/RowAdc.h, Sense/WindowMean.h y Sense/MainsNotch.h.
 //
 // Lo que sí vive acá son las tres cosas que se fijan con cables: cuántos
 // cuadrantes tiene el actuador (`mot_bidir`) y de qué lado miran el imán y el
@@ -35,7 +36,7 @@
 //
 //   g_clock    el reloj del muestreo          Sampler/SampleClock.h
 //   g_adc      el conversor corriendo libre   Sense/RowAdc.h
-//   g_sag      la caída de la referencia      Sense/SupplySag.h
+//   g_ratio    contra la alimentación del sensor  Sense/SupplyRatio.h
 //   g_window   el promedio de la corriente    Sense/WindowMean.h
 //   g_notch    el notch de la red             Sense/MainsNotch.h
 //   g_current  la corriente                   Sense/CurrentSense.h
@@ -92,7 +93,7 @@
 #include <CurrentSense.h>
 #include <RowAdc.h>
 #include <MainsNotch.h>
-#include <SupplySag.h>
+#include <SupplyRatio.h>
 #include <WindowMean.h>
 #include <HBridge.h>
 #include <SampleClock.h>
@@ -134,21 +135,23 @@ static const uint16_t PWM_TOP = 7619;
 // cierra con lo que mide un tester en serie con el motor: un divisor en la salida
 // divide el cero y la sensibilidad a la vez.
 //
-// Contra AVCC, que se cae mientras el transistor conduce: la corriente de base (unos
-// 18 mA con 220 ohm) carga la alimentación del micro y la lectura sube un 2,2 %,
-// unos 500 mA aparentes sin corriente en el motor. Se compensa con el ciclo de
-// trabajo, que la placa conoce: una tabla de 17 puntos (Sense/SupplySag.h) que se
-// carga con `cur_sagw` y se verifica con `cur_sagsum`, y que calibrar_caida() mide
-// con la fuente del motor apagada. Una cuenta son 1,25 mV en A0 en las
-// dos placas, y con 185 mV/A eso son 6,8 mA --27 en el UNO, que cuenta de a
-// cuatro--. El ruido es mucho más grande que eso: 120 mA RMS por conversión,
-// medidos en el clon, y por eso se promedia.
+// El ACS712 es ratiométrico con su propia alimentación, los 5 V del USB. Si el micro
+// también funciona a 5 V, medir contra AVCC alcanza. El clon del banco funciona a
+// 3,3 V, y ahí la lectura se corre con cualquier consumo de la placa --la corriente
+// de base del transistor, 1,35 % a fondo--, porque lo que se mueve es la referencia
+// del ADC. Así que A1 lee los 5 V del sensor por un divisor, y con `cur_div` (la
+// relación del divisor) la corriente sale de A0/A1 en cuentas equivalentes a las de
+// 1,25 mV contra 5 V: ver Sense/SupplyRatio.h. Con `cur_div = 0` se mide contra
+// AVCC. En las dos formas una cuenta son 6,8 mA con 185 mV/A --27 en el UNO, que
+// cuenta de a cuatro--. El ruido es mucho más grande que eso: 120 mA RMS por
+// conversión, medidos en el clon, y por eso se promedia.
 static const uint8_t  SENSE_CHANNEL    = 0;
+static const uint8_t  SUPPLY_CHANNEL   = 1;
 static const float    SENSE_MV_PER_A   = 185.0f;
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
 static const float    SENSE_MA_PER_LSB =
-    (float)RowAdc<SENSE_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
+    (float)RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
 
 // ------------------------------------------------------------------ los módulos
 
@@ -156,7 +159,7 @@ typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
 typedef AngleTracker<COUNTS_PER_REV>                           Angle;
 typedef HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN>   Motor;
-typedef RowAdc<SENSE_CHANNEL>                                  Adc;
+typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 
 // Filas en la ventana de la corriente, por omisión: 10 filas de 2 ms son 20 ms, un
 // período entero de la red de 50 Hz y veinte del PWM.
@@ -166,6 +169,7 @@ static const uint8_t CURRENT_ROWS = 10;
 static SampleClock  g_clock(10);
 static Adc          g_adc;
 static WindowMean   g_window(CURRENT_ROWS);
+static WindowMean   g_supply_window(CURRENT_ROWS);   // A1, con la misma ventana
 static CurrentSense g_current(SENSE_ZERO);
 static Lut          g_lut;
 static Angle        g_turns;      // la cuenta cruda, desenrollada en la ISR
@@ -202,12 +206,9 @@ static uint8_t g_y_rep = 0;
 static uint8_t g_ang_inv = 0;
 static uint8_t g_cur_inv = 0;
 
-// La compensación de la caída de AVCC con el ciclo de trabajo. Arranca en cero, sin
-// compensar: la tabla es del cableado de cada banco y la carga la computadora, una
-// entrada por escritura de `cur_sagw`.
-static SupplySag g_sag;
-static uint32_t  g_sagw   = SupplySag::NOTHING;
-static uint16_t  g_sagsum = 0;
+// La corriente contra la alimentación del sensor. Arranca sin divisor, contra AVCC: la
+// relación es del cableado de cada banco y la carga la computadora.
+static SupplyRatio g_ratio;
 
 // El notch de la red sobre la corriente, fila por fila. Arranca apagado: con la
 // ventana de 20 ms por omisión no hace falta. Ver Sense/MainsNotch.h.
@@ -263,9 +264,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_zero",    CTRL_I16, &g_current.zero,      0 },
     { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
-    { "cur_sagw",    CTRL_U32, &g_sagw,              0 },
-    { "cur_sagsum",  CTRL_U16, &g_sagsum,            0 },
-    { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0 },
+    { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0 },
+    { "cur_a1",      CTRL_U16, &g_ratio.supply,      0 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
 
@@ -370,9 +370,8 @@ static bool apply_sensor_filter(void)
 // desenrollado hablan del imán, y el signo, del banco.
 //
 // La corriente es el promedio de todas las conversiones de las últimas `cur_filas`
-// filas, en cuentas. Cada fila se compensa antes, con el ciclo de trabajo que estuvo
-// aplicado mientras duró --el de la escritura anterior, que es el que todavía está
-// puesto--, y el cero se resta después, sobre el promedio.
+// filas, de A0 y, con divisor, de A1, llevado a cuentas equivalentes; el cero se
+// resta después, sobre el promedio.
 static void step(void)
 {
     uint16_t raw;
@@ -386,15 +385,14 @@ static void step(void)
         fresh  = g_tick_fresh;
     }
 
-    uint32_t sum;
-    uint16_t n;
-    g_adc.row(sum, n);
+    uint32_t sum, supply_sum;
+    uint16_t n, supply_n;
+    g_adc.row(sum, n, supply_sum, supply_n);
 
-    const Motor::Command applied = g_motor.u;
-    const uint16_t duty = (uint16_t)(applied < 0 ? -applied : applied);
-    sum = g_sag.correct(sum, duty, (uint16_t)Motor::MAX);
-
-    g_current.update(g_window.push(sum, n));
+    g_window.push(sum, n);
+    g_supply_window.push(supply_sum, supply_n);
+    g_current.update(g_ratio.counts(g_window.total(), g_window.count(),
+                                    g_supply_window.total(), g_supply_window.count()));
 
     const int16_t i = g_notch.step(g_current.i);
     g_i = g_cur_inv ? (int16_t)-i : i;
@@ -416,18 +414,20 @@ static void refresh_tuning(void)
     CtrlLink::set_period_us(g_clock.apply(SAMPLE_HZ));
 
     g_lut.apply(g_lutw);
-    g_sag.apply(g_sagw);
+
+    g_ratio.apply();
+    g_adc.alternate(g_ratio.active());
 
     g_window.apply();
+    g_supply_window.rows = g_window.rows;
+    g_supply_window.apply();
 
     // Con la frecuencia de las filas de ahora: `loop_div` también la mueve.
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
-    // Se recalculan siempre y no sólo al escribir las tablas: así `ang_lutsum` y
-    // `cur_sagsum` describen lo que hay, y la computadora verifica cada tabla con una
-    // lectura.
+    // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
+    // describe lo que hay, y la computadora verifica 64 entradas con una lectura.
     g_lutsum = g_lut.checksum();
-    g_sagsum = g_sag.checksum();
 }
 
 // La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy fuerte,

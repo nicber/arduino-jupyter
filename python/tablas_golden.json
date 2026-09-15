@@ -76,17 +76,12 @@
       "frac": "0"
     },
     {
-      "nombre": "cur_sagw",
-      "tipo": "CTRL_U32",
-      "frac": "0"
-    },
-    {
-      "nombre": "cur_sagsum",
+      "nombre": "cur_div",
       "tipo": "CTRL_U16",
       "frac": "0"
     },
     {
-      "nombre": "cur_red",
+      "nombre": "cur_a1",
       "tipo": "CTRL_U16",
       "frac": "0"
     },

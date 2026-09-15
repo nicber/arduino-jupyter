@@ -13,7 +13,7 @@
 //
 //   g_clock    el reloj del lazo          Sampler/SampleClock.h
 //   g_adc      el conversor corriendo libre  Sense/RowAdc.h
-//   g_sag      la caída de la referencia   Sense/SupplySag.h
+//   g_ratio    contra la alimentación del sensor  Sense/SupplyRatio.h
 //   g_window   el promedio de la corriente Sense/WindowMean.h
 //   g_notch    el notch de la red          Sense/MainsNotch.h
 //   g_current  la corriente con sentido    Control/LoopCurrent.h
@@ -99,7 +99,7 @@
 #include <SensorHealth.h>
 #include <MainsNotch.h>
 #include <RowAdc.h>
-#include <SupplySag.h>
+#include <SupplyRatio.h>
 #include <WindowMean.h>
 #include <HBridge.h>
 #include <LoopAngle.h>
@@ -153,6 +153,7 @@ static const uint16_t PWM_TOP_DEFAULT = 7619;   // 1050 Hz
 // salvo que alguien ponga el objetivo en corriente: sobre todo fija las unidades
 // que se le informan a la computadora.
 static const uint8_t SENSE_CHANNEL = 0;
+static const uint8_t SUPPLY_CHANNEL = 1;
 
 // La sensibilidad del sensor, que es lo único que convierte cuentas en amperes.
 // 185 mV/A es un ACS712-05B conectado directo, que es como está pensado el banco.
@@ -168,8 +169,8 @@ static const float SENSE_MV_PER_A = 185.0f;
 // es donde un ACS712 --bipolar y ratiométrico-- reposa con margen para los dos
 // sentidos. La corriente de base del transistor carga la alimentación del micro y
 // corre la lectura mientras conduce; se compensa con el ciclo de trabajo
-// (una tabla de 17 puntos, `cur_sagw` y `cur_sagsum`, que calibra `calibrar_caida()`
-// del lado de Python). Las
+// (con el divisor de los 5 V del sensor en A1 y `cur_div`, la corriente sale de A0/A1:
+// ver Sense/SupplyRatio.h y el comentario de Banco.ino). Las
 // referencias internas del LGT8F328P se probaron y no sirven con el I2C del AS5600
 // funcionando: ver Sense/RowAdc.h.
 //
@@ -178,7 +179,7 @@ static const float SENSE_MV_PER_A = 185.0f;
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
 static const float    SENSE_MA_PER_LSB =
-    (float)RowAdc<SENSE_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
+    (float)RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
 
 // Son dos elecciones independientes, y vale la pena mantenerlas separadas.
 //
@@ -207,16 +208,15 @@ typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
 typedef LoopAngle<COUNTS_PER_REV>                              Angle;
 typedef LoopDrive<HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN> > Motor;
-typedef RowAdc<SENSE_CHANNEL>                                  Adc;
+typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 
 // Los divisores por omisión: 10 muestras de 5 kHz por período de control son
 // 500 Hz de lazo.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
-static SupplySag    g_sag;
-static uint32_t     g_sagw   = SupplySag::NOTHING;
-static uint16_t     g_sagsum = 0;
+static SupplyRatio  g_ratio;
 static WindowMean   g_window(1);      // un período: una ventana larga atrasa el lazo
+static WindowMean   g_supply_window(1);
 static MainsNotch   g_notch;
 static LoopCurrent  g_current(SENSE_ZERO);
 static Lut          g_lut;
@@ -359,9 +359,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_inv",     CTRL_U8,  &g_current.invert,    0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
-    { "cur_sagw",    CTRL_U32, &g_sagw,              0                 },
-    { "cur_sagsum",  CTRL_U16, &g_sagsum,            0                 },
-    { "cur_red",     CTRL_U16, &g_notch.mains_chz,   0                 },
+    { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0                 },
+    { "cur_a1",      CTRL_U16, &g_ratio.supply,      0                 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0                 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0                 },
     { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
@@ -508,18 +507,17 @@ static void measure(void)
     }
     g_y_rep = !fresh;
 
-    uint32_t sum;
-    uint16_t n;
-    g_adc.row(sum, n);
-
-    const Motor::Command applied = g_motor.u;
-    const uint16_t duty = (uint16_t)(applied < 0 ? -applied : applied);
-    sum = g_sag.correct(sum, duty, (uint16_t)Motor::MAX);
+    uint32_t sum, supply_sum;
+    uint16_t n, supply_n;
+    g_adc.row(sum, n, supply_sum, supply_n);
 
     // El notch va alrededor del cero y no sobre la cuenta cruda: así su estado no
     // arrastra los miles de cuentas del reposo del sensor.
     const int16_t zero = g_current.sense.zero;
-    const int16_t mean = g_window.push(sum, n);
+    g_window.push(sum, n);
+    g_supply_window.push(supply_sum, supply_n);
+    const int16_t mean = g_ratio.counts(g_window.total(), g_window.count(),
+                                        g_supply_window.total(), g_supply_window.count());
     g_current.update((int16_t)(g_notch.step((int16_t)(mean - zero)) + zero));
 
     const Lut::Counts raw = (Lut::Counts)raw16;
@@ -611,16 +609,18 @@ static void refresh_tuning(void)
     g_current.set_alpha(LoopCurrent::Alpha::from_raw(g_alpha_i));
 
     g_lut.apply(g_lutw);
-    g_sag.apply(g_sagw);
+    g_ratio.apply();
+    g_adc.alternate(g_ratio.active());
 
     g_window.apply();
+    g_supply_window.rows = g_window.rows;
+    g_supply_window.apply();
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
     // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
     // describe lo que hay, incluso si alguien lo escribió a mano, y la computadora
     // puede verificar 64 entradas con una sola lectura.
     g_lutsum = g_lut.checksum();
-    g_sagsum = g_sag.checksum();
 
     // El filtro del sensor, sólo cuando cambió: escribirlo en cada `set pid_kp`
     // pararía el muestreador sin motivo. Y sólo con el muestreador corriendo,
