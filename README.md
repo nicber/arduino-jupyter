@@ -115,7 +115,7 @@ informa `sensor: no contesta`.
 - El [Arduino IDE 2](https://www.arduino.cc/en/software), con el soporte para
   placas AVR. El notebook compila y graba solo con el compilador que trae el IDE,
   así que el IDE hace falta instalado pero no abierto.
-- El entorno de conda **`dyc`** del curso, más `git`.
+- El entorno de conda **`dyc`** del curso.
 
 Cómo instalar las dos cosas está en [*Puesta en marcha*](#puesta-en-marcha).
 
@@ -150,7 +150,7 @@ registros que sí lo hacen, para que Vcc sea Vcc en las dos.
 
 ## Puesta en marcha
 
-Esta guía está pensada para quien nunca usó una terminal, git ni un Arduino. Se
+Esta guía está pensada para quien nunca usó una terminal ni un Arduino. Se
 probó en Windows 11 con Miniforge, el Arduino IDE 2.3 y un clon del UNO con
 LGT8F328P. Supone que Miniforge (o Miniconda, o Anaconda: los comandos son los
 mismos) ya está instalado.
@@ -174,64 +174,43 @@ Se hace una sola vez. Lleva unos veinte minutos, casi todos de descarga.
 
 No hace falta tocar el `PATH` ni instalar nada más de Arduino.
 
-### 2. Crear el entorno `dyc`
+### 2. Descomprimir el proyecto
+
+Descomprimir `arduino-jupyter-tp2.zip`, el que entrega la cátedra, en `C:\envs`
+(crear la carpeta si no existe), de modo que quede `C:\envs\arduino-jupyter`. El
+zip trae todo lo necesario para el TP2, incluida la biblioteca `nI2C`.
+
+El proyecto y el entorno van en `C:\envs` y no en la carpeta del usuario, a
+propósito: si el nombre de usuario de Windows tiene espacios o acentos
+--`C:\Users\Juan Pérez`--, algunas herramientas fallan con rutas así.
+
+### 3. Crear el entorno `dyc`
 
 Todos los comandos que siguen se escriben en el **Miniforge Prompt** (o
 *Anaconda Prompt*), que se encuentra escribiendo `miniforge` en el menú Inicio.
 Cada línea se escribe y se confirma con Enter.
 
-El entorno se crea en `C:\envs\dyc` y no en la carpeta del usuario, a propósito:
-si el nombre de usuario de Windows tiene espacios o acentos --`C:\Users\Juan
-Pérez`--, algunas herramientas fallan con rutas así.
-
-La lista de paquetes del entorno está en [`dyc.yml`](dyc.yml), en este
-repositorio. La primera línea la descarga a *Descargas*, y la segunda crea el
-entorno a partir de ella:
+La lista de paquetes del entorno está en [`dyc.yml`](dyc.yml), dentro del
+proyecto:
 
 ```bash
-curl -L -o "%USERPROFILE%\Downloads\dyc.yml" https://raw.githubusercontent.com/nicber/arduino-jupyter/main/dyc.yml
-conda env create -f "%USERPROFILE%\Downloads\dyc.yml" -p C:\envs\dyc
+conda env create -f C:\envs\arduino-jupyter\dyc.yml -p C:\envs\dyc
 ```
 
-Las comillas van: son las que hacen que funcione aunque el nombre de usuario
-tenga espacios. Tarda varios minutos. Si el entorno ya se había creado antes,
-este paso se saltea.
+Tarda varios minutos. Si el entorno ya se había creado antes, este paso se
+saltea.
 
-### 3. Activar el entorno e instalar `git`
+### 4. Activar el entorno
 
 ```bash
 conda activate C:\envs\dyc
-conda install -c conda-forge git
+cd C:\envs\arduino-jupyter
 ```
-
-Cuando pregunte `Proceed ([y]/n)?`, escribir `y` y Enter. `git` es lo único que
-le falta a `dyc` para este proyecto, y sirve para descargarlo en el paso
-siguiente.
 
 Después de `conda activate`, la línea empieza con `(C:\envs\dyc)`. **Si no
 empieza así, el entorno no está activado**, y lo que se instale o se corra va a
 parar a otro Python. `conda activate C:\envs\dyc` hay que repetirlo cada vez que
 se abre el Miniforge Prompt.
-
-### 4. Descargar el proyecto
-
-Esto lo baja a `C:\envs`, al lado del entorno, también fuera de la carpeta del
-usuario:
-
-```bash
-cd C:\envs
-git clone --recurse-submodules https://github.com/nicber/arduino-jupyter.git
-cd arduino-jupyter
-```
-
-**Si la cátedra entregó `arduino-jupyter-tp2.zip`**, en lugar de lo de arriba alcanza
-con descomprimirlo en `C:\envs`, de modo que quede `C:\envs\arduino-jupyter`, y
-después `cd C:\envs\arduino-jupyter`. El zip trae todo lo necesario para el TP2.
-
-No sirve el botón *Download ZIP* de GitHub: ese ZIP no trae la biblioteca `nI2C`,
-y sin ella no compila nada. Si el proyecto ya se había descargado sin
-`--recurse-submodules`, se completa entrando a la carpeta y corriendo
-`git submodule update --init`.
 
 ### 5. Probar la instalación, sin la placa
 
@@ -243,7 +222,7 @@ Verifica que estén todos los paquetes, que el programa de la placa compile (no
 graba nada), que pasen las pruebas de Python y que los notebooks corran contra el
 banco simulado. La primera vez tarda un par de minutos. Tiene que terminar con
 `las ... verificaciones pasaron`; si algo falla, dice qué. Si dice que faltan
-paquetes, el entorno no está activado: volver al paso 3.
+paquetes, el entorno no está activado: volver al paso 4.
 
 ### 6. Abrir el notebook
 
@@ -293,7 +272,7 @@ computadora (ver *Calibrar el sensor*).
 | Qué pasa | Qué hacer |
 |---|---|
 | La primera celda dice `Faltan paquetes` | Jupyter se abrió sin activar el entorno. Cerrar JupyterLab y el Miniforge Prompt, y repetir el paso 6. El mensaje dice con qué Python está corriendo: tiene que ser `C:\envs\dyc\python.exe` |
-| `conda activate` dice que el entorno no existe | Falta el paso 2, o se creó en otro lugar. `conda env list` muestra dónde están los entornos |
+| `conda activate` dice que el entorno no existe | Falta el paso 3, o se creó en otro lugar. `conda env list` muestra dónde están los entornos |
 | La placa no aparece en **Herramientas → Puerto** del IDE | Probar otro cable: muchos cables USB sólo dan alimentación y no llevan datos. Si la placa tiene un chip CH340 (dice *CH340* cerca del USB), instalar su driver desde <https://www.wch-ic.com/downloads/CH341SER_EXE.html> y reenchufar |
 | «no se pudo abrir el puerto» | Otro programa lo tiene abierto: el Monitor Serie del IDE, el IDE mismo, u otro notebook. Cerrarlos, o reiniciar el kernel (menú **Kernel → Restart Kernel**) |
 | «Falta el soporte para placas AVR» | Hacer el paso 1.3: instalar *Arduino AVR Boards* desde el Gestor de placas del IDE |
