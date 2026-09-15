@@ -9,11 +9,12 @@ CALIBRACION_AS5600.md, en esta misma carpeta.
 
     import calib
 
-    df  = calib.desaceleracion(dev, uff=200)      # medir
-    bar = calib.barrido(df)                        # A_k contra velocidad
-    cal = calib.Calibracion.desde_barrido(bar)     # decidir y armar la tabla
-    cal.aplicar(dev)                               # empujarla a la placa
-    cal.guardar('calibracion.json')                # y guardarla acá
+    df  = calib.desaceleracion(dev, uff=200)       # medir
+    ventanas = calib.barrido(df)                    # A_k contra velocidad
+    arm, rechazos = calib.aceptar(ventanas)         # decidir qué es del sensor
+    cal = calib.Calibracion.desde_armonicos(arm)    # armar la tabla
+    cal.aplicar(dev)                                # empujarla a la placa
+    cal.guardar('calibracion.json')                 # y guardarla acá
 
 Este módulo está aparte de ctrllink.py a propósito. El enlace no sabe nada de
 ningún sketch en particular --descubre parámetros y canales en tiempo de
@@ -37,13 +38,12 @@ GRADOS_POR_CUENTA = 360.0 / CUENTAS
 LUT_SIZE = 64
 OCTAVOS = 8
 
-# Techo de una entrada, en octavos de cuenta: ±511 cuentas, ±45 grados. Antes las
-# entradas eran int8 y el techo eran ±15,9 cuentas, con el argumento de que un
-# error más grande era un imán mal puesto y no algo para corregir por tabla. El
-# banco dijo otra cosa: con el AGC en media escala --la distancia correcta-- el
-# segundo armónico medía 105 cuentas, 9,3 grados. El AGC informa la distancia y
-# no el centrado, así que un imán puede estar a la distancia justa y de todos
-# modos torcido.
+# Techo de una entrada, en octavos de cuenta: ±511 cuentas, ±45 grados. Las
+# entradas son int16 porque un error de varios grados no implica necesariamente
+# un imán a la distancia equivocada: con el AGC en media escala --la distancia
+# correcta-- el segundo armónico midió entre 105 y 108 cuentas, 9,2 a 9,5 grados. El AGC informa la
+# distancia y no el centrado, así que un imán puede estar a la distancia justa y
+# de todos modos torcido.
 LUT_MAX = 4095
 
 # Compuerta G2 del plan: qué armónico se acepta como error del sensor.
@@ -218,7 +218,7 @@ def ajustar(t, cuentas, K=8, grado=8):
     una tendencia demasiado flexible se come el primer armónico. Acá van los dos
     en un solo problema de mínimos cuadrados, y lo que los mantiene separados es
     que viven en dominios distintos: la tendencia es suave en el TIEMPO, el error
-    es periódico en el ANGULO. Con 50 vueltas el armónico más lento son 50 ciclos
+    es periódico en el ÁNGULO. Con 50 vueltas el armónico más lento son 50 ciclos
     contra un polinomio de grado 8, así que no compiten.
 
     Usar el ángulo medido en lugar del verdadero para evaluar la base de Fourier
@@ -321,7 +321,7 @@ def barrido(df, vueltas_por_ventana=10, K=8, grado=3, minimo=6, fuente='y_raw'):
 
     `minimo` es cuántas vueltas tiene que tener una ventana para que su ajuste
     signifique algo. Por debajo de eso la tendencia y el primer armónico dejan de
-    estar separados y el ajuste empieza a mentir sin avisar.
+    estar separados y el ajuste deja de ser válido sin que nada lo indique.
     """
     t, cuentas = serie(df, fuente=fuente)
 
@@ -436,7 +436,7 @@ class Calibracion:
     `lut` son LUT_SIZE enteros en octavos de cuenta, que es exactamente lo que
     guarda el dispositivo. La procedencia viaja con ella porque una tabla sin
     procedencia es un número mágico: dentro de un mes, la diferencia entre "esto
-    lo medimos con el imán viejo" y "esto lo medimos ayer" es la única cosa que
+    lo medimos con el montaje anterior" y "esto lo medimos ayer" es la única cosa que
     importa.
     """
 
@@ -450,18 +450,17 @@ class Calibracion:
     def desde_armonicos(cls, arm, permitir_recorte=False, **meta):
         """Muestrea el error modelado en los LUT_SIZE ángulos de la tabla.
 
-        Se planta si el error no entra en la tabla. Una entrada `int8` en octavos
-        de cuenta llega a ±15,9 cuentas, o sea ±1,4 grados, que es de sobra para
-        lo que corrige un AS5600 bien montado --la hoja de datos promete ±0,5--
-        y bastante menos que lo que mide uno mal montado. El límite es una
-        propiedad del diseño y no un accidente: un error de varios grados no es
-        un error que haya que corregir por tabla, es un imán a la distancia
-        equivocada, y el destornillador es más barato y funciona mejor.
+        Lanza ValueError si el error no entra en la tabla. Una entrada `int16`
+        en octavos de cuenta llega a ±LUT_MAX = ±4095 octavos, o sea ±511
+        cuentas o ±45 grados: mucho más que lo que corrige un AS5600 bien
+        montado --la hoja de datos promete ±0,5-- y suficiente para un imán a la
+        distancia correcta pero descentrado. Un error que supera ese techo no es
+        algo que haya que corregir por tabla: el sensor no está midiendo, y lo
+        que corresponde es revisar el montaje.
 
-        Medido en un banco con el AGC contra el tope: 453 cuentas pico a pico,
-        de las cuales la tabla representaba 32. Recortar eso en silencio habría
-        dado una calibración que corrige el siete por ciento del error y no lo
-        dice. `permitir_recorte=True` para quien sepa lo que está haciendo.
+        El rechazo es explícito porque recortar en silencio daría una
+        calibración que corrige sólo una fracción del error sin indicarlo.
+        `permitir_recorte=True` para obtener igualmente la tabla recortada.
         """
         ang = np.arange(LUT_SIZE) * (CUENTAS / LUT_SIZE)
         error = arm.evaluar(ang)
@@ -483,7 +482,7 @@ class Calibracion:
                 f'cuentas ({LUT_MAX/OCTAVOS*GRADOS_POR_CUENTA:.0f} grados) que una entrada '
                 f'de la tabla puede representar.\n'
                 f'Cuarenta y cinco grados de error no son un sensor mal calibrado, son un '
-                f'sensor que no esta midiendo: revisar el montaje del iman y volver a '
+                f'sensor que no está midiendo: revisar el montaje del imán y volver a '
                 f'medir. Ver la compuerta G0 en CALIBRACION_AS5600.md, en esta misma carpeta.\n'
                 f'permitir_recorte=True si de todas formas se quiere la tabla recortada.')
 
@@ -498,12 +497,12 @@ class Calibracion:
         return cls(lut=[0] * LUT_SIZE, notas='sin corrección')
 
     # ------------------------------------------------------------- lo mismo
-    # que hace el dispositivo, para poder verificarlo sin creerle.
+    # que hace el dispositivo, para poder validarlo de forma independiente.
 
     def checksum(self):
         """Suma de Fletcher de 16 bits, igual que lut_checksum() en el sketch.
 
-        Fletcher y no una suma pelada porque una suma no distingue una tabla de
+        Fletcher y no una suma simple porque una suma no distingue una tabla de
         otra con dos entradas intercambiadas, y una entrada en el índice
         equivocado es justo el error que se comete acá.
 
@@ -522,7 +521,7 @@ class Calibracion:
         """La corrección que aplicaría el dispositivo, en cuentas.
 
         Reproduce lut_lookup() incluida la interpolación y el redondeo, así que
-        el notebook puede dibujar lo que la placa va a hacer de verdad y no lo que
+        el notebook puede dibujar lo que la placa va a hacer efectivamente y no lo que
         el modelo continuo diría.
         """
         cuentas = np.asarray(cuentas, dtype=np.int64) & (CUENTAS - 1)
@@ -578,7 +577,7 @@ class Calibracion:
         La verificación es una sola lectura: el dispositivo mantiene la suma de
         Fletcher de lo que tiene, y acá se la compara contra la de lo que se
         quiso mandar. El protocolo ya distingue entre un comando deformado, que
-        se rechaza a los gritos, y un valor deformado, que se aceptaría en
+        se rechaza con un error explícito, y un valor deformado, que se aceptaría en
         silencio; una tabla es toda valores.
         """
         for i, v in enumerate(self.lut):
@@ -613,7 +612,7 @@ def asegurar(dev, ruta='calibracion.json'):
     """Carga la tabla del archivo y la aplica si no está ya puesta.
 
     Es lo que va al principio de un notebook: el dispositivo arranca siempre sin
-    calibrar --a propósito, para que no pueda mentir-- así que alguien tiene que
+    calibrar --a propósito, para no aplicar una tabla desactualizada-- así que alguien tiene que
     ponerle la tabla, y ese alguien es la computadora, que es la que la tiene.
     """
     cal = Calibracion.cargar(ruta)
@@ -627,14 +626,14 @@ def asegurar(dev, ruta='calibracion.json'):
 # ------------------------------------------------------------------ conectar
 
 # Esta carpeta es un extra del TP2: el banco vive en python/. Se lo agrega al path
-# para que `import bench` ande igual desde el notebook de acá y desde las pruebas.
+# para que `import bench` funcione igual desde el notebook de acá y desde las pruebas.
 _EXTRAS = Path(__file__).resolve().parent
 _PYTHON = _EXTRAS.parent.parent / 'python'
 if str(_PYTHON) not in sys.path:
     sys.path.insert(0, str(_PYTHON))
 
-# La calibración de este banco. No entra en el repositorio: es un dato del banco
-# --este imán, en este eje-- y no del programa.
+# La calibración de este banco. No entra en el repositorio (está en .gitignore):
+# es un dato del banco --este imán, en este eje-- y no del programa.
 CALIBRACION = _EXTRAS / 'calibracion.json'
 
 
@@ -642,7 +641,7 @@ def sync_board_cal(*args, calibracion=None, **kw):
     """`bench.sync_board()` y, encima, la calibración del sensor de este banco.
 
     `sync_board()` resetea la placa, y la placa arranca siempre **sin calibrar**
-    --a propósito: una tabla vieja aplicándose en silencio es peor que ninguna--,
+    --a propósito: una tabla desactualizada aplicándose en silencio es peor que ninguna--,
     así que sin este paso cada celda mediría con el error de ángulo crudo del
     sensor. Cargar la tabla son 64 escrituras de parámetro, del orden de un
     segundo. Si no hay archivo de calibración lo dice y sigue.
@@ -655,14 +654,14 @@ def sync_board_cal(*args, calibracion=None, **kw):
 
     if not ruta.exists():
         if verbose:
-            print(f'  sin calibracion ({ruta.name} no existe): el angulo va crudo. '
+            print(f'  sin calibración ({ruta.name} no existe): el ángulo no se corrige. '
                   f'Correr extras/calibracion_as5600/calibracion.ipynb para medirla.')
         return dev
 
     cal = asegurar(dev, ruta)
     if verbose:
         pico = max(abs(v) for v in cal.lut) / OCTAVOS
-        print(f'  calibracion "{cal.banco}" del {cal.creada[:10]}: '
-              f'{len(cal.armonicos)} armonicos, corrige hasta '
+        print(f'  calibración "{cal.banco}" del {cal.creada[:10]}: '
+              f'{len(cal.armonicos)} armónicos, corrige hasta '
               f'{pico * GRADOS_POR_CUENTA:.1f} grados')
     return dev

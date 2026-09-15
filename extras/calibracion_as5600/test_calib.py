@@ -1,7 +1,7 @@
 """Ejercita la calibración del AS5600 sin tener ni el sensor ni la placa.
 
 Dos mitades. La primera le da al ajuste un error de ángulo que uno mismo puso, y
-comprueba que lo devuelve: amplitudes, fases, y --lo que importa de verdad-- que
+comprueba que lo devuelve: amplitudes, fases, y --lo principal-- que
 la compuerta de velocidad rechaza un armónico que depende de la velocidad, que es
 el motor, y acepta el que no, que es el sensor. La segunda empuja la tabla a una
 simulación del dispositivo que reimplementa lut_lookup() y la suma de Fletcher
@@ -52,7 +52,7 @@ def sensor_sintetico(t, rev_por_s, armonicos, ruido=0.5, semilla=0):
 
 
 def como_captura(t, medido, dec=1):
-    """Un objeto con la misma pinta que el DataFrame que devuelve capture()."""
+    """Un objeto con la misma forma que el DataFrame que devuelve capture()."""
     import pandas as pd
 
     crudo = np.mod(np.rint(medido), calib.CUENTAS).astype(np.int64)
@@ -69,19 +69,19 @@ df = como_captura(t, sensor_sintetico(t, 5.0, ARM))
 
 arm = calib.ajustar(*calib.serie(df))
 
-check('el ajuste recupera el primer armonico',
+check('el ajuste recupera el primer armónico',
       abs(arm.A[0] - 6.0) < 0.15, f'A1={arm.A[0]:.3f}')
-check('el ajuste recupera el segundo armonico',
+check('el ajuste recupera el segundo armónico',
       abs(arm.A[1] - 2.5) < 0.15, f'A2={arm.A[1]:.3f}')
-check('el ajuste recupera el cuarto armonico',
+check('el ajuste recupera el cuarto armónico',
       abs(arm.A[3] - 0.8) < 0.15, f'A4={arm.A[3]:.3f}')
-check('un armonico ausente queda bajo el piso de aceptacion',
+check('un armónico ausente queda bajo el piso de aceptación',
       arm.A[2] < calib.A_MINIMA, f'A3={arm.A[2]:.3f}')
 check('las fases salen bien',
       all(abs(np.angle(np.exp(1j*(arm.phi[k-1] - phi)))) < 0.05
           for k, (_, phi) in ARM.items()),
       str(np.round(arm.phi[:4], 3)))
-check('el residuo es del tamano del ruido que se puso',
+check('el residuo es del tamaño del ruido que se puso',
       0.4 < arm.residuo < 0.6, f'{arm.residuo:.3f}')
 
 # La cuenta cruda desenrollada tiene que dar las vueltas que dio el eje.
@@ -124,12 +124,12 @@ check('las ventanas cubren un rango de velocidad',
 
 p1 = calib.pendiente(ventanas, 1)
 p3 = calib.pendiente(ventanas, 3)
-check('el armonico del sensor es plano en la velocidad', abs(p1) < 0.3, f'pendiente {p1:+.2f}')
-check('el armonico del motor cae con la velocidad', p3 < -1.0, f'pendiente {p3:+.2f}')
+check('el armónico del sensor es plano en la velocidad', abs(p1) < 0.3, f'pendiente {p1:+.2f}')
+check('el armónico del motor cae con la velocidad', p3 < -1.0, f'pendiente {p3:+.2f}')
 
 aceptados, rechazos = calib.aceptar(ventanas, verboso=False)
-check('se acepta el armonico del sensor', 1 not in rechazos, str(rechazos.get(1)))
-check('se rechaza el armonico del motor', 3 in rechazos, str(rechazos.get(3)))
+check('se acepta el armónico del sensor', 1 not in rechazos, str(rechazos.get(1)))
+check('se rechaza el armónico del motor', 3 in rechazos, str(rechazos.get(3)))
 check('lo rechazado no entra en el modelo', aceptados.A[2] == 0.0, f'A3={aceptados.A[2]}')
 check('lo aceptado conserva su amplitud', abs(aceptados.A[0] - 6.0) < 0.3,
       f'A1={aceptados.A[0]:.2f}')
@@ -139,7 +139,7 @@ check('lo aceptado conserva su amplitud', abs(aceptados.A[0] - 6.0) < 0.3,
 
 cal = calib.Calibracion.desde_armonicos(aceptados, banco='banco de prueba')
 
-check('la tabla tiene el tamano del dispositivo', len(cal.lut) == calib.LUT_SIZE)
+check('la tabla tiene el tamaño del dispositivo', len(cal.lut) == calib.LUT_SIZE)
 check('la tabla entra en el rango del dispositivo',
       all(-calib.LUT_MAX <= v <= calib.LUT_MAX for v in cal.lut))
 check('la tabla queda centrada', abs(sum(cal.lut)) < calib.LUT_SIZE,
@@ -152,34 +152,31 @@ ang = np.arange(calib.CUENTAS)
 verdadero = 6.0*np.sin(2*np.pi*ang/calib.CUENTAS + 0.7)
 residual = verdadero - cal.corregir(ang)
 
-check('la correccion achica el error mas de cinco veces',
+check('la corrección achica el error más de cinco veces',
       np.abs(residual).max() < np.abs(verdadero).max() / 5,
       f'{np.abs(verdadero).max():.2f} -> {np.abs(residual).max():.2f} cuentas')
 check('lo que queda es del orden del redondeo a cuenta entera',
       np.abs(residual).max() < 1.0, f'{np.abs(residual).max():.2f} cuentas')
 
-# Y un error que no entra en la tabla tiene que plantarse, no recortarse solo.
-# La primera version recortaba en silencio: medido en un banco con el iman lejos,
-# 453 cuentas pico a pico contra las 32 que la tabla representaba entonces, o sea
-# una calibracion que corregia el siete por ciento del error y decia que lo habia
-# corregido. La tabla desde entonces llega a 45 grados, pero el techo sigue
-# existiendo y sigue teniendo que avisar.
+# Y un error que no entra en la tabla tiene que rechazarse, no recortarse en
+# silencio: una tabla recortada corrige sólo una fracción del error sin indicarlo.
+# El techo es de 45 grados, y superarlo tiene que producir un error explícito.
 grande = calib.Armonicos(A=np.array([900.0, 0, 0, 0]), phi=np.zeros(4),
                          sigma=np.zeros(4), omega=5.0, vueltas=50, residuo=1.0)
 try:
     calib.Calibracion.desde_armonicos(grande)
-    check('un error que no entra en la tabla se rechaza', False, 'recorto sin protestar')
+    check('un error que no entra en la tabla se rechaza', False, 'se recortó sin error')
 except ValueError as exc:
     check('un error que no entra en la tabla se rechaza', 'no entra en la tabla' in str(exc))
     check('y el rechazo apunta al montaje',
-          'montaje del iman' in str(exc) and 'G0' in str(exc), str(exc))
+          'montaje del imán' in str(exc) and 'G0' in str(exc), str(exc))
 
 recortada = calib.Calibracion.desde_armonicos(grande, permitir_recorte=True)
 check('pero se puede pedir igual',
       max(recortada.lut) == calib.LUT_MAX and min(recortada.lut) == -calib.LUT_MAX)
 
 # La suma de Fletcher tiene que distinguir dos entradas intercambiadas; una suma
-# pelada no, y una entrada en el índice equivocado es el error que se comete acá.
+# simple no, y una entrada en el índice equivocado es el error que se comete acá.
 otra = calib.Calibracion(lut=list(cal.lut))
 otra.lut[3], otra.lut[9] = otra.lut[9], otra.lut[3]
 check('la suma distingue dos entradas intercambiadas',
@@ -195,7 +192,7 @@ with tempfile.TemporaryDirectory() as carpeta:
 
     check('la tabla sobrevive al archivo', vuelta.lut == cal.lut)
     check('la procedencia sobrevive al archivo', vuelta.banco == 'banco de prueba')
-    check('los armonicos sobreviven al archivo', set(vuelta.armonicos) == set(cal.armonicos))
+    check('los armónicos sobreviven al archivo', set(vuelta.armonicos) == set(cal.armonicos))
 
     # Un archivo editado a mano no se aplica en silencio.
     import json
@@ -207,7 +204,7 @@ with tempfile.TemporaryDirectory() as carpeta:
 
     try:
         calib.Calibracion.cargar(ruta)
-        check('un archivo editado se rechaza', False, 'cargo sin protestar')
+        check('un archivo editado se rechaza', False, 'se cargó sin error')
     except ValueError as exc:
         check('un archivo editado se rechaza', 'suma de verificaci' in str(exc), str(exc))
 
@@ -230,9 +227,13 @@ class FakeUnoConLut(FakeUno):
         self.params['ang_lutsum'] = ('u16', 0, 0)
         self.params['ang_cal'] = ('u8', 0, 0)
         self.lutw_aplicado = 0xFFFFFFFF
+        self.escrituras_lutw = 0
 
     def command(self, cmd):
         super().command(cmd)
+
+        if cmd.startswith('set ang_lutw '):
+            self.escrituras_lutw += 1
 
         # refresh_tuning() corre después de cualquier escritura de parámetro, que
         # es exactamente lo que permite cargar la tabla sin comandos nuevos.
@@ -277,32 +278,42 @@ check('la tabla llega entera', uno.lut == cal.lut, f'{uno.lut[:4]} vs {cal.lut[:
 check('la suma del dispositivo coincide con la de la computadora',
       uno.params['ang_lutsum'][2] == cal.checksum(),
       f'{uno.params["ang_lutsum"][2]:#06x} vs {cal.checksum():#06x}')
-check('aplicar deja la correccion prendida', uno.params['ang_cal'][2] == 1)
+check('aplicar deja la corrección prendida', uno.params['ang_cal'][2] == 1)
 check('esta_puesta lo confirma', calib.esta_puesta(dev, cal))
 
 # Y las dos implementaciones de la interpolación tienen que coincidir cuenta por
 # cuenta, no en promedio.
 mias = cal.corregir(np.arange(calib.CUENTAS))
 suyas = np.array([uno.lut_lookup(c) for c in range(calib.CUENTAS)])
-check('la interpolacion de la placa y la del notebook coinciden',
+check('la interpolación de la placa y la del notebook coinciden',
       np.array_equal(mias, suyas),
-      f'difieren en {int((mias != suyas).sum())} de {calib.CUENTAS} angulos')
+      f'difieren en {int((mias != suyas).sum())} de {calib.CUENTAS} ángulos')
 
-# Una tabla que no llegó entera tiene que hacer ruido, no pasar.
+# Una tabla que no llegó entera tiene que detectarse, no pasar inadvertida.
 uno.lut[7] ^= 0x0F
 uno.refresh_tuning()
 try:
     cal.aplicar(dev, verificar=True)
-    # aplicar() reescribe todo, así que después de eso tiene que volver a cerrar.
+    # aplicar() reescribe todo, así que después de eso la tabla tiene que coincidir.
     check('una tabla corrompida se detecta o se repara',
-          uno.lut == cal.lut, 'quedo distinta y no protesto')
+          uno.lut == cal.lut, 'quedó distinta sin error')
 except RuntimeError:
     check('una tabla corrompida se detecta o se repara', True)
 
-# El dispositivo ya calibrado no se vuelve a cargar al pedo.
-escrituras_antes = uno.lutw_aplicado
-check('asegurar() no reescribe una tabla que ya esta puesta',
-      calib.esta_puesta(dev, cal) and uno.lutw_aplicado == escrituras_antes)
+# La tabla no se vuelve a cargar si ya está puesta. Además de `lutw_aplicado` se
+# cuentan las escrituras de `ang_lutw`: reescribir la tabla entera terminaría en
+# la misma última entrada, así que ese valor solo no lo detectaría.
+with tempfile.TemporaryDirectory() as carpeta:
+    ruta = cal.guardar(os.path.join(carpeta, 'calibracion.json'))
+    aplicado_antes = uno.lutw_aplicado
+    escrituras_antes = uno.escrituras_lutw
+    puesta = calib.asegurar(dev, ruta)
+
+check('asegurar() no reescribe una tabla que ya está puesta',
+      calib.esta_puesta(dev, cal) and puesta.lut == cal.lut
+      and uno.lutw_aplicado == aplicado_antes
+      and uno.escrituras_lutw == escrituras_antes,
+      f'{uno.escrituras_lutw - escrituras_antes} escrituras de ang_lutw')
 
 
 print()
