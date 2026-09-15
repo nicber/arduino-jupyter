@@ -623,8 +623,12 @@ class Bench:
             report('motor', None, 'no se puede evaluar: no hay sensor de angulo ni '
                                   'medicion de corriente')
         else:
-            report('motor', gira or (sensed and pico > abs(rest_ma) + 5 * noise),
-                   ', '.join(evidence))
+            # Con el sensor de ángulo, que gire es la prueba. La corriente sola no
+            # alcanza: sin divisor en A1, el PWM corre la lectura por la caída de AVCC
+            # aunque la fuente del motor esté apagada, así que su pico no prueba nada.
+            # Sin sensor de ángulo, el arranque contra el final, que cancela esa caída.
+            arranca = sensed and abs(i_pos) > abs(rest_ma) + 5 * noise
+            report('motor', gira if present else arranca, ', '.join(evidence))
 
         # Que el motor gire no quiere decir que el canal de corriente lo vea. Un
         # motor chico consume decenas de mA, y contra el ruido de un sensor de
