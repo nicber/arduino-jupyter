@@ -23,11 +23,17 @@
 // con ceros sobre la circunferencia en w0 y polos a radio r: cuanto más cerca de 1,
 // más angosto y más largo el transitorio. g deja la ganancia en continua en 1.
 //
-// Aritmética: coeficientes en Q12 y señal en cuartos de cuenta, los dos en 16 bits,
-// así que cada producto es de 16 x 16 bits, que es lo barato en un AVR. Lo que la
-// división por 2^12 no guarda se arrastra a la muestra siguiente, así que la salida
-// no se queda trabada a unas cuentas del valor. Los coeficientes se calculan con
-// punto flotante en apply(), que corre sólo cuando la computadora mueve algo.
+// Aritmética: coeficientes en Q12 y señal en dieciseisavos de cuenta, los dos en 16
+// bits, así que cada producto es de 16 x 16 bits, que es lo barato en un AVR. Lo que
+// la división por 2^12 no guarda se arrastra a la muestra siguiente, así que la
+// salida no se queda trabada a unas cuentas del valor. Los polos cerca de la
+// circunferencia amplifican el redondeo de cada sección: en cuartos de cuenta eso le
+// sumaba a la corriente unos 3,5 mA RMS de ruido, medido en el banco con la ventana de
+// 10 filas; en dieciseisavos queda por debajo del redondeo a cuentas de la salida. El
+// precio es el rango: la entrada va de -2047 a 2047 cuentas, que es la corriente
+// alrededor de su cero (el fondo del ACS712 de 5 A son ~735). Los coeficientes se
+// calculan con punto flotante en apply(), que corre sólo cuando la computadora mueve
+// algo.
 //
 // Aritmética pura, salvo apply(), así que se prueba en la máquina de escritorio.
 
@@ -47,6 +53,9 @@ class MainsNotch
     // Los dos notch de cada armónico, en centésimas de Hz.
     static const uint16_t LOW_CHZ  = 4950;
     static const uint16_t HIGH_CHZ = 5050;
+
+    // La señal adentro del filtro, en fracciones de cuenta: 2^FRAC_BITS por cuenta.
+    static const uint8_t FRAC_BITS = 4;
 
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección. Mover y llamar a apply().
@@ -105,11 +114,14 @@ class MainsNotch
                 const float a2 = r * r;
                 const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
 
+                // b1 sale de los otros ya redondeados y no de -2 cos w0 g: así la
+                // continua pasa con ganancia exactamente 1 también en Q12, y el cero
+                // se corre del orden de 0,02 Hz.
                 Section& s = m_sec[m_active++];
                 s.b0 = q12(g);
-                s.b1 = q12(-2.0f * c * g);
                 s.a1 = q12(a1);
                 s.a2 = q12(a2);
+                s.b1 = (int16_t)(4096 + s.a1 + s.a2 - 2 * s.b0);
             }
         }
 
@@ -119,7 +131,8 @@ class MainsNotch
     // Cuántos notch quedaron activos: dos por armónico, menos los que no entran.
     uint8_t active(void) const { return m_active; }
 
-    // Una fila, en cuentas. Sin secciones activas devuelve la entrada tal cual.
+    // Una fila, en cuentas alrededor del cero. Sin secciones activas devuelve la
+    // entrada tal cual.
     int16_t step(int16_t counts)
     {
         if (!m_active)
@@ -127,7 +140,7 @@ class MainsNotch
             return counts;
         }
 
-        int16_t x = sat((int32_t)counts * 4);
+        int16_t x = sat((int32_t)counts * (1L << FRAC_BITS));
 
         // Al prender o cambiar algo, el estado arranca en la entrada: sin eso cada
         // cambio de parámetro sería un escalón desde cero, con su transitorio.
@@ -165,8 +178,8 @@ class MainsNotch
             x = out;
         }
 
-        // De cuartos de cuenta a cuentas, redondeando.
-        return (int16_t)((x + 2) >> 2);
+        // De fracciones de cuenta a cuentas, redondeando.
+        return (int16_t)((x + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
     }
 
     private:
@@ -174,7 +187,7 @@ class MainsNotch
     struct Section
     {
         int16_t b0, b1, a1, a2;     // Q12; b2 = b0
-        int16_t x1, x2, y1, y2;     // cuartos de cuenta
+        int16_t x1, x2, y1, y2;     // fracciones de cuenta, ver FRAC_BITS
         int16_t carry;
     };
 

@@ -262,17 +262,40 @@ int main()
     for (int k = 0; k < 2000; k++) { dc = notch.step(1000); }
     check(dc >= 999 && dc <= 1001, "la continua pasa entera");
 
-    // La red vista desde el clon, 49,68 Hz, con 400 cuentas de amplitud: los dos notch
-    // la bajan unos 40 dB sin haberla calibrado.
+    // La red vista desde el clon, 49,68 Hz, con 400 cuentas de amplitud alrededor del
+    // cero: los dos notch la bajan unos 40 dB sin haberla calibrado.
     notch.apply(250.0f);
     notch.apply(500.0f);
     int16_t pico = 0;
     for (int k = 0; k < 4000; k++)
     {
-        const int16_t y = notch.step((int16_t)lround(2000.0 + 400.0 * sin(2.0 * M_PI * 49.68 * k / 500.0)));
-        if (k > 2000 && abs(y - 2000) > pico) { pico = (int16_t)abs(y - 2000); }
+        const int16_t y = notch.step((int16_t)lround(400.0 * sin(2.0 * M_PI * 49.68 * k / 500.0)));
+        if (k > 2000 && abs(y) > pico) { pico = (int16_t)abs(y); }
     }
     check(pico < 20, "49,68 Hz baja a menos de 20 cuentas de 400");
+
+    // El rango: un escalón de -1500 a 1500 cuentas, el doble del fondo del ACS712 de
+    // 5 A, sale entero sin saturar adentro.
+    notch.harmonics = 3;
+    notch.apply(500.0f);
+    for (int k = 0; k < 1000; k++) { dc = notch.step(-1500); }
+    for (int k = 0; k < 2000; k++) { dc = notch.step(1500); }
+    check_eq(dc, 1500, "un escalón de 3000 cuentas llega entero, con la continua exacta");
+
+    // Lo que agrega el redondeo adentro del filtro, sobre ruido blanco de ±2 cuentas.
+    // Los seis notch sacan ~15 % de la varianza; en cuartos de cuenta el redondeo
+    // devolvía casi todo eso (la salida quedaba en ~96 % de la entrada).
+    srand(3);
+    notch.apply(250.0f);
+    notch.apply(500.0f);
+    double var_in = 0.0, var_out = 0.0;
+    for (int k = 0; k < 20000; k++)
+    {
+        const int16_t x = (int16_t)(rand() % 5 - 2);
+        const int16_t y = notch.step(x);
+        if (k >= 2000) { var_in += (double)x * x; var_out += (double)y * y; }
+    }
+    check(var_out < 0.9 * var_in, "sobre ruido blanco, el redondeo interno no devuelve lo que el notch saca");
 
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;
