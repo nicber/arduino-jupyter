@@ -62,8 +62,8 @@ enum : uint8_t
 // arreglos comunes en PROGMEM sin símbolos de cadena aparte que haya que
 // declarar.
 //
-// Doce y no ocho para que quepa un prefijo de módulo. Una tabla de tres docenas de
-// parámetros planos no dice quién es dueño de cuál, y `ctl_uff` contra `ang_cal`
+// Doce y no ocho para que quepa un prefijo de módulo. Una tabla de un par de docenas
+// de parámetros planos no dice quién es dueño de cuál, y `ctl_uff` contra `ang_cal`
 // contra `loop_div` lo dice sin que haya que ir a leer el sketch. Los cuatro bytes de
 // más por entrada viven en flash y no en RAM.
 static const uint8_t CTRL_NAME_LEN = 12;
@@ -164,13 +164,13 @@ class CtrlLink
     // con constantes derivadas de sus parámetros —una ganancia convertida a
     // punto fijo, un coeficiente de filtro calculado a partir de una constante
     // de tiempo— puede vigilar este único valor en lugar de comparar cada
-    // parámetro del que depende, y hacer la derivación sólo cuando algo se movió
-    // de verdad. Da la vuelta; comparar por diferencia, no por orden.
+    // parámetro del que depende, y hacer la derivación sólo cuando algo
+    // efectivamente cambió. Da la vuelta; comparar por diferencia, no por orden.
     static uint16_t writes(void)    { return m_writes; }
 
     // Período de control nominal. El sketch puede cambiarlo en tiempo de
     // ejecución siempre que se lo avise al enlace, para que el encabezado que lee
-    // la computadora siga diciendo la verdad.
+    // la computadora siga siendo correcto.
     static void     set_period_us(uint32_t dt_us) { m_dt_us = dt_us; }
     static uint32_t period_us(void)               { return m_dt_us; }
 

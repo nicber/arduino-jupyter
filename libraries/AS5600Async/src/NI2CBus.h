@@ -15,8 +15,8 @@
 
 struct NI2CBus
 {
-    // address_size tiene que ser distinto de cero o nI2C rechaza el handle de
-    // plano (PrepareForTransfer en nI2C.cpp). Las direcciones de registro del
+    // address_size tiene que ser distinto de cero o nI2C rechaza el handle
+    // (PrepareForTransfer en nI2C.cpp). Las direcciones de registro del
     // AS5600 son de un byte.
     static void begin(uint8_t address)
     {

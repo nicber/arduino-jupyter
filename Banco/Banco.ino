@@ -36,7 +36,7 @@
 //   g_current  la corriente                   Sense/CurrentSense.h
 //   g_lut      la corrección del ángulo       Calibracion/AngleLut.h
 //   g_turns    el ángulo desenrollado         AngleSensor/AngleTracker.h
-//   g_health   qué se le puede creer al sensor  AngleSensor/SensorHealth.h
+//   g_health   la confiabilidad del sensor    AngleSensor/SensorHealth.h
 //   g_motor    el actuador                    Actuator/HBridge.h
 //
 // El Timer2 muestrea el AS5600 a 5 kHz; cada `loop_div` muestras se emite una fila
@@ -54,8 +54,8 @@
 //
 // Y el ángulo se desenrolla en la ISR, sobre cada muestra de 5 kHz, y no una vez por
 // fila: desenrollar sólo vale mientras el eje gire menos de media vuelta entre dos
-// lecturas. Por fila, con `loop_div = 25` (200 Hz) eso son 628 rad/s, y un motor a
-// 700 rad/s daba la velocidad con el signo cambiado sin ningún aviso. A 5 kHz el
+// lecturas. Por fila, con `loop_div = 25` (200 Hz) eso son 628 rad/s, y un motor
+// más rápido daría la velocidad con el signo cambiado sin ningún aviso. A 5 kHz el
 // límite son 15 700 rad/s. La tabla de calibración se aplica en la fila, como una
 // corrección chica sobre lo ya desenrollado.
 //
@@ -71,7 +71,7 @@
 // actuador con su propio TOP, así que analogWrite() en los pines 9 y 10 y Servo
 // dejan de servir; y el ADC, que se maneja directamente acá, así que no hay que
 // llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
-// 5 y 6 andan como siempre.
+// 5 y 6 funcionan como siempre.
 
 #include <util/atomic.h>
 
@@ -110,7 +110,7 @@ static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 // 1050 Hz. Por qué ~1 kHz y no 20 kHz, y por qué 1050 y no 1000: hardware.ipynb,
 // sección 2.1. Lo que importa acá: 20 ms de ventana de corriente son 21 períodos
 // justos, así que el rizado que queda se pliega a 50 Hz, donde la ventana tiene un
-// cero. Con 1010 Hz el pliegue caía en 10 Hz, un ripple de ~15 mA en régimen.
+// cero. Con 1010 Hz el pliegue caería en 10 Hz, un rizado de ~15 mA en régimen.
 static const uint16_t PWM_TOP = 7619;
 
 // Medición de corriente en A0. Nada de este bloque mueve el motor: sólo fija las
@@ -138,7 +138,7 @@ typedef HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN>   Motor;
 typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 
 // Filas en la ventana de la corriente, por omisión: 10 filas de 2 ms son 20 ms, un
-// período entero de la red de 50 Hz y veinte del PWM.
+// período entero de la red de 50 Hz y 21 del PWM.
 static const uint8_t CURRENT_ROWS = 10;
 
 // 10 muestras de 5 kHz por fila son 500 Hz.
@@ -152,9 +152,9 @@ static Angle        g_turns;      // la cuenta cruda, desenrollada en la ISR
 static SensorHealth g_health;
 static Motor        g_motor(PWM_TOP);
 
-// ------------------------------------------------ lo que es de este sketch y de nadie
+// ------------------------------------------------ el estado propio del sketch
 
-// El comando que pide la computadora, -255..255. Lo que de verdad salió al
+// El comando que pide la computadora, -255..255. Lo que efectivamente salió al
 // actuador, ya recortado, es `u` en la telemetría.
 static Motor::Command g_uff = 0;
 
@@ -215,8 +215,8 @@ static uint16_t g_last_writes   = 0;
 // La tabla NO se guarda en la placa. El dispositivo arranca siempre sin calibrar,
 // y quien tiene la tabla es la computadora, que la empuja al conectarse --ver
 // extras/calibracion_as5600/calib.py--: una calibración es una propiedad del banco
-// --este imán, en este eje-- y no del programa, y una tabla vieja aplicándose en
-// silencio es peor que ninguna.
+// --este imán, en este eje-- y no del programa, y una tabla desactualizada
+// aplicándose en silencio es peor que ninguna.
 
 // --------------------------------------------------------------------- tablas
 
@@ -407,9 +407,9 @@ static void refresh_tuning(void)
 }
 
 // La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy fuerte,
-// y con qué ganancia lee. Leerla le cuesta al muestreo una muestra, así que sólo se
-// hace entre capturas, y un registro por vez: una lectura de tres bytes no entra en
-// el período de 200 us. Ver SensorHealth::turn().
+// y con qué ganancia lee. Cada lectura le cuesta al muestreo dos muestras, así que
+// sólo se hace entre capturas, y un registro por vez, de a lo sumo dos bytes (ver
+// AS5600::AUX_MAX y SensorHealth::turn()).
 static void refresh_magnet_status(void)
 {
     if (CtrlLink::streaming() || !g_health.due(millis()))

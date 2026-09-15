@@ -2,12 +2,12 @@
 
 #include <Arduino.h>
 
-// El ADC: que placa es, y dejarlo midiendo contra Vcc.
+// El ADC: qué placa es, y dejarlo midiendo contra Vcc.
 //
-// Parte de BoardStart, que eran tres trabajos en un header: el reloj, el ADC y el
-// bus. Cada uno falla de manera distinta y se arregla en otro lugar, asi que cada
-// uno tiene el suyo. BoardStart.h sigue existiendo e incluye los tres, para quien
-// quiera el arranque entero sin elegir.
+// Parte de BoardStart, que reúne tres trabajos: el reloj, el ADC y el bus. Cada uno
+// falla de manera distinta y se arregla en otro lugar, así que cada uno tiene su
+// header. BoardStart.h incluye los tres, para quien quiera el arranque entero sin
+// elegir.
 
 namespace board
 {
@@ -39,14 +39,13 @@ inline uint16_t adc_once(uint8_t admux)
     return valor;
 }
 
-// Deja el ADC midiendo contra Vcc de verdad, en las dos placas del banco.
+// Deja el ADC midiendo efectivamente contra Vcc, en las dos placas del banco.
 //
 // En el LGT8F328P los bits REFS del ADMUX NO eligen la referencia. La eligen DACON y
-// el bit REFS2 de ADCSRD, y REFS queda de resabio porque el core lgt8fx lo escribe
-// igual después de haber configurado los otros. Un sketch que escriba sólo REFS no
-// elige nada en esa placa: la referencia queda en lo que haya quedado de antes, y
-// eso es lo que explicaba que la misma lectura diera números distintos en corridas
-// distintas.
+// el bit REFS2 de ADCSRD, y REFS queda como un vestigio del ATmega: el core lgt8fx
+// lo escribe igual después de haber configurado los otros. Un sketch que escriba sólo
+// REFS no elige nada en esa placa: la referencia queda en lo que haya quedado de
+// antes, y la misma lectura puede dar números distintos en corridas distintas.
 //
 // Las dos placas corren el mismo binario y el core es el del ATmega, así que estos
 // registros no existen por nombre y van por dirección. Sólo se los toca cuando la
@@ -77,7 +76,7 @@ inline void adc_select_vcc(bool doce_bits)
 // el bandgap 1,0 o 1,2 V. Un ADC de 10 bits satura en 1023 y no puede devolver más,
 // de manera que cualquier cosa por encima de 1023 prueba que hay más de 10 bits.
 //
-// OJO que ese razonamiento vale en el ATmega y no en el clon. Ahí los bits REFS no
+// Atención: ese razonamiento vale en el ATmega y no en el clon. Ahí los bits REFS no
 // eligen la referencia --ver adc_select_vcc()-- así que no hay ninguna
 // garantía de que entrada y referencia sean la misma tensión, y la sonda puede
 // devolver cualquier cosa. Lo que contesta bien en esa placa es el respaldo: el
@@ -100,21 +99,21 @@ inline uint16_t adc_full_scale()
 
 // El bandgap medido contra AVcc, en cuentas. Es la mitad de la calibración de la
 // referencia: da la razón entre las dos tensiones, y la otra mitad --cuánto vale
-// una de las dos en volts-- hay que medirla una vez con un tester, porque acá
+// una de las dos en volts-- hay que medirla una vez con un multímetro, porque acá
 // adentro no hay ninguna tensión conocida contra la cual calibrar.
 //
 // Con AVcc medido, la referencia interna vale AVcc * cuentas / fondo de escala. El error de ganancia que corrige no es
 // chico: el bandgap está especificado entre 1,0 y 1,2 V, o sea +/-10 % de chip a
 // chip, y va derecho a los miliamperes que se informan.
 //
-// En el clon el número NO significa eso, y conviene decirlo con todas las letras
-// en lugar de dejar una cuenta que parece una calibración. Los bits REFS del
+// En el clon el número NO significa eso, y conviene aclararlo explícitamente en
+// lugar de dejar una cuenta que parece una calibración. Los bits REFS del
 // ADMUX son los del ATmega y el LGT8F328P tiene su propio juego de referencias
 // internas --1,024, 2,048 y 4,096 V--, así que esto mide una contra otra y no un
 // bandgap contra AVcc. Medido en este banco: 1027 cuentas de 4096, o sea 0,2507,
 // que es 1,024/4,096 con cuatro decimales de acuerdo. El valor además depende de
 // con qué referencia venía trabajando el ADC: el mismo código, en un sketch que
-// arranca de otra manera, da 2585. Es un dato curioso y no una calibración.
+// arranca de otra manera, da 2585. No sirve como calibración.
 //
 // La referencia del clon se resuelve con el core lgt8fx, que la declara por
 // nombre (INTERNAL1V024, INTERNAL2V048, INTERNAL4V096) en lugar de dejarla

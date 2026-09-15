@@ -4,7 +4,7 @@
 // El AS5600 suprime el autoincremento de su puntero de direcciones en las
 // lecturas de los registros ANGLE, RAW ANGLE y MAGNITUDE (hoja de datos [v1-06]
 // 2018-Jun-20, página 13), así que mientras el puntero está estacionado en RAW
-// ANGLE cada muestra es una lectura pelada de dos bytes, sin escritura de
+// ANGLE cada muestra es una lectura simple de dos bytes, sin escritura de
 // registro:
 //   START + SLA+R + alto + bajo + STOP  ~= 90 us a 400 kHz.
 // Eso entra con holgura en un presupuesto de 200 us (5 kHz); recargar el puntero
@@ -43,8 +43,8 @@ class AS5600
     public:
 
     // El mapa de registros vive en AS5600Regs.h, porque la puesta en marcha lo
-    // necesita y habla por Wire en lugar de por este driver. Aca se reexporta con
-    // los mismos nombres de siempre, asi que quien use el driver no se entera.
+    // necesita y habla por Wire en lugar de por este driver. Acá se reexporta con
+    // nombres propios del driver, así que quien lo use no necesita incluir nada más.
     static const uint8_t DEVICE_ADDRESS  = as5600::DEVICE_ADDRESS;
     static const uint8_t REG_CONF_H      = as5600::REG_CONF_H;
     static const uint8_t REG_STATUS      = as5600::REG_STATUS;
@@ -58,9 +58,9 @@ class AS5600
     static const uint8_t SF_2X  = as5600::SF_2X;
 
     // Lo más largo que pide una lectura de mantenimiento. Dos bytes son el CONF
-    // o el MAGNITUDE, y a 400 kHz entran en un período de muestreo de 200 us;
-    // tres ya no, y el tick siguiente encuentra el bus ocupado y cuenta un
-    // desborde. Quien necesite más registros que lea de a poco.
+    // o el MAGNITUDE. Una lectura con dirección de registro ya le cuesta dos
+    // muestras al lazo (ver do_transfer()), y una más larga ocuparía el bus
+    // todavía más tiempo. Quien necesite más registros que lea de a poco.
     static const uint8_t AUX_MAX = 2;
 
     static const uint8_t STATUS_MH = as5600::STATUS_MH;
@@ -69,11 +69,11 @@ class AS5600
 
     // Fallas de transferencia seguidas a partir de las cuales se da el sensor
     // por desconectado. Treinta y dos a 5 kHz son 6,4 ms: lo bastante como para
-    // no confundir un chispazo del bus con una desconexión.
+    // no confundir una falla transitoria del bus con una desconexión.
     static const uint8_t MISSING_AFTER = 32;
 
-    // Dado por ausente, una de cada RETRY_SAMPLES muestras vuelve a intentar de
-    // verdad. A 5 kHz son dos sondeos por segundo, que alcanzan para que el
+    // Dado por ausente, una de cada RETRY_SAMPLES muestras vuelve a intentar
+    // una transferencia. A 5 kHz son dos sondeos por segundo, que alcanzan para que el
     // sensor se detecte solo al reconectarlo y no le cuestan nada al lazo.
     static const uint16_t RETRY_SAMPLES = 2500;
 
@@ -95,12 +95,11 @@ class AS5600
             // La transferencia anterior no terminó. Si era una muestra, el bus no
             // está llegando y eso es un desborde. Si era una lectura de
             // mantenimiento, no: una lectura con dirección de registro escribe el
-            // puntero, hace un restart y recién ahí lee, y eso no entra en un
-            // período de 200 us por más corta que sea. La muestra se pierde igual
-            // --dos de las 5000 del segundo-- pero contarla como desborde de bus
-            // hacía que la puesta en marcha informara una falla de bus en un
-            // equipo sano, y una verificación que grita en falso enseña a
-            // ignorarla.
+            // puntero, hace un restart y recién ahí lee, y puede no terminar
+            // antes del tick siguiente. La muestra se pierde igual --en total dos
+            // de las 5000 del segundo-- pero es un costo previsto de la lectura, y
+            // contarlo como desborde haría que la puesta en marcha informara
+            // falsas fallas de bus en un equipo sano.
             if (!m_aux_inflight)
             {
                 m_overruns++;
@@ -108,8 +107,8 @@ class AS5600
             return;
         }
 
-        // Con el sensor desconectado cada intento falla, y a 5 kHz esa tormenta
-        // de errores le come al lazo de control casi la mitad de sus períodos:
+        // Con el sensor desconectado cada intento falla, y a 5 kHz esa sucesión
+        // de errores le quita al lazo de control casi la mitad de sus períodos:
         // el bus y la ISR de TWI se quedan con el tiempo que el lazo necesita.
         // Una vez dado por ausente se lo sondea de a ratos, así el lazo recupera
         // su período y el sensor se sigue detectando solo si vuelve.
@@ -218,8 +217,8 @@ class AS5600
     // Escribe registros contiguos. A diferencia de las lecturas, esto NO pasa por
     // el lazo de muestreo: nI2C encola la escritura y la completa su propia ISR,
     // pero encolar reserva memoria, y hacer malloc adentro de una ISR de
-    // temporizador es exactamente la clase de cosa que anda mil veces y falla la
-    // que importa. Así que quien llama tiene que parar el muestreador primero;
+    // temporizador puede fallar de forma esporádica y difícil de reproducir. Así
+    // que quien llama tiene que parar el muestreador primero;
     // ver busy(). Configurar el sensor pasa entre corridas, no dentro de una.
     //
     // El puntero de direcciones queda donde lo deje la escritura, así que la

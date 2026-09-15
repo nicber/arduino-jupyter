@@ -6,11 +6,11 @@
 // comunes, y eso es lo que permite apagar el puente entero con una sola
 // escritura. Ver write().
 //
-// Sirve igual para el actuador más pobre, un transistor a masa con su diodo de
+// Sirve igual para el actuador más simple, un transistor a masa con su diodo de
 // rueda libre gobernado desde ENA: IN1 e IN2 no van a ningún lado, y un comando
 // negativo empujaría para el mismo lado que uno positivo. Para eso está `bidir`:
 // en cero, un comando negativo se recorta a cero y `u` informa ese cero, que es lo
-// que de verdad salió. Qué actuador hay no lo puede averiguar el puente; lo dice
+// que efectivamente salió. Qué actuador hay no lo puede averiguar el puente; lo dice
 // quien arma el banco.
 //
 // El pin de ENA no es una preferencia: este código habla con OC1A del Timer1
@@ -19,9 +19,9 @@
 // Ena tiene que ser el pin de OC1A --el 9 en un UNO-- y mudarlo al 10 es cambiar
 // OCR1A por OCR1B y COM1A1 por COM1B1 acá adentro. IN1 e IN2 van a donde sea.
 //
-// Los pines son parámetros de plantilla y no argumentos, para que digitalWrite()
-// los vea como constantes y el compilador no cargue una tabla en tiempo de
-// ejecución para resolverlos.
+// Los pines son parámetros de plantilla y no argumentos: quedan fijados en
+// tiempo de compilación, cada puente es un tipo con sus pines, y el objeto no
+// guarda ningún número de pin en RAM.
 
 #ifndef ACTUATOR_HBRIDGE_H
 #define ACTUATOR_HBRIDGE_H
@@ -79,12 +79,12 @@ class HBridge
         digitalWrite(In2, LOW);
     }
 
-    // Cambia el TOP con el puente andando, y devuelve el que quedó puesto.
+    // Cambia el TOP con el puente en marcha, y devuelve el que quedó puesto.
     //
     // ICR1 no está amortiguado en este modo, así que escribirlo con el contador ya
     // pasado del TOP nuevo cuesta un período largo hasta que la cuenta dé la vuelta
     // entera; rearrancar el temporizador desde cero lo evita. Pero eso interrumpe
-    // el PWM, así que sólo se hace si el TOP de verdad cambió.
+    // el PWM, así que sólo se hace si el TOP efectivamente cambió.
     Top set_top(Top top)
     {
         if (top < 255)

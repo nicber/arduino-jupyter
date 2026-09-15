@@ -7,9 +7,10 @@
 // redondea el pico de un arranque. Con una ventana corta --para mirar un
 // transitorio-- los tonos quedan, y esto los saca.
 //
-// La red no cae justo en 50 Hz vista desde la placa: el cristal del clon adelanta un
-// 0,6 % --las filas salen a 503 Hz y no a 500--, así que se ve en ~49,7 Hz, y además
-// se mueve unas decenas de mHz. Un notch angosto en 50 Hz deja pasar buena parte de
+// La red no cae justo en 50 Hz vista desde la placa: el clon no tiene cristal y su
+// reloj RC interno adelanta (ver BoardStart/BoardClock.h). Con las filas medidas a
+// 503 Hz y no a 500, un 0,6 %, la red se ve en ~49,7 Hz, y además se mueve unas
+// decenas de mHz. Un notch angosto en 50 Hz deja pasar buena parte de
 // eso. En lugar de medir la red y sintonizar el notch, cada armónico k tiene dos
 // notch en serie, en k · 49,5 y k · 50,5 Hz: entre los dos cubren la banda de
 // ±0,5 Hz alrededor de 50 (±k · 0,5 alrededor de cada armónico) con una atenuación

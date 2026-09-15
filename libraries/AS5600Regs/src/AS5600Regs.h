@@ -5,18 +5,18 @@
 // ISR, y la puesta en marcha, que habla por Wire y bloquea a propósito porque no
 // tiene ningún plazo que cumplir y quiere el camino más simple posible.
 //
-// Estaba declarado dos veces, y ésa es la clase de duplicación que muerde callada:
-// una dirección corregida en un lado y no en el otro no falla al compilar.
+// Se declara una sola vez para evitar duplicaciones: una dirección corregida en una
+// copia y no en la otra no falla al compilar.
 //
 // Y está en una librería propia, sin ninguna dependencia, porque el build de Arduino
 // compila entera cualquier librería cuyo header se incluya: dejarlo adentro del
-// driver asincrónico hacía que la puesta en marcha arrastrara ese bus, y su vector
-// de interrupción de TWI choca con el de Wire. El error que sale de ahí es
-// «multiple definition of __vector_24» y no dice nada de esto.
+// driver asincrónico haría que la puesta en marcha arrastrara ese bus, y su vector
+// de interrupción de TWI choca con el de Wire. El error que resulta es
+// «multiple definition of __vector_24», que no indica la causa.
 //
 // Es un namespace y no una clase base. No hay nada que heredar acá --son números de
 // la hoja de datos-- y el driver los reexporta con sus propios nombres, así que
-// quien use el driver los sigue encontrando donde los encontraba.
+// quien use el driver los encuentra en la clase AS5600.
 
 #ifndef AS5600ASYNC_AS5600REGS_H
 #define AS5600ASYNC_AS5600REGS_H

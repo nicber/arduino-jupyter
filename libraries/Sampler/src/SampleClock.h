@@ -10,7 +10,7 @@
 // muestrear y le pregunta a on_isr() si además vence un período de control.
 //
 // Se queda con el Timer2, así que analogWrite() en los pines 3 y 11 y tone()
-// dejan de funcionar. El Timer0 queda intacto: millis() y micros() andan como
+// dejan de funcionar. El Timer0 queda intacto: millis() y micros() funcionan como
 // siempre, y este módulo los necesita.
 
 #ifndef SAMPLER_SAMPLECLOCK_H
@@ -179,7 +179,7 @@ class SampleClock
     volatile uint16_t m_missed_isr;
     volatile Divider  m_divider;
 
-    uint8_t m_count;      // muestras desde el último período: era un static de la ISR
+    uint8_t m_count;      // muestras desde el último período de control
     bool    m_running;
 };
 

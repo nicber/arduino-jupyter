@@ -1,7 +1,7 @@
-// Lo que hay que saber sobre un sensor para creerle lo que dice: si contesta, si
-// el bus lo sigue, y qué opina él mismo de su montaje.
+// Lo que hay que saber sobre un sensor para validar sus lecturas: si contesta, si
+// el bus lo sigue, y qué informa él mismo de su montaje.
 //
-// Recibe números por update() y no le pregunta nada a nadie, así que no sabe qué
+// Recibe números por accumulate() y no le pregunta nada a nadie, así que no sabe qué
 // sensor es ni por qué bus habla. Lo que sí sabe son las dos formas que tiene un
 // dato de salud, que no se tratan igual:
 //
@@ -98,11 +98,9 @@ class SensorHealth
 
     // Qué registro toca leer, de a uno por refresco.
     //
-    // De a uno y no todos juntos porque una lectura larga no entra en un período de
-    // muestreo, así que el tick siguiente encuentra el bus ocupado y se cuenta un
-    // desborde. Medido en un banco: 4,5 desbordes por segundo. Lo caro no es la
-    // muestra perdida, es que la puesta en marcha informaba una falla de bus en un
-    // equipo sano, y una verificación que grita en falso enseña a ignorarla.
+    // De a uno y no todos juntos porque cada lectura de mantenimiento ocupa el bus
+    // en lugar de las muestras, y cuanto más larga es, más tiempo lo ocupa: el
+    // driver acepta a lo sumo dos bytes por pedido (ver AS5600::AUX_MAX).
     uint8_t turn(void) const { return m_turn; }
 
     // Cierra un refresco y pasa el turno. Cuando la ronda se completa, el ritmo se
@@ -122,10 +120,10 @@ class SensorHealth
     static const uint16_t FAST_MS = 50;    // la primera vuelta, para que no se lea un cero
     static const uint16_t SLOW_MS = 500;   // después, el ritmo de algo que se mira entre corridas
 
-    uint16_t m_last_overruns;   // eran dos static de collect_sensor_health()
+    uint16_t m_last_overruns;   // la lectura anterior de los contadores del sensor
     uint16_t m_last_errors;
 
-    uint8_t  m_turn;            // eran tres static de refresh_magnet_status()
+    uint8_t  m_turn;            // el turno y el ritmo del diagnóstico de montaje
     uint32_t m_last_ms;
     bool     m_complete;
 };
