@@ -385,6 +385,14 @@ class Bench:
                 self.cur_div = int(guardado['cur_div'])
                 say(f'  corriente contra la alimentacion del sensor: divisor de A1 con relacion '
                     f'{self.cur_div / 10000:.4f} ({Path(cableado).name})')
+                # Un divisor suelto no da error: A1 queda saturado o en cero y la
+                # corriente sale de un cociente sin sentido, con un cero corrido.
+                time.sleep(0.2)
+                a1 = int(self.cur_a1)
+                if not 0.05 * (_ADC_FULL + 1) < a1 < 0.95 * (_ADC_FULL + 1):
+                    say(f'  OJO: A1 lee {a1} cuentas, fuera de lo que da un divisor de 5 V: esta '
+                        f'suelto o mal conectado, y la corriente no es valida. Revisar las dos '
+                        f'resistencias del divisor.')
             else:
                 say('  corriente contra AVCC: no hay divisor de A1 declarado. Si la placa '
                     'funciona a 3,3 V, poner el divisor de 5V a A1 y declararlo con '

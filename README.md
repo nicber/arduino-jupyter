@@ -61,8 +61,8 @@ muestra en clase.
 | AS5600 SDA | A4 | |
 | AS5600 SCL | A5 | |
 | AS5600 VDD / GND | 5V / GND | |
-| Salida del ACS712 | A0 | opcional |
-| Divisor de 5V a A1: 5,1 kΩ de 5V a A1, 2 kΩ de A1 a GND | A1 | con el ACS712, si la placa funciona a 3,3 V |
+| Salida del ACS712, con el sensor del lado de +5 V del motor | A0 | opcional |
+| Divisor de 5V a A1: 5,1 kΩ de 5V a A1, 2 kΩ de A1 a GND, y 100 nF de A1 a GND | A1 | con el ACS712, si la placa funciona a 3,3 V |
 | `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1050 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
@@ -100,6 +100,14 @@ negativa, es de qué lado están los cables y de qué lado miran los sensores. S
 pone a la placa (`ang_inv`, `cur_inv`) y los guarda en `notebooks/cableado.json`,
 de donde los carga cada conexión; desde ahí un comando positivo sube el ángulo en
 cualquier banco.
+
+**Dónde va el sensor: del lado de +5 V.** El ACS712 en serie entre +5 V de la fuente
+del motor y el motor, con el diodo de rueda libre abarcando sensor y motor (cátodo a
++5 V, antes del sensor; ánodo en el colector): así mide la corriente del motor,
+también la que recircula por el diodo. Medido en el banco, con el sensor del lado del
+colector la lectura se corría mientras el eje giraba y el régimen variaba de +2 a
++55 mA entre corridas; del lado de +5 V, tres escalones seguidos dan el mismo régimen
+a ±1 mA.
 
 **La corriente se mide contra la alimentación del sensor.** Un ACS712 es bipolar y
 ratiométrico: reposa en la mitad de su alimentación, los 5 V del USB, y su
@@ -146,13 +154,17 @@ y la ve en ~49,7 Hz-- sin tener que medirla: al menos 36 dB de atenuación en to
 banda. Es el único filtro de la placa, y está porque lo que saca no se puede
 sacar de filas que ya lo traen plegado.
 
-**Lo que queda de la corriente.** La escala en mA sigue sin verificar con un tester:
-ver la nota al pie de la sección 4 de `hardware.ipynb`. Con el motor andando, el
-cociente da una corriente de régimen de ~20 mA a cualquier velocidad, y la lectura
-mientras el eje gira por inercia queda cerca de cero; pero de una corrida a otra el
-régimen varió entre +2 y +55 mA, con un corrimiento que aparece mientras el eje gira y
-se va cuando para. Lo más probable es la vibración sobre los contactos del divisor en la
-protoboard: conviene soldarlo, con el capacitor de 100 nF.
+**Cómo quedó la corriente**, medido en el banco con todo lo de arriba y el motor libre:
+un pico de arranque de ~220 mA, ~22 mA en régimen a u = 150 repetibles a ±1 mA, cerca
+de cero mientras el eje gira por inercia, y 5 mA de ruido con 10 filas. Con el cero
+medido una sola vez, a lo largo de cuatro minutos con capturas, escalones y reposo, la
+lectura en reposo se movió unos ±5 mA, y hasta ~10 mA alrededor de los escalones: un
+`zero_current()` antes de cada ensayo sigue valiendo la pena. La escala en mA sigue sin
+verificar con un tester: ver la nota al pie de la sección 4 de `hardware.ipynb`.
+
+**Un divisor suelto no da error por sí solo**: A1 queda saturado o en cero y la
+corriente sale corrida cientos de mA. `sync_board()` avisa si A1 lee fuera de lo que
+puede dar el divisor; soldarlo, o al menos revisarlo cuando se toca la protoboard.
 
 Un número que conviene verificar una vez por banco, en el sketch:
 `SENSE_MV_PER_A`, la sensibilidad del sensor, que es lo único que convierte cuentas

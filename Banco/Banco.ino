@@ -4,8 +4,9 @@
 // Hardware:
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
-// Medición de corriente (opcional): ACS712 en A0, y en A1 los 5 V que lo alimentan
-// por un divisor resistivo (5,1 k arriba, 2 k abajo), si la placa no funciona a 5 V
+// Medición de corriente (opcional): ACS712 en A0, en serie entre +5 V y el motor con
+// el diodo abarcando sensor y motor, y en A1 los 5 V que lo alimentan por un divisor
+// resistivo (5,1 k arriba, 2 k abajo, 100 nF), si la placa no funciona a 5 V
 // Actuador: ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
 // banco un BD139, NPN, con 220 Ω en la base).
