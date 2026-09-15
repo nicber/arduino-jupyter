@@ -44,9 +44,11 @@ _CATALOGO = {
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
     'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
     'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
-    'cur_notch':   ('perilla', 'armónicos',   'notch de la red sobre la corriente: 0 apagado, 1 = 50 Hz, 2 = +100, 3 = +150 (por omisión); dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
+    'cur_notch':   ('perilla', 'máscara',     'notch de la red sobre la corriente, cada uno por separado: 1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 ninguno (por omisión); dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
     'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
-    'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y el PWM; 1 = sólo la fila'),
+    'cur_nyq':     ('perilla', '0, 1',        'notch en el Nyquist de las filas (250 Hz a 500 Hz), donde cae lo que queda del PWM: 1 prendido (por omisión), 0 apagado'),
+    'cur_ma':      ('perilla', '0, 1',        'media de 4 ticks de 5 kHz, un período del PWM, antes de sumar la fila: 1 prendida (por omisión), 0 apagada'),
+    'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y lo que queda del PWM; 1 = sólo la fila'),
 
     # El reloj del muestreo.
     'loop_div':    ('perilla', 'muestras',    'muestras de 5 kHz por fila: 10 son 500 Hz, 5 son 1 kHz'),

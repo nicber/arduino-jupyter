@@ -12,19 +12,28 @@
 // 11 ms-- y el promedio de la fila da la media sin sesgo, a cambio de un error de
 // patrón chico (≤ 13 mA medidos) que se promedia en las filas siguientes.
 //
-// El reparto: on_conversion() va en la interrupción del ADC y suma; close_row() va
-// en la del muestreador, en el tick de la fila, y cierra la ventana; row() lo lee
-// el lazo cuando quiera. Así la ventana de cada fila queda pegada a su tick, igual
-// que el ángulo.
+// El reparto: on_conversion() va en la interrupción del ADC y suma; close_tick() va
+// en la del muestreador, en cada tick de 5 kHz, y close_row() en el tick de la fila,
+// que cierra la ventana; row() lo lee el lazo cuando quiera. Así la ventana de cada
+// fila queda pegada a su tick, igual que el ángulo.
 //
-// Sin filtro antes de sumar la fila, a propósito. El ruido de la corriente es blanco a
-// ~0,9 mA/√Hz desde la entrada hasta varios kHz, y para ruido blanco el promedio de la
-// fila deja la misma densidad en 0-250 Hz que un antialiasing ideal. Simulado sobre
-// 11 s de conversiones crudas: con un FIR de 1001 coeficientes cortando en 200 Hz, el
-// ruido en 55-200 Hz baja de 16,4 a 16,0 mA; dos polos por corrimiento suben el piso
-// por debajo de 45 Hz. Los tonos que sí se pliegan caen en ceros: el PWM de 1050 Hz en
-// 50 Hz y sus armónicos, donde anulan la ventana de 20 ms y el notch, y el muestreo
-// del AS5600, 5 kHz, en continua, que absorbe el cero.
+// El ruido de la corriente es blanco a ~0,9 mA/√Hz desde la entrada hasta varios kHz,
+// y para ruido blanco el promedio de la fila deja la misma densidad en 0-250 Hz que un
+// antialiasing ideal. Simulado sobre 11 s de conversiones crudas: con un FIR de 1001
+// coeficientes cortando en 200 Hz, el ruido en 55-200 Hz baja de 16,4 a 16,0 mA; dos
+// polos por corrimiento suben el piso por debajo de 45 Hz. Lo que sí hay que sacar
+// antes de decimar son los armónicos del PWM, que no son ruido: con el PWM a 1250 Hz,
+// 4 ticks son un período justo, y `ma` pasa cada tick por una media de los últimos 4,
+// con ceros en 1250, 2500, 3750... Hz. La fila de 10 ticks queda así con una ventana
+// trapezoidal de 13 (2,6 ms, 0,3 ms más de retardo). Lo que se pliega igual cae en
+// 250 Hz, el Nyquist de las filas, y en continua el muestreo del AS5600, 5 kHz, que
+// absorbe el cero.
+//
+// Lo que la media no puede sacar: son unas 2 conversiones de A0 por tick, no un
+// promedio continuo, y los armónicos del PWM también se pliegan contra ese peine. Medido
+// con el motor en régimen: la corriente media depende de cómo quedaron las conversiones
+// contra el PWM, que cambia al arrancar una captura, y salta entre dos niveles
+// separados 13 a 25 mA de una captura corta a otra, con la misma velocidad del eje.
 //
 // Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
@@ -73,9 +82,18 @@ class RowAdc
     // Una cuenta publicada, en uV en la entrada: 5 * 1024 mV / 4096.
     static const uint16_t UV_PER_COUNT = 1250;
 
+    // 1 pasa cada tick por una media de los últimos 4 ticks antes de sumarlo a la fila;
+    // 0 suma cada tick tal cual. Público porque la tabla del enlace toma su dirección.
+    uint8_t ma;
+
     constexpr RowAdc()
-        : m_sum()
+        : ma(0)
+        , m_sum()
         , m_n()
+        , m_hist_sum()
+        , m_hist_n()
+        , m_acc_sum()
+        , m_acc_n()
         , m_row_sum()
         , m_row_n()
         , m_channel(0)
@@ -125,15 +143,49 @@ class RowAdc
         m_n[k]++;
     }
 
-    // Llamar desde la ISR del muestreador, en el tick de la fila.
+    // Llamar desde la ISR del muestreador en cada tick, antes de close_row(). Cierra
+    // lo del tick y lo acumula en la fila: tal cual, o como la suma de los últimos 4
+    // ticks (una media móvil de 4, con sus conversiones contadas en n, así que el
+    // promedio sigue siendo suma sobre n).
+    void close_tick(void)
+    {
+        for (uint8_t k = 0; k < 2; k++)
+        {
+            const uint32_t s = m_sum[k];
+            const uint16_t n = m_n[k];
+            m_sum[k] = 0;
+            m_n[k]   = 0;
+
+            if (ma)
+            {
+                m_acc_sum[k] += s + m_hist_sum[k][0] + m_hist_sum[k][1] + m_hist_sum[k][2];
+                m_acc_n[k]   += (uint16_t)(n + m_hist_n[k][0] + m_hist_n[k][1] + m_hist_n[k][2]);
+            }
+            else
+            {
+                m_acc_sum[k] += s;
+                m_acc_n[k]   += n;
+            }
+
+            m_hist_sum[k][2] = m_hist_sum[k][1];
+            m_hist_sum[k][1] = m_hist_sum[k][0];
+            m_hist_sum[k][0] = s;
+            m_hist_n[k][2]   = m_hist_n[k][1];
+            m_hist_n[k][1]   = m_hist_n[k][0];
+            m_hist_n[k][0]   = n;
+        }
+    }
+
+    // Llamar desde la ISR del muestreador, en el tick de la fila, después de
+    // close_tick().
     void close_row(void)
     {
         for (uint8_t k = 0; k < 2; k++)
         {
-            m_row_sum[k] = m_sum[k];
-            m_row_n[k]   = m_n[k];
-            m_sum[k]     = 0;
-            m_n[k]       = 0;
+            m_row_sum[k] = m_acc_sum[k];
+            m_row_n[k]   = m_acc_n[k];
+            m_acc_sum[k] = 0;
+            m_acc_n[k]   = 0;
         }
     }
 
@@ -166,8 +218,12 @@ class RowAdc
                      : (uint8_t)(_BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0));        // /128
     }
 
-    volatile uint32_t m_sum[2];
+    volatile uint32_t m_sum[2];         // lo del tick en curso
     volatile uint16_t m_n[2];
+    uint32_t          m_hist_sum[2][3]; // los tres ticks anteriores, para la media de 4
+    uint16_t          m_hist_n[2][3];
+    uint32_t          m_acc_sum[2];     // lo de la fila en curso
+    uint16_t          m_acc_n[2];
     volatile uint32_t m_row_sum[2];
     volatile uint16_t m_row_n[2];
     volatile uint8_t  m_channel;    // de qué canal es la conversión en curso

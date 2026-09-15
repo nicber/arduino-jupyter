@@ -44,7 +44,7 @@ ERROR_SENSOR = {1: (6.0, 0.7), 2: (2.5, -2.0)}
 # de la otra. Un notebook que la calibre como si fuera el sensor está mal.
 RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 
-# El motor y su actuador. Un transistor a masa con diodo de rueda libre, a 1050 Hz,
+# El motor y su actuador. Un transistor a masa con diodo de rueda libre, a 1250 Hz,
 # resuelto período a período con la solución exacta del circuito RL: mientras el
 # transistor conduce la armadura ve Vs, cuando se abre la corriente se descarga
 # por el diodo contra Vd, y en ninguno de los dos tramos puede invertirse. Con
@@ -69,7 +69,7 @@ MOTOR = dict(
     Ts=7.7e-5,      # N·m, lo que hace falta para despegar
     B=2.33e-7,      # N·m/(rad/s)
 )
-PWM_T = 1 / 1050    # s, como PWM_TOP en Banco.ino
+PWM_T = 1 / 1250    # s, como PWM_TOP en Banco.ino
 
 # La placa promedia todas las conversiones de la ventana de `cur_filas` filas, con
 # el ADC libre, y eso da la media de la corriente sin sesgo de fase. Acá se modela
@@ -133,8 +133,10 @@ class BancoSimulado:
         self.cur_filas = 10
         self.cur_div = 0                # sin divisor: el banco simulado no tiene caída
         self.cur_a1 = 0
-        self.cur_notch = 3              # prendido como en la placa; el simulado no tiene red
+        self.cur_notch = 0              # apagado, como en la placa; el simulado no tiene red
         self.cur_notchr = 950
+        self.cur_nyq = 1                # prendidos como en la placa; el simulado no los aplica
+        self.cur_ma = 1
         self.cur_zero = 2048
         self.loop_div = 10
         self.dec = 1

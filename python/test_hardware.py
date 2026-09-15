@@ -96,12 +96,18 @@ def main():
     # ------------------------------------------------ el promedio de la corriente
     # Con el ADC libre, más filas en la ventana tienen que bajar el ruido como la
     # raíz de las conversiones: de 1 a 10 filas, unas tres veces. Y cur_filas se
-    # recorta a 1..32.
+    # recorta a 1..32. Sin la media de 4 ticks ni el notch de 250 Hz, que ya bajan el
+    # ruido de cada fila y dejan poco para promediar: lo que se prueba es la ventana.
     dev.rest()
+    filtros = {n: dev.get(n) for n in ('cur_ma', 'cur_nyq') if n in dev.link._params}
+    for n in filtros:
+        dev.set(n, 0)
     dev.cur_filas = 1
     r1 = dev.capture(0.5, warn=False)['i'].std()
     dev.cur_filas = 10
     r10 = dev.capture(0.5, warn=False)['i'].std()
+    for n, v in filtros.items():
+        dev.set(n, v)
     check('10 filas de promedio bajan el ruido de la corriente', r10 < r1 / 2,
           f'{r1:.1f} mA con 1 fila, {r10:.1f} mA con 10')
     dev.cur_filas = 100

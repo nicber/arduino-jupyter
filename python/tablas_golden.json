@@ -96,6 +96,16 @@
       "frac": "0"
     },
     {
+      "nombre": "cur_nyq",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
+      "nombre": "cur_ma",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
       "nombre": "loop_div",
       "tipo": "CTRL_U8",
       "frac": "0"

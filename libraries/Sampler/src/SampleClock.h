@@ -10,8 +10,9 @@
 // muestrear y le pregunta a on_isr() si además vence un período de control.
 //
 // Se queda con el Timer2, así que analogWrite() en los pines 3 y 11 y tone()
-// dejan de funcionar. El Timer0 queda intacto: millis() y micros() funcionan como
-// siempre, y este módulo los necesita.
+// dejan de funcionar. El Timer0 queda para millis() y micros(), y este módulo usa
+// micros() para `late`. Con board::millis_1000hz() micros() corre un 2,4 % rápido y
+// salta 28 us en cada ms, así que `late` es aproximado en esa medida.
 
 #ifndef SAMPLER_SAMPLECLOCK_H
 #define SAMPLER_SAMPLECLOCK_H

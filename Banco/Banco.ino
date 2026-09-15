@@ -7,7 +7,7 @@
 // Medición de corriente (opcional): ACS712 en A0, en serie entre +5 V y el motor con
 // el diodo abarcando sensor y motor, y en A1 los 5 V que lo alimentan por un divisor
 // resistivo (5,1 k arriba, 2 k abajo, 100 nF), si la placa no funciona a 5 V
-// Actuador: ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
+// Actuador: ENA -> 9 (PWM, 1250 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
 // banco un BD139, NPN, con 220 Ω en la base).
 //
@@ -15,8 +15,10 @@
 // ningún filtro. Derivar, filtrar y ajustar se hace en la computadora. La corriente
 // es la única excepción: cada fila publica el promedio de las conversiones de las
 // últimas `cur_filas` filas --lo que hay que sacarle, el rizado del PWM y la red, ya
-// no se puede sacar de filas de 2 ms, que lo traen plegado--, y el notch de la red
-// (`cur_notch`, prendido por omisión) saca lo que queda con una ventana corta. Por
+// no se puede sacar de filas de 2 ms, que lo traen plegado--. Antes de sumar la fila,
+// cada tick de 5 kHz pasa por una media de 4 ticks, un período del PWM (`cur_ma`), y
+// después de promediar, un notch en 250 Hz saca lo que el PWM deja en el Nyquist de
+// las filas (`cur_nyq`). El notch de la red (`cur_notch`) arranca apagado. Por
 // qué el hardware es como es --actuador, PWM, medición de corriente-- está explicado
 // una sola vez, en notebooks/hardware.ipynb; acá quedan sólo las decisiones de
 // implementación.
@@ -71,8 +73,9 @@
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
 // actuador con su propio TOP, así que analogWrite() en los pines 9 y 10 y Servo
 // dejan de servir; y el ADC, que se maneja directamente acá, así que no hay que
-// llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
-// 5 y 6 funcionan como siempre.
+// llamar a analogRead(). El Timer0 sigue llevando millis(), pero a 1000 Hz en lugar
+// de 976,6 Hz, así que millis() queda un 2,4 % rápido y el PWM de los pines 5 y 6 deja
+// de servir (ver BoardStart/BoardClock.h).
 
 #include <util/atomic.h>
 
@@ -108,11 +111,13 @@ static const uint8_t MOTOR_IN1_PIN = 6;     // IN1
 static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 
 // El TOP del Timer1, phase-correct con preescalador 1: f = 16 MHz / (2 * TOP) =
-// 1050 Hz. Por qué ~1 kHz y no 20 kHz, y por qué 1050 y no 1000: hardware.ipynb,
-// sección 2.1. Lo que importa acá: 20 ms de ventana de corriente son 21 períodos
-// justos, así que el rizado que queda se pliega a 50 Hz, donde la ventana tiene un
-// cero. Con 1010 Hz el pliegue caería en 10 Hz, un rizado de ~15 mA en régimen.
-static const uint16_t PWM_TOP = 7619;
+// 1250 Hz. Por qué ~1 kHz y no 20 kHz: hardware.ipynb, sección 2.1. Por qué 1250: son
+// exactamente 4 ticks del muestreador de 5 kHz, que sale del mismo reloj. Una media de
+// 4 ticks tiene ceros en 1250, 2500, 3750... Hz, todos los armónicos del PWM, antes de
+// decimar a las filas (ver Sense/RowAdc.h); lo que queda del PWM cae en 250 Hz, el
+// Nyquist de las filas, donde va un notch (Sense/MainsNotch.h), y en 20 ms, que son
+// 25 períodos justos, la ventana de la corriente lo anula.
+static const uint16_t PWM_TOP = 6400;
 
 // Medición de corriente en A0. Nada de este bloque mueve el motor: sólo fija las
 // unidades que se le informan a la computadora. SENSE_MV_PER_A es lo único que
@@ -187,9 +192,12 @@ static uint8_t g_cur_inv = 0;
 // relación es del cableado de cada banco y la carga la computadora.
 static SupplyRatio g_ratio;
 
-// El notch de la red sobre la corriente, fila por fila. Arranca prendido en 50, 100 y
-// 150 Hz; `cur_notch = 0` lo apaga. Ver Sense/MainsNotch.h.
-static const uint8_t MAINS_HARMONICS = 3;
+// Los notch sobre la corriente, fila por fila. El de 250 Hz (`cur_nyq`) arranca
+// prendido. El de la red arranca apagado: medido con 1 fila, deja una oscilación en el
+// arranque de un escalón de hasta 90 mA con r = 0,95 y de ~50 mA con r = 0,98 o 0,99,
+// y con el divisor en A1 la red ya es de ~1 mA. `cur_notch` lo prende, cada armónico
+// por separado (máscara: 1 = 50, 2 = 100, 4 = 150 Hz). Ver Sense/MainsNotch.h.
+static const uint8_t MAINS_HARMONICS = 0;
 static MainsNotch g_notch;
 
 // Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
@@ -246,6 +254,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_a1",      CTRL_U16, &g_ratio.supply,      0 },
     { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
     { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
+    { "cur_nyq",     CTRL_U8,  &g_notch.nyquist,     0 },
+    { "cur_ma",      CTRL_U8,  &g_adc.ma,            0 },
 
     { "loop_div",    CTRL_U8,  &g_clock.divide,      0 },
     { "loop_late",   CTRL_U16, &g_clock.late,        0 },
@@ -275,6 +285,10 @@ ISR(TIMER2_COMPA_vect)
     const uint16_t samples = Sensor::samples();
     const uint8_t  fresh   = (samples != g_isr_samples);
     g_isr_samples = samples;
+
+    // Lo que el ADC sumó en este tick, con la media de 4 ticks si está prendida. El ADC
+    // no interrumpe esta ISR, así que el borde del tick es éste.
+    g_adc.close_tick();
 
     Sensor::do_transfer();
 
@@ -480,6 +494,9 @@ void setup()
     // al AS5600 sujetando SDA. Ver BoardStart.h.
     board::clock_begin();
 
+    // millis() en fase fija con el muestreador. Ver BoardStart/BoardClock.h.
+    board::millis_1000hz();
+
     const uint16_t adc_full = board::adc_full_scale();
     board::adc_select_vcc(adc_full >= ADC_FULL);
 
@@ -495,6 +512,8 @@ void setup()
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
     g_notch.harmonics = MAINS_HARMONICS;
+    g_notch.nyquist   = 1;
+    g_adc.ma          = 1;
     refresh_tuning();
 
     g_adc.begin(adc_full);

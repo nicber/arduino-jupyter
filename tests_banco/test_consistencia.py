@@ -37,12 +37,12 @@ todo = dict(DOCS, **fuentes)
 # ------------------------------------------------------------------ el PWM
 top = int(re.search(r'PWM_TOP\s*=\s*(\d+)', BANCO).group(1))
 f_pwm = 16e6 / (2 * top)
-check('PWM_TOP da la frecuencia que dice el sketch', abs(f_pwm - 1050) < 1, f'{f_pwm:.1f} Hz')
+check('PWM_TOP da la frecuencia que dice el sketch', abs(f_pwm - 1250) < 1, f'{f_pwm:.1f} Hz')
 
 malas = []
 for nombre, t in todo.items():
     for n, l in enumerate(t.splitlines(), 1):
-        if 'PWM' in l and re.search(r'(?<![\d~])1 kHz', l) and not re.search(r'1050|20 kHz|no 1 kHz|1 kHz justo', l):
+        if 'PWM' in l and re.search(r'(?<![\d~])1 kHz', l) and not re.search(r'1250|20 kHz|no 1 kHz|1 kHz justo', l):
             malas.append(f'{nombre}:{n}: {l.strip()[:90]}')
 check('ninguna línea dice que el PWM va a 1 kHz', not malas, ' | '.join(malas[:4]))
 
@@ -128,7 +128,7 @@ if m:
 else:
     check('AngleTracker.h dice su límite de desenrollado', False)
 check('y Banco desenrolla en la ISR, no en la fila',
-      re.search(r'ISR\(TIMER2_COMPA_vect\)[\s\S]{0,600}g_turns\.update', BANCO) is not None)
+      re.search(r'ISR\(TIMER2_COMPA_vect\)[\s\S]{0,1000}g_turns\.update', BANCO) is not None)
 
 # ------------------------------------------------------------- lo que no va en el zip
 # Las librerías del lazo siguen en el repositorio, para ControlDemo, pero Banco no las

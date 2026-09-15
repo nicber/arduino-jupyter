@@ -1,5 +1,6 @@
 // Notch para la red: 50 Hz y sus primeros armónicos, sobre la corriente fila por
-// fila, sin tener que medir la frecuencia de la red.
+// fila, sin tener que medir la frecuencia de la red. Y otro en el Nyquist de las filas,
+// para lo que el PWM deja ahí; ver `nyquist`.
 //
 // Medido en el banco, en reposo y sin motor: la corriente trae tonos de 67 mA a
 // 50 Hz, 44 mA a 100 Hz y 7,5 mA a 150 Hz, que se meten por la alimentación y la
@@ -48,7 +49,7 @@ class MainsNotch
     public:
 
     static const uint8_t MAX_HARMONICS = 3;
-    static const uint8_t MAX_SECTIONS  = 2 * MAX_HARMONICS;
+    static const uint8_t MAX_SECTIONS  = 2 * MAX_HARMONICS + 1;   // + el del Nyquist
 
     // Los dos notch de cada armónico, en centésimas de Hz.
     static const uint16_t LOW_CHZ  = 4950;
@@ -60,16 +61,35 @@ class MainsNotch
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección. Mover y llamar a apply().
 
-    uint8_t  harmonics;     // 0 apaga; 1 = 50 Hz, 2 = +100, 3 = +150, cada uno con dos notch
+    // Qué armónicos, como máscara: 1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, cada uno con dos
+    // notch; 7 los tres, 0 ninguno.
+    uint8_t  harmonics;
     uint16_t pole_milli;    // r, en milésimas
+
+    // 1 agrega un notch en el Nyquist de las filas: 250 Hz con filas a 500 Hz, donde cae
+    // lo que queda del PWM de 1250 Hz. Medido con una fila y el motor en régimen, ese tono
+    // baja de 1 a 2 mA a 0,1 a 0,2 mA. No es un notch como los de la red: con los polos
+    // en 250 Hz y r = 0,95 el redondeo arrastrado a la muestra siguiente queda debajo de
+    // los polos y se amplifica unas 4000 veces, y en el banco la banda de 235 a 250 Hz
+    // subía siete veces. Acá los ceros son dobles en z = -1 y los polos van en 0,9 del
+    // Nyquist (225 Hz a 500 Hz) con radio NYQ_POLE: sin pico, 0,98 en 150 Hz, 0,83 en
+    // 200 Hz, -3 dB en 210 Hz, 0,36 ms de retardo en continua y el redondeo amplificado
+    // unas 12 veces. Con otro `loop_div` sigue en el Nyquist, aunque el PWM ya no caiga
+    // ahí.
+    uint8_t nyquist;
+
+    static constexpr float NYQ_POLE  = 0.70f;
+    static constexpr float NYQ_ANGLE = 0.90f;   // fracción del Nyquist
 
     constexpr MainsNotch()
         : harmonics(0)
         , pole_milli(950)
+        , nyquist(0)
         , m_active(0)
         , m_fresh(true)
         , m_applied_harmonics(0xFF)
         , m_applied_milli(0)
+        , m_applied_nyquist(0)
         , m_applied_row_hz(0.0f)
         , m_sec()
     {
@@ -84,23 +104,28 @@ class MainsNotch
     // varias operaciones de punto flotante.
     void apply(float row_hz)
     {
-        if (harmonics > MAX_HARMONICS) harmonics = MAX_HARMONICS;
+        harmonics &= (uint8_t)((1 << MAX_HARMONICS) - 1);
         if (pole_milli > 999)          pole_milli = 999;
 
         if (harmonics == m_applied_harmonics && pole_milli == m_applied_milli &&
-            row_hz == m_applied_row_hz)
+            nyquist == m_applied_nyquist && row_hz == m_applied_row_hz)
         {
             return;
         }
         m_applied_harmonics = harmonics;
         m_applied_milli     = pole_milli;
+        m_applied_nyquist   = nyquist;
         m_applied_row_hz    = row_hz;
 
         const float r = pole_milli / 1000.0f;
         m_active = 0;
 
-        for (uint8_t k = 1; k <= harmonics; k++)
+        for (uint8_t k = 1; k <= MAX_HARMONICS; k++)
         {
+            if (!(harmonics & (1 << (k - 1))))
+            {
+                continue;
+            }
             for (uint8_t lado = 0; lado < 2; lado++)
             {
                 const float f0 = (lado ? HIGH_CHZ : LOW_CHZ) / 100.0f * k;
@@ -108,21 +133,13 @@ class MainsNotch
                 {
                     continue;
                 }
-
-                const float c  = cos(2.0f * M_PI * f0 / row_hz);
-                const float a1 = -2.0f * r * c;
-                const float a2 = r * r;
-                const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
-
-                // b1 sale de los otros ya redondeados y no de -2 cos w0 g: así la
-                // continua pasa con ganancia exactamente 1 también en Q12, y el cero
-                // se corre del orden de 0,02 Hz.
-                Section& s = m_sec[m_active++];
-                s.b0 = q12(g);
-                s.a1 = q12(a1);
-                s.a2 = q12(a2);
-                s.b1 = (int16_t)(4096 + s.a1 + s.a2 - 2 * s.b0);
+                add(f0, row_hz, r);
             }
+        }
+
+        if (nyquist)
+        {
+            add_nyquist();
         }
 
         m_fresh = true;
@@ -184,6 +201,38 @@ class MainsNotch
 
     private:
 
+    void add(float f0, float row_hz, float r)
+    {
+        const float c  = cos(2.0f * M_PI * f0 / row_hz);
+        const float a1 = -2.0f * r * c;
+        const float a2 = r * r;
+        const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
+
+        // b1 sale de los otros ya redondeados y no de -2 cos w0 g: así la continua
+        // pasa con ganancia exactamente 1 también en Q12, y el cero se corre del
+        // orden de 0,02 Hz.
+        Section& s = m_sec[m_active++];
+        s.b0 = q12(g);
+        s.a1 = q12(a1);
+        s.a2 = q12(a2);
+        s.b1 = (int16_t)(4096 + s.a1 + s.a2 - 2 * s.b0);
+    }
+
+    // Ceros dobles exactos en z = -1: b = b0 (1, 2, 1). a2 se corre a lo sumo 2 LSB
+    // para que 4096 + a1 + a2 sea múltiplo de 4, y así b0 = (4096 + a1 + a2) / 4 deja la
+    // continua exactamente en 1.
+    void add_nyquist(void)
+    {
+        const float c = cos(M_PI * NYQ_ANGLE);
+        Section& s = m_sec[m_active++];
+        s.a1 = q12(-2.0f * NYQ_POLE * c);
+        s.a2 = q12(NYQ_POLE * NYQ_POLE);
+        int16_t resto = (int16_t)((4096 + s.a1 + s.a2) % 4);
+        s.a2 = (int16_t)(s.a2 - (resto > 2 ? resto - 4 : resto));
+        s.b0 = (int16_t)((4096 + s.a1 + s.a2) / 4);
+        s.b1 = (int16_t)(2 * s.b0);
+    }
+
     struct Section
     {
         int16_t b0, b1, a1, a2;     // Q12; b2 = b0
@@ -207,6 +256,7 @@ class MainsNotch
     bool     m_fresh;
     uint8_t  m_applied_harmonics;   // con qué se calcularon los coeficientes de ahora
     uint16_t m_applied_milli;
+    uint8_t  m_applied_nyquist;
     float    m_applied_row_hz;
     Section  m_sec[MAX_SECTIONS];
 };

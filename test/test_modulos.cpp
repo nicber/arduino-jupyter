@@ -250,11 +250,19 @@ int main()
     notch.harmonics = 1;
     notch.apply(500.0f);
     check_eq(notch.active(), 2, "dos notch por armónico");
-    notch.harmonics = 3;
+    notch.harmonics = 7;
     notch.apply(500.0f);
     check_eq(notch.active(), 6, "tres armónicos, seis notch");
+    notch.harmonics = 5;
+    notch.apply(500.0f);
+    check_eq(notch.active(), 4, "50 y 150 Hz sin el de 100: cuatro notch");
+    notch.harmonics = 7;
     notch.apply(100.0f);
     check_eq(notch.active(), 1, "a 100 Hz de filas sólo entra el de 49,5");
+    notch.nyquist = 1;
+    notch.apply(500.0f);
+    check_eq(notch.active(), 7, "y el del Nyquist es uno más");
+    notch.nyquist = 0;
 
     notch.harmonics = 1;
     notch.apply(500.0f);
@@ -276,7 +284,7 @@ int main()
 
     // El rango: un escalón de -1500 a 1500 cuentas, el doble del fondo del ACS712 de
     // 5 A, sale entero sin saturar adentro.
-    notch.harmonics = 3;
+    notch.harmonics = 7;
     notch.apply(500.0f);
     for (int k = 0; k < 1000; k++) { dc = notch.step(-1500); }
     for (int k = 0; k < 2000; k++) { dc = notch.step(1500); }
@@ -296,6 +304,21 @@ int main()
         if (k >= 2000) { var_in += (double)x * x; var_out += (double)y * y; }
     }
     check(var_out < 0.9 * var_in, "sobre ruido blanco, el redondeo interno no devuelve lo que el notch saca");
+
+    // El notch del Nyquist, solo: una fila sí y otra no --250 Hz con filas a 500 Hz--
+    // desaparece, y la continua pasa exacta.
+    MainsNotch nyq;
+    nyq.nyquist = 1;
+    nyq.apply(500.0f);
+    int16_t alterna = 0;
+    for (int k = 0; k < 400; k++)
+    {
+        const int16_t y = nyq.step((k & 1) ? 300 : -300);
+        if (k > 100 && abs(y) > alterna) { alterna = (int16_t)abs(y); }
+    }
+    check(alterna <= 1, "el notch del Nyquist saca una fila sí y otra no");
+    for (int k = 0; k < 200; k++) { dc = nyq.step(1500); }
+    check_eq(dc, 1500, "y deja pasar la continua exacta");
 
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;

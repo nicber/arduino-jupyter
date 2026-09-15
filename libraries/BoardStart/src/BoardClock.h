@@ -77,4 +77,32 @@ inline void clock_begin()
         clock_prescale_set(clock_div_2);
     }
 }
+
+// El Timer0, que lleva millis(), a 1000 Hz exactos en lugar de los 976,6 Hz del core.
+//
+// La interrupción de millis() demora un poco lo que esté corriendo, las conversiones
+// del ADC incluidas, así que se ve en la corriente. A 976,6 Hz eso se pliega contra
+// filas de 500 Hz a 23,4 Hz: medido en el banco, un tono de 1 a 2 mA con una fila. A
+// 1000 Hz sale del mismo reloj que el muestreador de 5 kHz, en fase fija, y se pliega
+// a continua, donde lo absorbe el cero.
+//
+// Modo 7, PWM rápido con TOP = OCR0A: el desborde, que es la interrupción de millis(),
+// llega en cada TOP, y 16 MHz / 64 / 250 = 1000 Hz. Sin salidas de comparación, así
+// que analogWrite() en los pines 5 y 6 deja de servir.
+//
+// El precio: el core suma 1,024 ms por desborde, porque cuenta con 256 pasos, así que
+// millis(), micros() y delay() quedan un 2,4 % rápidos, y micros() además salta 28 us
+// en cada desborde. En este proyecto millis() sólo mide plazos y micros() el retardo
+// de atención de una fila (`loop_late`); el tiempo de las filas lo lleva el
+// muestreador y no depende de esto.
+inline void millis_1000hz()
+{
+    const uint8_t sreg = SREG;
+    cli();
+    TCCR0A = _BV(WGM01) | _BV(WGM00);
+    TCCR0B = _BV(WGM02) | _BV(CS01) | _BV(CS00);
+    OCR0A  = 249;
+    TCNT0  = 0;
+    SREG   = sreg;
+}
 }  // namespace board

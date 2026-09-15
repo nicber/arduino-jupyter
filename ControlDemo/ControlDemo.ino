@@ -402,6 +402,9 @@ static const CtrlChannel PROGMEM g_channels[] =
 // el lazo va a usar. Cada módulo se lleva su estado.
 ISR(TIMER2_COMPA_vect)
 {
+    // Lo que el ADC sumó en este tick, antes que nada: el ADC no interrumpe esta ISR.
+    g_adc.close_tick();
+
     // Antes de lanzar la transferencia de este tick: si el contador no avanzó desde
     // el tick anterior, la que se lanzó entonces no terminó.
     const uint16_t samples = Sensor::samples();
