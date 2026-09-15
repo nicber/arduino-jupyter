@@ -17,11 +17,14 @@
 // el lazo cuando quiera. Así la ventana de cada fila queda pegada a su tick, igual
 // que el ángulo.
 //
-// Opcionalmente, cada canal pasa por dos polos antes de sumarse, y += (x - y) >> k dos
-// veces, en cuartos de cuenta y 16 bits, redondeando: sólo sumas y corrimientos. Baja el
-// ruido de una fila sola y agrega retardo, ~2 · 2^k conversiones de ese canal. El
-// corrimiento --un redondeo, y cuándo arranca cada conversión-- mueve el cero unos mA:
-// el cero se mide con el mismo `k` que se va a usar.
+// Sin filtro antes de sumar la fila, a propósito. El ruido de la corriente es blanco a
+// ~0,9 mA/√Hz desde la entrada hasta varios kHz, y para ruido blanco el promedio de la
+// fila deja la misma densidad en 0-250 Hz que un antialiasing ideal. Simulado sobre
+// 11 s de conversiones crudas: con un FIR de 1001 coeficientes cortando en 200 Hz, el
+// ruido en 55-200 Hz baja de 16,4 a 16,0 mA; dos polos por corrimiento subían el piso
+// por debajo de 45 Hz. Los tonos que sí se pliegan caen en ceros: el PWM de 1050 Hz en
+// 50 Hz y sus armónicos, donde anulan la ventana de 20 ms y el notch, y el muestreo
+// del AS5600, 5 kHz, en continua, que absorbe el cero.
 //
 // Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
@@ -78,10 +81,6 @@ class RowAdc
         , m_channel(0)
         , m_alternate(false)
         , m_lgt(false)
-        , m_k(0)
-        , m_y1()
-        , m_y2()
-        , m_fresh()
         , m_shift(0)
     {
     }
@@ -101,7 +100,6 @@ class RowAdc
         ADMUX  = (uint8_t)(_BV(REFS0) | (Channel & 0x1F));
         ADCSRB = (uint8_t)(ADCSRB & ~0x07);
         m_channel = 0;
-        m_fresh[0] = m_fresh[1] = true;
         ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | prescaler);     // sin ADATE: a mano
         ADCSRA |= _BV(ADSC);
     }
@@ -109,56 +107,19 @@ class RowAdc
     // Alternar con el canal de la alimentación, o quedarse en el del sensor.
     void alternate(bool on)
     {
-        if (on == m_alternate)
-        {
-            return;
-        }
         m_alternate = on;
-        m_fresh[0] = m_fresh[1] = true;
-    }
-
-    // Los dos polos: `k` de 1 a 6, o 0 para no filtrar. El filtro arranca de nuevo.
-    void smooth(uint8_t k)
-    {
-        if (k > 6) k = 6;
-        if (k == m_k)
-        {
-            return;
-        }
-        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-        {
-            m_k = k;
-            m_fresh[0] = m_fresh[1] = true;
-        }
     }
 
     // Llamar desde ISR(ADC_vect).
     void on_conversion(void)
     {
         const uint8_t k = m_channel;
-        uint16_t v = ADC;
+        const uint16_t v = ADC;
 
         // La próxima: su canal primero, y recién después arrancarla.
         m_channel = (m_alternate && !k) ? 1 : 0;
         ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_channel ? SupplyChannel : Channel) & 0x1F));
         ADCSRA |= _BV(ADSC);
-
-        if (m_k)
-        {
-            // En cuartos de cuenta y 16 bits: 4095 · 4 y cualquier diferencia entran.
-            // Redondeando al más cercano: el corrimiento pelado redondea hacia abajo y
-            // deja la salida corrida.
-            const int16_t x = (int16_t)(v << 2);
-            const int16_t h = (int16_t)(1 << (m_k - 1));
-            if (m_fresh[k])
-            {
-                m_y1[k] = m_y2[k] = x;
-                m_fresh[k] = false;
-            }
-            m_y1[k] = (int16_t)(m_y1[k] + ((int16_t)(x - m_y1[k] + h) >> m_k));
-            m_y2[k] = (int16_t)(m_y2[k] + ((int16_t)(m_y1[k] - m_y2[k] + h) >> m_k));
-            v = (uint16_t)((m_y2[k] + 2) >> 2);
-        }
 
         m_sum[k] += v;
         m_n[k]++;
@@ -212,10 +173,6 @@ class RowAdc
     volatile uint8_t  m_channel;    // de qué canal es la conversión en curso
     volatile bool     m_alternate;
     bool              m_lgt;
-    volatile uint8_t  m_k;
-    int16_t           m_y1[2];      // los dos polos de cada canal, en cuartos de cuenta
-    int16_t           m_y2[2];
-    volatile bool     m_fresh[2];
     uint8_t           m_shift;
 };
 

@@ -140,9 +140,7 @@ red y dejan unos 6 mA de ruido por fila (5 mA sin divisor). **Eso atrasa la corr
 respecto del ángulo y del comando, y redondea sus escalones en 20 ms: al ajustar
 un modelo eléctrico, o se tiene en cuenta ese retardo, o se baja `cur_filas`. Con
 `cur_filas = 1` la corriente no atrasa, pero trae ~17 mA de ruido por fila y lo que
-quede de la red; `cur_aa = 3` le pone dos polos a cada canal antes de promediar la fila
-(sumas y corrimientos, ~3 ms de retardo) y lo baja a ~12 mA, con el cero medido con el
-mismo `cur_aa`; `cur_notch = 3` saca 50, 100 y 150 Hz con dos notch por armónico, en
+quede de la red; `cur_notch = 3` saca 50, 100 y 150 Hz con dos notch por armónico, en
 49,5 y 50,5 Hz, que cubren la red vista desde la placa --el cristal del clon adelanta
 y la ve en ~49,7 Hz-- sin tener que medirla: al menos 36 dB de atenuación en toda esa
 banda. Es el único filtro de la placa, y está porque lo que saca no se puede
@@ -387,7 +385,6 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
-| `cur_aa` | dos polos por canal antes de promediar la fila, y += (x − y) >> k: 0 apagado, 3 recomendado con `cur_filas = 1`; medir el cero después de cambiarlo |
 | `cur_notch`, `cur_notchr` | notch de la red para la corriente: cuántos armónicos (0 apagado, 1 = 50 Hz, 3 = 50, 100 y 150), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver más abajo |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
