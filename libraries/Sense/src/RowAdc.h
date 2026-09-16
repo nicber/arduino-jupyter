@@ -32,8 +32,37 @@
 // Lo que la media no puede sacar: son unas 2 conversiones de A0 por tick, no un
 // promedio continuo, y los armónicos del PWM también se pliegan contra ese peine. Medido
 // con el motor en régimen: la corriente media depende de cómo quedaron las conversiones
-// contra el PWM, que cambia al arrancar una captura, y salta entre dos niveles
-// separados 13 a 25 mA de una captura corta a otra, con la misma velocidad del eje.
+// contra el PWM, que cambia al arrancar una captura, y salta entre dos niveles. Ver el
+// bloque siguiente, que es el mismo problema visto en reposo.
+//
+// **El salto de dos niveles entre capturas.** Medido en reposo, en tramos de 3 s durante
+// tres minutos: la corriente publicada toma uno de dos niveles, el nivel se sortea al
+// arrancar cada captura y no se mueve mientras la captura dura --el ruido entre filas es
+// de 0,5 mA y la primera mitad contra la segunda difieren 0,3 mA, contra 62 mA entre
+// tramos--. No es el divisor (`cur_a1` no se mueve ni el 0,3 %) ni el tráfico de I2C del
+// AS5600 (cortándolo el salto sigue: 9,1 cuentas con el bus andando, 7,8 sin él). Lo que
+// sí lo mueve:
+//
+// - Un capacitor de 100 nF de A0 a masa: de 62 a 26 mA.
+// - Emitir los cinco canales en lugar de uno: de 26 a 3,6 mA. Una fila más larga sacude
+//   la alineación lo suficiente como para que los dos estados se promedien adentro de la
+//   captura. Es el modo por omisión de `capture()`, y es la razón por la que el cero hay
+//   que medirlo con los mismos canales con los que se va a medir (ver
+//   `Bench.zero_current()`).
+// - El tiempo exacto de esta interrupción: agregar un par de ciclos acá movió el salto
+//   de 26 mA a 1,8 mA, y sacarlos lo devolvió. Es el mismo filo de navaja que el párrafo
+//   de la alternancia de canales de más abajo, y quiere decir que el número concreto
+//   depende de la compilación.
+//
+// Atar las conversiones al tick en lugar de dejarlas libres --una ráfaga de N por tick,
+// con la fase fijada por construcción-- se probó y es peor, que es el argumento entero a
+// favor de dejarlo libre. Medido con el motor, contra el modo libre y descontando el
+// reposo de cada configuración: a /32 con ráfagas de 3 el sesgo es de -29, +9 y -26 mA
+// con comandos de 80, 150 y 220, y a /16 con ráfagas de 5, de -12, -3 y -6 mA; la
+// dispersión entre repeticiones sube de 0,5..3,8 mA a 1,7..17 mA. La ráfaga no llega a
+// llenar el tick --a /32 entran 3 conversiones en 200 us y a /16 entran 5-- así que
+// siempre queda sin mirar la misma fracción del período del PWM, y eso es exactamente el
+// sesgo de fase que el conversor libre evita.
 //
 // Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
