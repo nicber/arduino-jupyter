@@ -304,7 +304,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_frac` | bits fraccionarios de la unidad del canal `i`: 4, o sea dieciseisavos de cuenta del ADC |
-| `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
+| `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que mide `medir_divisor()` o declara `declarar_divisor()`, y lo que lee A1 |
 | `cur_notch`, `cur_notchr` | notch de la red para la corriente, como máscara (1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 apagado, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `cur_ma` | 1 (por omisión) pasa cada tick de 5 kHz por una media de 4 ticks, un período del PWM, antes de sumar la fila |
 | `cur_nyq` | 1 (por omisión) agrega un notch en 250 Hz, el Nyquist de las filas, donde cae lo que queda del PWM. Se gana el lugar con `cur_filas = 1`; con la ventana de 10 filas, que ya tiene un cero ahí, sólo agrega su propio redondeo |
@@ -377,6 +377,7 @@ identificaría después como un tiempo muerto del motor.
 | `bringup` marca falla en `actuador` | lo declarado en `bidir` no es lo que hay: `-u` invierte el giro con `bidir=False`, o empuja igual con `bidir=True`. El mensaje dice con qué conectar |
 | `bringup` marca falla en `-u` | con `bidir=True` el eje no gira al revés, o con `bidir=False` el comando negativo no sale como cero: un sketch desactualizado en la placa, `sync_board(force_upload=True)` |
 | `sync_board` dice «sin signos medidos» | no hay `notebooks/cableado.json`: correr `dev.bringup()` con el motor, que lo escribe |
+| `bringup` anota `divisor de i` | la relación declarada y la medida contra el reposo del sensor se apartan más de un 3 %: revisar las resistencias del divisor, o tomar la medida con `dev.medir_divisor()` |
 | `bringup` anota `canal de i` | el pico de corriente del arranque no se despega del ruido: el sensor no resuelve este motor |
 | un ensayo sale distinto cada vez que se corre | ¿esperó a que el eje pare? Con el comando en cero el motor sigue girando muchos segundos: `ensayo.esperar_quieto(dev)` |
 | «el dispositivo declara sus parámetros en un formato anterior» | la placa tiene grabado un sketch desactualizado: `sync_board(force_upload=True)` |

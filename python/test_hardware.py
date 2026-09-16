@@ -103,7 +103,7 @@ def main():
     #
     # El desvío de la diferencia entre filas consecutivas, sobre raíz de dos, y no el
     # desvío a secas: el cero de este canal vagabundea por debajo de unos pocos hertz
-    # --se corrió 7 cuentas en un minuto, medido-- y una ventana más larga no lo
+    # --se corre 0,11 mA por minuto, medido-- y una ventana más larga no lo
     # promedia, así que el desvío a secas mide sobre todo esa deriva y da un número que
     # no se repite. Medido alternando las dos configuraciones: el desvío a secas con 10
     # filas da entre 1,0 y 7,1 mA de captura a captura, y así medido, entre 0,37 y

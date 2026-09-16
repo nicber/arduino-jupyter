@@ -63,11 +63,12 @@ _ADC_HEADROOM = 400   # cuentas de margen que se le piden al reposo
 # esto lo que se mide es el ruido del sensor, no un motor que arrancó.
 _GIRO_MINIMO = 0.05   # vueltas
 
-# Cuánto residuo se le tolera al cero de la corriente, en cuentas. No una: medido en
-# el banco del clon, doce ciclos de medir el cero y volver a mirar dan de -2,1 a
-# +1,7 cuentas, una deriva lenta entre captura y captura que no se promedia. Una
-# tolerancia menor que la repetibilidad del canal haría fallar la verificación en
-# un equipo sano.
+# Cuánto residuo se le tolera al cero de la corriente, en cuentas del conversor. No una:
+# medido en el banco del clon, doce ciclos de medir el cero y volver a mirar dan de -0,40
+# a -0,12 cuentas, con 0,09 de desvío. El tope se deja bastante más ancho que eso a
+# propósito: lo que mueve al cero de verdad es haber hecho girar el motor, que lo corre
+# unos pocos mA (medido, 6 mA en seis ciclos con arranques de por medio). Una tolerancia
+# del orden de la repetibilidad haría fallar la verificación en un equipo sano.
 _RESIDUO_MAX = 3.0
 
 _link = None
@@ -275,9 +276,10 @@ class Bench:
 
         `canales` tiene que ser el mismo que va a usar el ensayo. Transmitir le carga la
         alimentación a la placa --el LED de TX, el conversor USB-serie-- así que cuántos
-        canales salgan corre la lectura: medido en reposo, el valor se mueve 1,1 mA de
-        captura a captura emitiendo uno solo y 1,4 mA emitiendo los cinco. Por omisión,
-        todos, que es lo que emite `capture()` si no se le pide otra cosa.
+        canales salgan corre la lectura: medido en reposo, entre emitir uno solo y emitir
+        los cinco el cero se corre 0,7 mA, y adentro de cada configuración el valor se
+        mueve 1,1 y 1,4 mA de captura a captura. Por omisión, todos, que es lo que emite
+        `capture()` si no se le pide otra cosa.
         """
         self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
         return self.cur_zero
@@ -350,8 +352,10 @@ class Bench:
         if 'cur_div' in params:
             if 'cur_div' in guardado:
                 self.cur_div = int(guardado['cur_div'])
+                origen = ('medido contra el reposo del sensor'
+                          if guardado.get('cur_div_medido') else 'declarado a mano')
                 say(f'  corriente contra la alimentación del sensor: divisor de A1 con relación '
-                    f'{self.cur_div / 10000:.4f} ({Path(cableado).name})')
+                    f'{self.cur_div / 10000:.4f}, {origen} ({Path(cableado).name})')
                 # Un divisor suelto no da error: A1 queda saturado o en cero y la
                 # corriente sale de un cociente sin sentido, con un cero corrido.
                 time.sleep(0.2)

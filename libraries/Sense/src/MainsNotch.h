@@ -24,8 +24,9 @@
 // con ceros sobre la circunferencia en w0 y polos a radio r: cuanto más cerca de 1,
 // más angosto y más largo el transitorio. g deja la ganancia en continua en 1.
 //
-// Aritmética: coeficientes en Q12 y señal en dieciseisavos de cuenta, los dos en 16
-// bits, así que cada producto es de 16 x 16 bits, que es lo barato en un AVR. Lo que
+// Aritmética: coeficientes en Q12 y señal en dieciseisavos de cuenta. Adentro del lazo
+// la señal lleva GUARD_BITS más y el estado va en 32 bits, así que el producto es de 16
+// por 17 bits; sin los bits de guarda sería de 16 x 16, que es lo barato en un AVR. Lo que
 // la división por 2^12 no guarda se arrastra a la muestra siguiente, así que la
 // salida no se queda trabada a unas cuentas del valor. Los polos cerca de la
 // circunferencia amplifican el redondeo de cada sección: en cuartos de cuenta eso le
@@ -42,7 +43,8 @@
 // Adentro del lazo, en cambio, la señal lleva `GUARD_BITS` más: lo que se realimenta se
 // redondea a esa unidad más fina y no al dieciseisavo. Sin eso, publicando en
 // dieciseisavos, el redondeo del lazo quedaba a la vista: medido en el banco con
-// `cur_filas = 10` y sólo la sección del Nyquist, le ponía 0,5 mA RMS a la corriente,
+// `cur_filas = 10` y sólo la sección del Nyquist, le ponía 0,5 mA RMS a la corriente
+// --con el bit de guarda y el relleno de RowAdc puestos quedó en 0,25--,
 // que era el término más grande que quedaba en toda la cadena.
 //
 // Aritmética pura, salvo apply(), así que se prueba en la máquina de escritorio.

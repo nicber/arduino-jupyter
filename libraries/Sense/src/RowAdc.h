@@ -8,9 +8,10 @@
 // período es un escalón de cientos de mA: medido en el banco, según la fase, la
 // lectura se desvía de la media entre -230 y +315 mA. Promediar unas pocas fases
 // fijas tampoco alcanza (±40 mA con cinco). Con el ADC libre, en cambio, las
-// conversiones recorren todas las fases --en el LGT8F328P a /32 son 250 fases en
-// 11 ms-- y el promedio de la fila da la media sin sesgo, a cambio de un error de
-// patrón chico (≤ 13 mA medidos) que se promedia en las filas siguientes.
+// conversiones no caen siempre en la misma y el promedio de la fila da la media sin
+// sesgo, a cambio de un error de patrón chico (≤ 13 mA medidos) que se promedia en las
+// filas siguientes. Que no quede sesgo está medido y no supuesto: ver el bloque de la
+// paridad, donde se compara contra atar las conversiones al tick, que sí sesga.
 //
 // El reparto: on_conversion() va en la interrupción del ADC y suma; close_tick() va
 // en la del muestreador, en cada tick de 5 kHz, y close_row() en el tick de la fila,
@@ -29,11 +30,12 @@
 // 250 Hz, el Nyquist de las filas, y en continua el muestreo del AS5600, 5 kHz, que
 // absorbe el cero.
 //
-// Lo que la media no puede sacar: son unas 2 conversiones de A0 por tick, no un
-// promedio continuo, y los armónicos del PWM también se pliegan contra ese peine. Medido
-// con el motor en régimen: la corriente media depende de cómo quedaron las conversiones
-// contra el PWM, que cambia al arrancar una captura, y salta entre dos niveles. Ver el
-// bloque siguiente, que es el mismo problema visto en reposo.
+// Lo que la media no puede sacar: son una conversión y media de A0 por tick --tres en
+// total, alternando-- y no un promedio continuo, así que los armónicos del PWM también se
+// pliegan contra ese peine. Medido con el motor en régimen: la corriente media dependía de
+// cómo quedaban las conversiones contra el PWM, que cambia al arrancar una captura, y
+// saltaba entre dos niveles. Lo resuelve el relleno del bloque siguiente, que es el mismo
+// problema visto en reposo.
 //
 // **La paridad de las conversiones, y por qué hay un relleno de 3 us.** Alternando dos
 // canales, la secuencia de conversiones tiene período 2, y la interrupción del
@@ -86,7 +88,7 @@
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
 // cambio de canal escrito en la interrupción alcanza a la que ya arrancó o a la
 // siguiente según cuánto tarde la interrupción. Medido en el banco: moviendo la
-// escritura unos µs dentro de la interrupción, A1 pasa de leer 1735 a leer 2400, una
+// escritura unos µs dentro de la interrupción, A1 pasa de leer 1774 a leer 2455, una
 // mezcla con A0. Así que el conversor no corre libre: cada interrupción lee, escribe
 // el canal de la próxima y recién ahí la arranca. El período queda un poco menos
 // parejo, lo que para promediar no importa, y cada conversión es del canal que dice.
@@ -96,11 +98,11 @@
 // lo que tarde la interrupción en arrancar la siguiente. El ATmega328P quiere 50 a
 // 200 kHz para sus 10 bits: /128, 104 us. Medido en el clon con el divisor de A1
 // sin capacitor, a /32 y en reposo, con la media de 4 ticks y el notch de 250 Hz
-// apagados para ver la ventana sola: el ruido de la corriente es de 2,9 mA por fila y
-// 0,37 mA con 10 filas midiendo A0/A1. Los dos son el desvío de la diferencia entre
+// apagados para ver la ventana sola: el ruido de la corriente es de 3,1 mA por fila y
+// 0,39 mA con 10 filas midiendo A0/A1. Los dos son el desvío de la diferencia entre
 // filas consecutivas sobre raíz de dos, que es el ruido de banda: el desvío a secas
-// trae además la deriva del cero, que no se promedia y que en reposo es más grande
-// que todo esto (7 cuentas en un minuto, medidas).
+// trae además la deriva del cero, que no se promedia, y que con el relleno de SETTLE_US
+// puesto es de 0,11 mA por minuto.
 //
 // Siempre contra AVCC. Las alternativas para la referencia se descartan por lo
 // siguiente:
