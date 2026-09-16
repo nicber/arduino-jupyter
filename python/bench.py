@@ -294,11 +294,23 @@ class Bench:
         self.rest()
         df = self.capture(seconds, warn=False, canales=canales)
         return self.cur_zero + self._signo_corriente() * _sin_arranque(df)['i'].mean() \
-            / self.channel('i').scale
+            / self._ma_por_cuenta()
 
     def _signo_corriente(self):
         """-1 si la placa publica la corriente con el signo invertido (`cur_inv`)."""
         return -1 if 'cur_inv' in self.link._params and self.cur_inv else 1
+
+    def _ma_por_cuenta(self):
+        """Cuántos mA es una cuenta cruda del conversor.
+
+        No es lo mismo que la escala del canal: `i` puede publicar fracciones de
+        cuenta --`Banco` publica dieciseisavos-- y `cur_frac` dice cuántos bits
+        fraccionarios son. El cero, los rieles y el margen del conversor se miden en
+        cuentas enteras, así que todo lo que hable de ellos pasa por acá. Sin
+        `cur_frac` el canal está en cuentas, que es lo que hace `ControlDemo`.
+        """
+        frac = int(self.cur_frac) if 'cur_frac' in self.link._params else 0
+        return self.channel('i').scale * (1 << frac)
 
     def _tiron(self, u, seconds=0.4):
         """`u` sobre el actuador por un instante, desde el eje quieto.
@@ -523,8 +535,9 @@ class Bench:
         #    ausencia, no un offset, y calibrarla dejaría un canal que informa ceros
         #    perfectos sin haber medido nada. Y un reposo pegado a un extremo no
         #    deja lugar para medir, aunque no llegue al riel.
-        lsb = self.channel('i').scale
-        adc = self.cur_zero + df['i'].mean() / lsb
+        lsb = self.channel('i').scale       # mA por unidad publicada de `i`
+        cuenta = self._ma_por_cuenta()      # mA por cuenta del conversor
+        adc = self.cur_zero + df['i'].mean() / cuenta
         sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
         rest_ma = noise = 0.0
 
@@ -541,8 +554,8 @@ class Bench:
                        f'no en la mitad: la placa probablemente no funciona a 5 V. Poner el '
                        f'divisor de 5 V a A1 y dev.declarar_divisor()')
             report('cero de i', min(up, down) >= _ADC_HEADROOM,
-                   f'{adc:.0f} de {_ADC_FULL}, margen +{up * lsb / 1000:.1f} A / '
-                   f'-{down * lsb / 1000:.1f} A'
+                   f'{adc:.0f} de {_ADC_FULL}, margen +{up * cuenta / 1000:.1f} A / '
+                   f'-{down * cuenta / 1000:.1f} A'
                    + ('' if min(up, down) >= _ADC_HEADROOM else
                       '  -- el reposo está muy cerca del tope: sin lugar para medir'))
 
@@ -555,13 +568,17 @@ class Bench:
             noise   = zeroed['i'].std()
 
             # Un canal demasiado quieto es tan sospechoso como uno ruidoso: un ruido
-            # de cero exacto es una señal más chica que un escalón del ADC.
+            # de cero exacto es una señal más chica que el escalón del canal. El
+            # umbral va contra ese escalón y no contra la cuenta del conversor:
+            # publicando fracciones de cuenta, una señal por debajo de una cuenta
+            # deja de ser invisible, que es para lo que se publica así.
             report('calibración de i',
-                   abs(rest_ma) < _RESIDUO_MAX * lsb and noise > 0.1 * lsb,
-                   f'cur_zero = {self.cur_zero}, {lsb:.1f} mA por cuenta, quedan '
-                   f'{rest_ma:+.1f} mA en reposo, ruido {noise:.0f} mA RMS'
+                   abs(rest_ma) < _RESIDUO_MAX * cuenta and noise > 0.1 * lsb,
+                   f'cur_zero = {self.cur_zero}, {cuenta:.1f} mA por cuenta del '
+                   f'conversor y {lsb:.2f} mA por unidad de i, quedan '
+                   f'{rest_ma:+.1f} mA en reposo, ruido {noise:.1f} mA RMS'
                    + ('' if noise > 0.1 * lsb else
-                      '  -- sin dither: la señal no llega a un escalon del ADC'))
+                      '  -- sin dither: la señal no llega a un escalón del canal'))
 
         # 6. El actuador, y con él toda la cadena: un comando que sale, movimiento y
         #    corriente que vuelven. Sólo se usa la evidencia cuyo sensor está.
@@ -591,7 +608,6 @@ class Bench:
         bidir = bool(self.mot_bidir)
         nombres = [n for n in ('ang_inv', 'cur_inv') if n in self.link._params]
         antes = {n: int(self.get(n)) for n in nombres}
-        lsb = self.channel('i').scale
 
         def poner(valores):
             for n, v in valores.items():
@@ -674,7 +690,8 @@ class Bench:
         # cientos de mA--. El arranque contra el final: los
         # dos con el mismo comando, así que el artefacto es el mismo, pero al
         # arrancar el motor pide mucha más corriente que cuando ya giró.
-        umbral = max(3 * lsb, 5 * noise * (2 / max(len(df_pos) / 4, 1)) ** 0.5)
+        umbral = max(3 * self._ma_por_cuenta(),
+                     5 * noise * (2 / max(len(df_pos) / 4, 1)) ** 0.5)
         mide_i = sensed and abs(i_pos) > umbral
         if 'cur_inv' in antes:
             medidos['cur_inv'] = int(i_pos < 0) if mide_i else antes['cur_inv']

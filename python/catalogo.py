@@ -40,7 +40,8 @@ _CATALOGO = {
     'ang_buserr':  ('cuenta',  'transferencias', 'transferencias del sensor que fallaron'),
 
     # La medición de corriente.
-    'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
+    'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor, en cuentas crudas del conversor y no en la unidad del canal i; `dev.zero_current()` lo mide'),
+    'cur_frac':    ('lectura', 'bits',        'bits fraccionarios de la unidad del canal i: 4 son dieciseisavos de cuenta del conversor'),
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
     'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
     'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
@@ -161,7 +162,7 @@ def texto(encabezado, resumen, nombres, valor_de, canales=()):
 
     if canales:
         lineas += ['', 'los canales que devuelve capture(), con su escala:']
-        lineas += [f'  {n:<7} {escala:>12.5f} {unidad} por cuenta'
+        lineas += [f'  {n:<7} {escala:>12.5f} {unidad} por unidad del canal'
                    for n, escala, unidad in canales]
 
     return '\n'.join(lineas + [''] + list(_AYUDA))

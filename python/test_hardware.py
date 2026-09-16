@@ -19,6 +19,8 @@ Atención: --motor mueve el eje. Revisar que esté libre.
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 fallas = []
@@ -98,18 +100,30 @@ def main():
     # raíz de las conversiones: de 1 a 10 filas, unas tres veces. Y cur_filas se
     # recorta a 1..32. Sin la media de 4 ticks ni el notch de 250 Hz, que ya bajan el
     # ruido de cada fila y dejan poco para promediar: lo que se prueba es la ventana.
+    #
+    # El desvío de la diferencia entre filas consecutivas, sobre raíz de dos, y no el
+    # desvío a secas: el cero de este canal vagabundea por debajo de unos pocos hertz
+    # --se corrió 7 cuentas en un minuto, medido-- y una ventana más larga no lo
+    # promedia, así que el desvío a secas mide sobre todo esa deriva y da un número que
+    # no se repite. Medido alternando las dos configuraciones: el desvío a secas con 10
+    # filas da entre 1,0 y 7,1 mA de captura a captura, y así medido, entre 0,37 y
+    # 0,39.
     dev.rest()
     filtros = {n: dev.get(n) for n in ('cur_ma', 'cur_nyq') if n in dev.link._params}
     for n in filtros:
         dev.set(n, 0)
-    dev.cur_filas = 1
-    r1 = dev.capture(0.5, warn=False)['i'].std()
-    dev.cur_filas = 10
-    r10 = dev.capture(0.5, warn=False)['i'].std()
+
+    def ruido_de_banda(filas):
+        dev.cur_filas = filas
+        i = dev.capture(1.0, warn=False, canales=['i'])['i'].to_numpy()
+        return float(np.diff(i).std() / 2 ** 0.5)
+
+    r1 = ruido_de_banda(1)
+    r10 = ruido_de_banda(10)
     for n, v in filtros.items():
         dev.set(n, v)
     check('10 filas de promedio bajan el ruido de la corriente', r10 < r1 / 2,
-          f'{r1:.1f} mA con 1 fila, {r10:.1f} mA con 10')
+          f'{r1:.2f} mA con 1 fila, {r10:.2f} mA con 10')
     dev.cur_filas = 100
     check('cur_filas se recorta a 32', dev.cur_filas == 32, str(dev.cur_filas))
     dev.cur_filas = 10
@@ -128,7 +142,9 @@ def main():
     # tolerancia sale de cuánto se corre el canal solo entre capturas, que es una
     # deriva lenta y no se promedia.
     dev.rest()
-    lsb = dev.channel('i').scale
+    # En cuentas del conversor, que es la unidad de `cur_zero`: el canal puede
+    # publicar fracciones de cuenta (`cur_frac`). Ver Bench._ma_por_cuenta().
+    lsb = dev._ma_por_cuenta()
     base_zero = 2048
     dev.cur_zero = base_zero
 

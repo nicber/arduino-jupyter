@@ -66,6 +66,11 @@
       "frac": "0"
     },
     {
+      "nombre": "cur_frac",
+      "tipo": "CTRL_U8",
+      "frac": "0"
+    },
+    {
       "nombre": "cur_inv",
       "tipo": "CTRL_U8",
       "frac": "0"

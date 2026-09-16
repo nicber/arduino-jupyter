@@ -84,10 +84,17 @@ RUIDO_CONVERSION_MA = 120.0
 RETARDO_S = 0.5e-3
 
 # La medición de corriente, con las escalas del sketch: 1,25 mV por cuenta
-# (UV_PER_COUNT en Sense/RowAdc.h) y un ACS712 de 185 mV/A. El reposo no cae justo
-# en media escala.
+# equivalente (UV_PER_COUNT en Sense/SupplyRatio.h) y un ACS712 de 185 mV/A. El
+# reposo no cae justo en media escala.
+#
+# El canal `i` no publica cuentas sino dieciseisavos de cuenta, igual que el sketch
+# (`cur_frac`), así que su escala es la de una cuenta dividida por 16. `cur_zero`,
+# los rieles y el margen siguen en cuentas enteras.
 MV_POR_CUENTA = 1.25
 MA_POR_CUENTA = 1000.0 * MV_POR_CUENTA / 185.0
+CUR_FRAC      = 4
+SUBCUENTAS    = 1 << CUR_FRAC
+MA_POR_UNIDAD = MA_POR_CUENTA / SUBCUENTAS
 REPOSO_I = 2048 + 57         # cuentas
 
 _Canal = namedtuple('_Canal', 'name scale unit')
@@ -97,7 +104,7 @@ CANALES = {
     'y_uw':  _Canal('y_uw',  GRADOS_POR_CUENTA, 'deg'),
     'y_rep': _Canal('y_rep', 1.0,               ''),
     'u':     _Canal('u',     1.0,               'pwm'),
-    'i':     _Canal('i',     MA_POR_CUENTA,     'mA'),
+    'i':     _Canal('i',     MA_POR_UNIDAD,     'mA'),
 }
 
 # Más que esto de reloj de pared entre dos llamadas no se integra: con el comando
@@ -138,6 +145,7 @@ class BancoSimulado:
         self.cur_nyq = 1                # prendidos como en la placa; el simulado no los aplica
         self.cur_ma = 1
         self.cur_zero = 2048
+        self.cur_frac = CUR_FRAC        # el canal `i` va en dieciseisavos de cuenta
         self.loop_div = 10
         self.dec = 1
         self.chans = 0xFFFF
@@ -428,7 +436,9 @@ class BancoSimulado:
         adc = (REPOSO_I + media * 185.0 / MV_POR_CUENTA
                + self._rng.normal(0, RUIDO_CONVERSION_MA / np.sqrt(conversiones) / MA_POR_CUENTA,
                                   filas))
-        adc = np.clip(np.rint(adc), 0, 4095)
+        # La placa redondea a la unidad que publica y no a la cuenta: ése es el
+        # motivo de publicar dieciseisavos (ver Sense/SupplyRatio.h).
+        adc = np.clip(np.rint(adc * SUBCUENTAS) / SUBCUENTAS, 0, 4095)
 
         # Los signos van al final, como en la placa: la tabla habla del imán.
         s_ang = -1 if self.ang_inv else 1
