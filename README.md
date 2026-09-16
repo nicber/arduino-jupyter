@@ -90,7 +90,11 @@ placa usa el cociente A0/A1; el divisor se declara una vez por banco con
 corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
 Antes de promediar, la placa saca el rizado del PWM con una media de 4 ticks
 (`cur_ma`) y un notch en 250 Hz (`cur_nyq`), los dos prendidos. El notch de la red
-arranca apagado; `cur_notch` lo prende, cada armónico por separado. La escala en mA no
+arranca apagado; `cur_notch` lo prende, cada armónico por separado. El canal `i` no
+publica cuentas del ADC sino **dieciseisavos de cuenta** (`cur_frac`): redondear a
+cuenta entera era lo que más ruido le ponía a la medición, y el sensor usa 735 de las
+2047 cuentas que entran en la telemetría con esa unidad. `cur_zero`, en cambio, sigue
+en cuentas enteras, que es como se mide. La escala en mA no
 está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
 relación del divisor. El montaje, los números medidos y la confiabilidad del
 canal: `hardware.ipynb`, sección 4.
@@ -296,6 +300,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
 | `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
+| `cur_frac` | bits fraccionarios de la unidad del canal `i`: 4, o sea dieciseisavos de cuenta del ADC |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
 | `cur_notch`, `cur_notchr` | notch de la red para la corriente, como máscara (1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 apagado, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `cur_ma` | 1 (por omisión) pasa cada tick de 5 kHz por una media de 4 ticks, un período del PWM, antes de sumar la fila |

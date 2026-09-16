@@ -41,11 +41,18 @@ inline uint16_t adc_once(uint8_t admux)
 
 // Deja el ADC midiendo efectivamente contra Vcc, en las dos placas del banco.
 //
-// En el LGT8F328P los bits REFS del ADMUX NO eligen la referencia. La eligen DACON y
-// el bit REFS2 de ADCSRD, y REFS queda como un vestigio del ATmega: el core lgt8fx
-// lo escribe igual después de haber configurado los otros. Un sketch que escriba sólo
-// REFS no elige nada en esa placa: la referencia queda en lo que haya quedado de
-// antes, y la misma lectura puede dar números distintos en corridas distintas.
+// En el LGT8F328P los bits REFS del ADMUX NO eligen la referencia. La elige el bit
+// REFS2 de ADCSRD, y REFS queda como un vestigio del ATmega: el core lgt8fx lo escribe
+// igual después de haber configurado los otros. Un sketch que escriba sólo REFS no
+// elige nada en esa placa: la referencia queda en lo que haya quedado de antes, y la
+// misma lectura puede dar números distintos en corridas distintas.
+//
+// Medido en el clon del banco, barriendo los 256 valores de DACON, los 4 de REFS y
+// cuatro bytes de calibración, con 256 conversiones por punto: lo único que mueve la
+// lectura es REFS2. Con REFS2 en 0 A1 lee 1846 a 1853 cuentas (AVCC); con REFS2 en 1,
+// A1 satura en 4095. DACON no cambia nada --al arrancar vale 3 y da la misma lectura
+// que 0-- y REFS tampoco (A1 entre 1846,4 y 1853,3). Se lo escribe igual, que es lo que
+// hace el core, pero lo que decide es REFS2.
 //
 // Las dos placas corren el mismo binario y el core es el del ATmega, así que estos
 // registros no existen por nombre y van por dirección. Sólo se los toca cuando la
@@ -109,11 +116,18 @@ inline uint16_t adc_full_scale()
 // En el clon el número NO significa eso, y conviene aclararlo explícitamente en
 // lugar de dejar una cuenta que parece una calibración. Los bits REFS del
 // ADMUX son los del ATmega y el LGT8F328P tiene su propio juego de referencias
-// internas --1,024, 2,048 y 4,096 V--, así que esto mide una contra otra y no un
-// bandgap contra AVcc. Medido en este banco: 1027 cuentas de 4096, o sea 0,2507,
-// que es 1,024/4,096 con cuatro decimales de acuerdo. El valor además depende de
-// con qué referencia venía trabajando el ADC: el mismo código, en un sketch que
-// arranca de otra manera, da 2585. No sirve como calibración.
+// internas, así que esto mide una contra otra y no un bandgap contra AVcc. El valor
+// además depende de con qué referencia venía trabajando el ADC: el mismo código, en un
+// sketch que arranca de otra manera, da 2585. No sirve como calibración.
+//
+// Con el micro a 3,3 V la única referencia interna alcanzable es la de 1,024 V: en el
+// barrido no hay ninguna combinación que dé las cuentas de 2,048 ni de 4,096 V. Medido
+// contra un nodo interno fijo (canal 8), la razón entre la referencia baja y AVCC da
+// 3,2745, o sea AVCC = 3,353 V con la baja en 1,024 V, que es lo que corresponde a esta
+// placa. Esa medición es repetible --0,03 % entre reinicios-- pero no exacta: no hay
+// adentro del micro ninguna tensión conocida contra la cual verificarla, y con el I2C
+// del AS5600 corriendo se corre un 2,3 % y su desvío se multiplica por 25. Sirve para
+// identificar la referencia, no para calibrar la escala de una medición.
 //
 // La referencia del clon se resuelve con el core lgt8fx, que la declara por
 // nombre (INTERNAL1V024, INTERNAL2V048, INTERNAL4V096) en lugar de dejarla
