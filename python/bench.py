@@ -273,14 +273,11 @@ class Bench:
         la de cualquier divisor que haya en el medio. Deja el motor en reposo, que
         es la condición bajo la cual la medición significa algo.
 
-        `canales` tiene que ser el mismo que va a usar el ensayo, y conviene que sean
-        todos. La lectura depende de cuántos se emitan, y bastante: medido en reposo, con
-        un solo canal el valor se sortea entre dos niveles separados 26 mA al arrancar
-        cada captura, y con los cinco esa dispersión baja a 3,6 mA. Una fila más larga
-        sacude la alineación de las conversiones lo suficiente como para que los dos
-        estados se promedien adentro de la captura; por qué hay dos, en
-        Sense/RowAdc.h. Por omisión, todos, que es lo que emite `capture()` si no se le
-        pide otra cosa.
+        `canales` tiene que ser el mismo que va a usar el ensayo. Transmitir le carga la
+        alimentación a la placa --el LED de TX, el conversor USB-serie-- así que cuántos
+        canales salgan corre la lectura: medido en reposo, el valor se mueve 1,1 mA de
+        captura a captura emitiendo uno solo y 1,4 mA emitiendo los cinco. Por omisión,
+        todos, que es lo que emite `capture()` si no se le pide otra cosa.
         """
         self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
         return self.cur_zero

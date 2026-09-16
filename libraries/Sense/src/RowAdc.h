@@ -35,34 +35,52 @@
 // contra el PWM, que cambia al arrancar una captura, y salta entre dos niveles. Ver el
 // bloque siguiente, que es el mismo problema visto en reposo.
 //
-// **El salto de dos niveles entre capturas.** Medido en reposo, en tramos de 3 s durante
-// tres minutos: la corriente publicada toma uno de dos niveles, el nivel se sortea al
-// arrancar cada captura y no se mueve mientras la captura dura --el ruido entre filas es
-// de 0,5 mA y la primera mitad contra la segunda difieren 0,3 mA, contra 62 mA entre
-// tramos--. No es el divisor (`cur_a1` no se mueve ni el 0,3 %) ni el tráfico de I2C del
-// AS5600 (cortándolo el salto sigue: 9,1 cuentas con el bus andando, 7,8 sin él). Lo que
-// sí lo mueve:
+// **La paridad de las conversiones, y por qué hay un relleno de 3 us.** Alternando dos
+// canales, la secuencia de conversiones tiene período 2, y la interrupción del
+// muestreador le roba tiempo a una conversión de cada tick. Si en un tick entra un número
+// PAR de conversiones, la paridad se conserva de un tick al siguiente y esa perturbación
+// cae siempre sobre el MISMO canal; cuál de los dos, se sortea al arrancar el flujo. El
+// resultado es que la corriente publicada toma uno de dos niveles, constante mientras la
+// captura dura y distinto en la captura siguiente. Con un número impar la paridad se da
+// vuelta en cada tick y el efecto se cancela solo.
 //
-// - Un capacitor de 100 nF de A0 a masa: de 62 a 26 mA.
-// - Emitir los cinco canales en lugar de uno: de 26 a 3,6 mA. Una fila más larga sacude
-//   la alineación lo suficiente como para que los dos estados se promedien adentro de la
-//   captura. Es el modo por omisión de `capture()`, y es la razón por la que el cero hay
-//   que medirlo con los mismos canales con los que se va a medir (ver
-//   `Bench.zero_current()`).
-// - El tiempo exacto de esta interrupción: agregar un par de ciclos acá movió el salto
-//   de 26 mA a 1,8 mA, y sacarlos lo devolvió. Es el mismo filo de navaja que el párrafo
-//   de la alternancia de canales de más abajo, y quiere decir que el número concreto
-//   depende de la compilación.
+// Está medido y no es teoría. Barriendo el TOP del Timer2 --o sea el ritmo del tick-- con
+// un solo binario, para que la alineación del código no cambie entre puntos:
 //
-// Atar las conversiones al tick en lugar de dejarlas libres --una ráfaga de N por tick,
-// con la fase fijada por construcción-- se probó y es peor, que es el argumento entero a
-// favor de dejarlo libre. Medido con el motor, contra el modo libre y descontando el
-// reposo de cada configuración: a /32 con ráfagas de 3 el sesgo es de -29, +9 y -26 mA
-// con comandos de 80, 150 y 220, y a /16 con ráfagas de 5, de -12, -3 y -6 mA; la
-// dispersión entre repeticiones sube de 0,5..3,8 mA a 1,7..17 mA. La ráfaga no llega a
-// llenar el tick --a /32 entran 3 conversiones en 200 us y a /16 entran 5-- así que
-// siempre queda sin mirar la misma fracción del período del PWM, y eso es exactamente el
-// sesgo de fase que el conversor libre evita.
+//   conversiones por tick   3,000   3,41   3,70   3,96   3,99   4,000
+//   salto entre capturas     0-4     2      1      2      5      41..55 mA
+//
+// Y el control cruzado, en el punto peor y con el mismo binario: moviendo el conteo de
+// 4,000 a 3,974 --0,026 de diferencia-- el salto pasa de 48 mA a 1,5 mA, y volviendo a
+// 4,000 vuelve a 48. Lo que descarta las otras explicaciones: no es el divisor (`cur_a1`
+// no se mueve ni el 0,3 % y no correlaciona con el nivel) ni el tráfico de I2C del AS5600
+// (cortando las transferencias el salto sigue), y necesita la alternancia (sin divisor,
+// con un canal solo, no aparece).
+//
+// De ahí el relleno de `SETTLE_US`: no deja entrar una cuarta conversión, así que el
+// conteo se queda en 3 y nunca cae en un par. Medido con el firmware final, en reposo y
+// con un solo canal emitiendo, que es el caso sensible: el rango entre veinte capturas
+// pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los cinco canales de 3,6 a 1,4 mA.
+// El ruido entre filas no cambia (0,53 mA) y no se pierde ningún período.
+//
+// Las dos alternativas se probaron y son peores:
+//
+// - **Romper la alternancia**, eligiendo el canal con un bit pseudoaleatorio, mata el
+//   enganche --en el punto peor, de 55 a 2,2 mA-- pero convierte el sesgo en ruido
+//   blanco: el ruido entre filas sube de 0,55 a 2,6 mA, cinco veces.
+// - **Atar las conversiones al tick**, una ráfaga de N por tick con la fase fijada por
+//   construcción, reintroduce el sesgo de fase del PWM, que es el argumento entero a
+//   favor de dejar el conversor libre. Medido con el motor, contra el modo libre y
+//   descontando el reposo de cada configuración: a /32 con ráfagas de 3 el sesgo es de
+//   -29, +9 y -26 mA con comandos de 80, 150 y 220, y a /16 con ráfagas de 5, de -12, -3
+//   y -6 mA; la dispersión entre repeticiones sube de 0,5..3,8 mA a 1,7..17 mA. La ráfaga
+//   no llega a llenar el tick, así que queda sin mirar siempre la misma fracción del
+//   período del PWM. El relleno, en cambio, no toca la fase: la cadena sigue corriendo
+//   continua entre ticks, sólo que más lenta, y el sesgo medido contra el modo de antes
+//   es de +3,1, -0,8 y +2,7 mA, sin tendencia con el ciclo de trabajo.
+//
+// Un capacitor de 100 nF de A0 a masa baja el salto de 62 a 26 mA por su cuenta, y está
+// puesto en este banco, pero no lo elimina: lo que lo elimina es el relleno.
 //
 // Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
@@ -108,11 +126,34 @@
 #include <Arduino.h>
 #include <stdint.h>
 #include <util/atomic.h>
+#include <util/delay.h>
 
 template <uint8_t Channel, uint8_t SupplyChannel>
 class RowAdc
 {
     public:
+
+    // Microsegundos de espera entre escribir el canal y arrancar la conversión, y sólo
+    // cuando se alterna. No es tiempo de asentamiento: es lo que impide que entre una
+    // cuarta conversión en el tick, y está ahí para que el conteo por tick no caiga
+    // nunca en un número PAR. Ver el bloque de la paridad en la cabecera de este
+    // archivo, y elegirlo de nuevo si cambia el trabajo que hace alguna de las dos
+    // interrupciones: las perillas con las que se midió están en la rama
+    // diagnostico/fase-del-mux.
+    //
+    // Medido en el clon, barriendo el ritmo del tick de 4,35 a 5,56 kHz --veinte veces
+    // más de lo que se corre el reloj RC de esta placa-- con los cinco canales emitiendo:
+    //
+    //   relleno   conteo por tick, de 5,56 a 4,35 kHz          períodos perdidos
+    //     0 us    3,00 3,00 3,70 3,99 4,00 4,00                    0
+    //     2 us    3,00 3,00 3,00 3,75 4,00 4,00                    0
+    //     3 us    2,61 3,00 3,00 3,08 3,03 3,65                    0
+    //     4 us    2,41 3,00 3,00 3,00 3,03 3,47                  128
+    //     6 us    2,28 2,73 3,00 3,00 3,01 3,02                  508
+    //
+    // Con 2 o menos el conteo todavía llega a 4 en los ritmos lentos; con 4 o más el
+    // muestreador empieza a perder períodos. Tres es el único que cumple las dos cosas.
+    static const uint8_t SETTLE_US = 3;
 
     // 1 pasa cada tick por una media de los últimos 4 ticks antes de sumarlo a la fila;
     // 0 suma cada tick tal cual. Público porque la tabla del enlace toma su dirección.
@@ -169,6 +210,10 @@ class RowAdc
         // La próxima: su canal primero, y recién después arrancarla.
         m_channel = (m_alternate && !k) ? 1 : 0;
         ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_channel ? SupplyChannel : Channel) & 0x1F));
+        if (m_alternate)
+        {
+            _delay_us(SETTLE_US);   // que no entre una cuarta conversión; ver SETTLE_US
+        }
         ADCSRA |= _BV(ADSC);
 
         m_sum[k] += v;
