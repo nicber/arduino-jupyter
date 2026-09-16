@@ -460,7 +460,17 @@ static void refresh_tuning(void)
 {
     CtrlLink::set_period_us(g_clock.apply(SAMPLE_HZ));
 
-    g_lut.apply(g_lutw);
+    // El checksum sólo cuando la tabla se movió; apply() ya sabe si se movió.
+    // Recorrer las 64 entradas cuesta del orden de 700 ciclos, y refresh_tuning()
+    // corre con CADA escritura de parámetro --`ctl_uff` incluido-- adentro del mismo
+    // período de control en el que cayó el `set`. Con la fila ocupando el 76 % del
+    // período, eso lo convertía en el candidato más probable a período perdido en
+    // medio de una captura. `ang_lutsum` sigue describiendo lo que hay: la tabla no
+    // cambia por ninguna otra vía.
+    if (g_lut.apply(g_lutw))
+    {
+        g_lutsum = g_lut.checksum();
+    }
 
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
@@ -482,9 +492,6 @@ static void refresh_tuning(void)
     // Con la frecuencia de las filas de ahora: `loop_div` también la mueve.
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
-    // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
-    // describe lo que hay, y la computadora verifica 64 entradas con una lectura.
-    g_lutsum = g_lut.checksum();
 }
 
 // La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy fuerte,
@@ -586,6 +593,10 @@ void setup()
     g_notch.nyquist   = 1;
     g_adc.ma          = 1;
     refresh_tuning();
+
+    // Y una vez sin condición, para que `ang_lutsum` describa la tabla vacía sin
+    // depender de que el valor inicial del parámetro coincida con el aplicado.
+    g_lutsum = g_lut.checksum();
 
     g_adc.begin(adc_full);
     Sensor::begin();

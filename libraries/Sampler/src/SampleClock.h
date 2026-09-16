@@ -187,6 +187,13 @@ class SampleClock
         }
 
         m_divider = divide;
+
+        // Y el contador arranca de cero: si no, el primer período después de mover
+        // `loop_div` dura cualquier cosa entre 1 y el divisor viejo, o sea una fila
+        // con marca de tiempo mentirosa justo después de cada `set loop_div`. La
+        // escritura es de un byte, que en un AVR es atómica contra la ISR.
+        m_count = 0;
+
         return (uint32_t)divide * 1000000UL / (uint32_t)hz;
     }
 
