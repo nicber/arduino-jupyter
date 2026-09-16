@@ -210,6 +210,32 @@ class RowAdc
     // dirección.
     uint8_t ma;
 
+    // Cuántas conversiones puede juntar un tick antes de que su suma se pase del
+    // tipo que la guarda.
+    //
+    // No es una cota teórica: `close_tick()` es lo único que pone la suma del tick en
+    // cero, y corre en la ISR del muestreador. Cualquiera que enmascare esa
+    // interrupción con el ADC andando deja las conversiones acumulándose en un solo
+    // "tick" que dura lo que dure la pausa. Y eso pasa: `apply_sensor_filter()` llama
+    // a SampleClock::pause() y se toma de 2 a 7 ms --hasta 5 esperando el bus y 2 de
+    // holgura-- con el conversor libre. A /32 son de 62 a 218 conversiones, o sea una
+    // suma de hasta 892 710.
+    //
+    // Sin acotarlo, con la suma en 16 bits eso da la vuelta 27 veces. Y aun con la de
+    // 32, que no desborda, el tick siguiente a la pausa informaba 218 conversiones
+    // como si fueran de un tick: la media móvil se las come durante cuatro ticks y la
+    // fila entera queda corrida. Acotar acá arregla las dos cosas, y cuesta una
+    // comparación por conversión sobre un valor que ya se estaba incrementando.
+    //
+    // Ocho: a /32 y en el tick más lento que el reloj RC de esta placa puede dar
+    // entran 7, así que nunca se alcanza en operación normal, y 8 x 4095 = 32 760
+    // todavía entra en el int16.
+#if SENSE_DIAG
+    static const uint16_t MAX_TICK_CONV = 255;    // con la suma en 32 bits no aprieta
+#else
+    static const uint16_t MAX_TICK_CONV = 8;
+#endif
+
     // Cuántos ticks entran en esa media. Potencia de dos a propósito: MovingAverage
     // resuelve la división de la media con un corrimiento, y acá ni siquiera hace
     // falta la media --lo que se usa es la suma corrida, porque lo que sigue divide
@@ -375,8 +401,15 @@ class RowAdc
         // del ADSC, el mismo hueco sale con menos relleno y la interrupción termina
         // antes. Son ~15 000 conversiones por segundo, así que cada microsegundo que
         // se le saca es un 1,5 % del procesador.
-        m_sum[k] += (TickSum)v;
-        m_n[k]++;
+        //
+        // Acotado: si nadie cierra el tick --porque alguien enmascaró la ISR del
+        // muestreador con el conversor andando-- esto se acumularía sin fin. Ver
+        // MAX_TICK_CONV.
+        if (m_n[k] < MAX_TICK_CONV)
+        {
+            m_sum[k] += (TickSum)v;
+            m_n[k]++;
+        }
 
         if (m_alternate)
         {

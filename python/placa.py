@@ -47,9 +47,22 @@ SKETCH    = _HERE / 'Banco'
 # es la que manda: así se hereda todo lo demás en lugar de copiarlo a mano. El
 # enlace también lleva `-O2`, porque con `-flto` el grueso de la generación de
 # código pasa ahí.
+#
+# `SERIAL_TX_BUFFER_SIZE` sube de los 64 del core a 128. Es lo que `emit()` mira con
+# `availableForWrite()` para decidir si la fila entra o se descarta, así que es el
+# margen entre el lazo y la UART: con 64 y la fila de 27 bytes por omisión no se
+# descarta ninguna --medido, `drops = 0` hasta 5 kHz-- pero una fila más ancha o un
+# `set` en medio de una captura comen de ahí. Cuesta 64 bytes de RAM.
+#
+# El de recepción NO se toca, y vale la pena decir por qué: los bytes de un comando
+# se pierden en el buffer de DOS bytes del USART mientras las interrupciones están
+# deshabilitadas, no en el anillo de software, así que agrandar el anillo no cambia
+# nada. Lo que sí lo arregla es espaciar los bytes, que es lo que hace `_BYTE_GAP`
+# en ctrllink.py. Y un comando son 40 caracteres como mucho (CTRL_CMD_LEN), o sea
+# que en 64 entra con holgura.
 BUILD_PROPERTIES = [
     'compiler.c.extra_flags=-O2',
-    'compiler.cpp.extra_flags=-O2',
+    'compiler.cpp.extra_flags=-O2 -DSERIAL_TX_BUFFER_SIZE=128',
     'compiler.c.elf.extra_flags=-O2',
 ]
 
