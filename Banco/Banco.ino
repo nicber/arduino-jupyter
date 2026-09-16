@@ -196,6 +196,16 @@ static uint8_t g_cur_frac = SENSE_FRAC_BITS;
 // velocidad falsa, y sin la marca no hay manera de saber cuál es.
 static uint8_t g_y_rep = 0;
 
+// Las perillas de diagnóstico del conversor, compiladas afuera salvo -DSENSE_DIAG=1.
+// Ver SENSE_DIAG en Sense/RowAdc.h: son con las que se eligió el relleno de 3 us.
+#if SENSE_DIAG
+static uint8_t  g_dbg_i2c = 1;   // 0 corta las transferencias del AS5600 en la ISR
+static uint8_t  g_dbg_ocr = 99;  // el TOP del Timer2: mueve el ritmo del tick
+static uint16_t g_a0 = 0;        // la media cruda de A0 de la fila, en dieciseisavos
+static uint16_t g_a1 = 0;
+static uint16_t g_conv = 0;      // cuántas conversiones entraron en la fila
+#endif
+
 // Los signos del banco: 1 si un comando positivo, sin corregir, hace bajar el
 // ángulo o sale como corriente negativa. Los mide bringup().
 static uint8_t g_ang_inv = 0;
@@ -262,6 +272,14 @@ static const CtrlParam PROGMEM g_params[] =
 
     { "cur_zero",    CTRL_I16, &g_current.zero,      0 },
     { "cur_frac",    CTRL_U8,  &g_cur_frac,          0 },
+#if SENSE_DIAG
+    { "dbg_i2c",     CTRL_U8,  &g_dbg_i2c,           0 },
+    { "dbg_ocr",     CTRL_U8,  &g_dbg_ocr,           0 },
+    { "dbg_settle",  CTRL_U8,  &g_adc.settle_us,     0 },
+    { "dbg_lock",    CTRL_U8,  &g_adc.lock_n,        0 },
+    { "dbg_pre",     CTRL_U8,  &g_adc.pre,           0 },
+    { "dbg_mix",     CTRL_U8,  &g_adc.mix,           0 },
+#endif
     { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
     { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0 },
@@ -287,6 +305,11 @@ static const CtrlChannel PROGMEM g_channels[] =
     { "y_rep", CTRL_U8,  &g_y_rep,        1.0f,             ""    },
     { "u",     CTRL_I16, &g_motor.u,      1.0f,             "pwm" },
     { "i",     CTRL_I16, &g_i,            SENSE_MA_PER_LSB, "mA"  },
+#if SENSE_DIAG
+    { "a0",    CTRL_U16, &g_a0,           0.0625f,          ""    },
+    { "a1",    CTRL_U16, &g_a1,           0.0625f,          ""    },
+    { "conv",  CTRL_U16, &g_conv,         1.0f,             ""    },
+#endif
 };
 
 // ----------------------------------------------------------------------- la ISR
@@ -304,7 +327,12 @@ ISR(TIMER2_COMPA_vect)
     // no interrumpe esta ISR, así que el borde del tick es éste.
     g_adc.close_tick();
 
-    Sensor::do_transfer();
+#if SENSE_DIAG
+    if (g_dbg_i2c)
+#endif
+    {
+        Sensor::do_transfer();
+    }
 
     // Una vuelta de desenrollado por muestra. Una muestra repetida no avanza nada.
     const uint16_t counts = Sensor::counts();
@@ -396,6 +424,10 @@ static void step(void)
     uint16_t n, supply_n;
     g_adc.row(sum, n, supply_sum, supply_n);
 
+#if SENSE_DIAG
+    g_adc.raw_means(g_a0, g_a1, g_conv);
+#endif
+
     g_window.push(sum, n);
     g_supply_window.push(supply_sum, supply_n);
     g_current.update_q4(g_ratio.counts_q4(g_window.total(), g_window.count(),
@@ -424,6 +456,14 @@ static void refresh_tuning(void)
 
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
+
+#if SENSE_DIAG
+    g_adc.reconfigure();
+    if (g_dbg_ocr >= 40)
+    {
+        OCR2A = g_dbg_ocr;
+    }
+#endif
 
     g_window.apply();
     g_supply_window.rows = g_window.rows;

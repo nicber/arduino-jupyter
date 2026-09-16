@@ -128,6 +128,15 @@
 #include <util/atomic.h>
 #include <util/delay.h>
 
+// Las perillas con las que se midió la paridad de las conversiones --el ritmo del
+// conversor, el largo de la ráfaga, el orden de los canales y las medias crudas de cada
+// canal-- viven acá pero se compilan afuera. Con `-DSENSE_DIAG=1` aparecen, y con ellas
+// se vuelve a elegir `SETTLE_US` si cambia el trabajo de alguna de las dos
+// interrupciones. El binario por omisión es el mismo que sin este bloque.
+#ifndef SENSE_DIAG
+#define SENSE_DIAG 0
+#endif
+
 template <uint8_t Channel, uint8_t SupplyChannel>
 class RowAdc
 {
@@ -138,8 +147,8 @@ class RowAdc
     // cuarta conversión en el tick, y está ahí para que el conteo por tick no caiga
     // nunca en un número PAR. Ver el bloque de la paridad en la cabecera de este
     // archivo, y elegirlo de nuevo si cambia el trabajo que hace alguna de las dos
-    // interrupciones: las perillas con las que se midió están en la rama
-    // diagnostico/fase-del-mux.
+    // interrupciones: las perillas con las que se midió se compilan con
+    // `-DSENSE_DIAG=1` (ver SENSE_DIAG, arriba).
     //
     // Medido en el clon, barriendo el ritmo del tick de 4,35 a 5,56 kHz --veinte veces
     // más de lo que se corre el reloj RC de esta placa-- con los cinco canales emitiendo:
@@ -159,8 +168,23 @@ class RowAdc
     // 0 suma cada tick tal cual. Público porque la tabla del enlace toma su dirección.
     uint8_t ma;
 
+#if SENSE_DIAG
+    uint8_t settle_us;  // reemplaza a SETTLE_US, para barrerlo
+    uint8_t lock_n;     // N > 0: una ráfaga de N conversiones por tick, con la fase fija
+    uint8_t pre;        // preescalador del ADC (3 = /8, 4 = /16, 5 = /32), en caliente
+    uint8_t mix;        // 1: el canal lo elige un LFSR, así la secuencia no tiene período 2
+#endif
+
     constexpr RowAdc()
         : ma(0)
+#if SENSE_DIAG
+        , settle_us(SETTLE_US)
+        , lock_n(0)
+        , pre(0)
+        , mix(0)
+        , m_burst(0)
+        , m_lfsr(0xACE1)
+#endif
         , m_sum()
         , m_n()
         , m_hist_sum()
@@ -195,6 +219,42 @@ class RowAdc
         ADCSRA |= _BV(ADSC);
     }
 
+#if SENSE_DIAG
+    // Reaplicar el preescalador sin reiniciar el ADC entero, y levantar la cadena si
+    // quedó parada: al volver de la ráfaga al modo libre no la arranca nadie más.
+    void reconfigure(void)
+    {
+        const uint8_t p = prescaler();
+        if ((ADCSRA & 0x07) != p)
+        {
+            ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | p);
+        }
+        if (!(ADCSRA & _BV(ADSC)))
+        {
+            m_burst   = 0;
+            m_channel = 0;
+            ADMUX = (uint8_t)((ADMUX & ~0x1F) | (Channel & 0x1F));
+            ADCSRA |= _BV(ADSC);
+        }
+    }
+
+    // Las medias crudas de la última fila, en dieciseisavos de cuenta, y cuántas
+    // conversiones entraron: para mirar cada canal por separado.
+    void raw_means(uint16_t& a0, uint16_t& a1, uint16_t& conv) const
+    {
+        uint32_t s0, s1;
+        uint16_t n0, n1;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+        {
+            s0 = m_row_sum[0]; n0 = m_row_n[0];
+            s1 = m_row_sum[1]; n1 = m_row_n[1];
+        }
+        a0 = n0 ? (uint16_t)((s0 * 16UL + n0 / 2) / n0) : 0;
+        a1 = n1 ? (uint16_t)((s1 * 16UL + n1 / 2) / n1) : 0;
+        conv = (uint16_t)(n0 + n1);
+    }
+#endif
+
     // Alternar con el canal de la alimentación, o quedarse en el del sensor.
     void alternate(bool on)
     {
@@ -207,12 +267,39 @@ class RowAdc
         const uint8_t k = m_channel;
         const uint16_t v = ADC;
 
+#if SENSE_DIAG
+        // Con la ráfaga atada al tick no se encadena más allá de las N conversiones; el
+        // tick siguiente arranca la próxima.
+        if (lock_n && ++m_burst >= lock_n)
+        {
+            m_sum[k] += v;
+            m_n[k]++;
+            return;
+        }
+#endif
+
         // La próxima: su canal primero, y recién después arrancarla.
+#if SENSE_DIAG
+        if (mix && m_alternate)
+        {
+            m_lfsr = (uint16_t)((m_lfsr >> 1) ^ (uint16_t)(-(int16_t)(m_lfsr & 1) & 0xB400));
+            m_channel = (uint8_t)(m_lfsr & 1);
+        }
+        else
+        {
+            m_channel = (m_alternate && !k) ? 1 : 0;
+        }
+#else
         m_channel = (m_alternate && !k) ? 1 : 0;
+#endif
         ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_channel ? SupplyChannel : Channel) & 0x1F));
         if (m_alternate)
         {
+#if SENSE_DIAG
+            for (uint8_t w = 0; w < settle_us; w++) { _delay_us(1); }
+#else
             _delay_us(SETTLE_US);   // que no entre una cuarta conversión; ver SETTLE_US
+#endif
         }
         ADCSRA |= _BV(ADSC);
 
@@ -226,6 +313,16 @@ class RowAdc
     // promedio sigue siendo suma sobre n).
     void close_tick(void)
     {
+#if SENSE_DIAG
+        if (lock_n && !(ADCSRA & _BV(ADSC)))
+        {
+            m_burst   = 0;
+            m_channel = 0;
+            ADMUX = (uint8_t)((ADMUX & ~0x1F) | (Channel & 0x1F));
+            ADCSRA |= _BV(ADSC);
+        }
+#endif
+
         for (uint8_t k = 0; k < 2; k++)
         {
             const uint32_t s = m_sum[k];
@@ -288,6 +385,12 @@ class RowAdc
 
     uint8_t prescaler(void) const
     {
+#if SENSE_DIAG
+        if (pre)
+        {
+            return (uint8_t)(pre & 0x07);
+        }
+#endif
         return m_lgt ? (uint8_t)(_BV(ADPS2) | _BV(ADPS0))                      // /32
                      : (uint8_t)(_BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0));        // /128
     }
@@ -302,6 +405,10 @@ class RowAdc
     volatile uint16_t m_row_n[2];
     volatile uint8_t  m_channel;    // de qué canal es la conversión en curso
     volatile bool     m_alternate;
+#if SENSE_DIAG
+    volatile uint8_t  m_burst;
+    volatile uint16_t m_lfsr;
+#endif
     bool              m_lgt;
     uint8_t           m_shift;
 };

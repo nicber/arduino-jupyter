@@ -72,9 +72,21 @@ def _tabla(texto, declaracion):
     resto  = texto[inicio:]
     fin    = resto.index('\n};')
 
+    # Lo que está adentro de un `#if SENSE_DIAG` no es de la interfaz: son las perillas
+    # de diagnóstico del conversor, que se compilan afuera salvo que se las pida. Ver
+    # SENSE_DIAG en Sense/RowAdc.h.
     entradas = []
+    diagnostico = 0
     for linea in resto[:fin].split('\n'):
         linea = re.sub(r'//.*$', '', linea)
+        if re.match(r'\s*#\s*if\s+SENSE_DIAG', linea):
+            diagnostico += 1
+            continue
+        if diagnostico and re.match(r'\s*#\s*(endif|else)\b', linea):
+            diagnostico -= 1
+            continue
+        if diagnostico:
+            continue
         m = _ENTRADA.match(linea)
         if m:
             entradas.append(_campos(m.group(1)))
