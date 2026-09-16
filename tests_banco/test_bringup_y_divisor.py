@@ -125,18 +125,30 @@ check('con divisor, menos de 10 mA',
       ', '.join(f'{restos[(DIV_E4, u)]:+.1f} mA a {u}' for u in (48, 255)))
 
 # Un divisor declarado pero sin cablear: aborta y vuelve a medir contra AVCC.
+#
+# Y deja el cero donde estaba. El orden viejo recalibraba el cero ANTES de mirar
+# A1, así que al abortar restituía `cur_div` y dejaba `cur_zero` calibrado contra
+# un divisor que ya no está: el banco quedaba a medio calibrar, sin ningún aviso y
+# con la corriente corrida de amperes.
 for falla in (None, 'suelto'):
     banco = BancoConFallas(divisor=falla, semilla=6)
     cab = tmp / f'cableado_sindiv_{falla}.json'
     rig = bench_sobre(banco, cab)
     rig.mot_bidir = 0
+    cero_antes = int(rig.cur_zero)
+    reposo_antes = float(rig.capture(0.5, warn=False)['i'].mean())
     try:
         callado(rig.declarar_divisor, *DIVISOR_DEL_BANCO)
         abortó = False
     except RuntimeError:
         abortó = True
+    reposo_después = float(rig.capture(0.5, warn=False)['i'].mean())
     check(f'declarar_divisor aborta con A1 {"sin nada" if falla is None else "suelto"}',
           abortó and rig.cur_div == 0 and not cab.exists(), f'cur_div = {rig.cur_div}')
+    check(f'y no deja el cero movido con A1 {"sin nada" if falla is None else "suelto"}',
+          int(rig.cur_zero) == cero_antes and abs(reposo_después - reposo_antes) < 50,
+          f'cur_zero {cero_antes} -> {int(rig.cur_zero)}, '
+          f'reposo {reposo_antes:+.1f} -> {reposo_después:+.1f} mA')
 
 # ------------------------------------------------------------ configurar
 banco = BancoConFallas(angulo_invertido=True, sensor_invertido=True, semilla=7)

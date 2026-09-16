@@ -95,6 +95,15 @@ MA_POR_CUENTA = 1000.0 * MV_POR_CUENTA / 185.0
 CUR_FRAC      = 4
 SUBCUENTAS    = 1 << CUR_FRAC
 MA_POR_UNIDAD = MA_POR_CUENTA / SUBCUENTAS
+# El reposo del sensor, en cuentas crudas de A0.
+#
+# Divergencia conocida contra el banco real: con el divisor puesto, esto publica
+# 2105 cuentas equivalentes y la placa del banco mide 2000-2001 (2026-09-16), o sea
+# un 5,2 % de diferencia. 2000 es la mitad de la alimentación del sensor, que es
+# donde debería reposar; este simulador reposa como un sensor con +105 cuentas de
+# offset, que no es el que está puesto. Se deja como está porque mover esto corre
+# los números de todas las pruebas simuladas a la vez, y porque no produce ningún
+# aviso falso: se comprobó que bringup() no se queja en 12 de 12 semillas sanas.
 REPOSO_I = 2048 + 57         # cuentas
 
 _Canal = namedtuple('_Canal', 'name scale unit')

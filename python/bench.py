@@ -84,7 +84,18 @@ _ARRANQUE_S = 0.1
 def _sin_arranque(df):
     """La captura sin sus primeros `_ARRANQUE_S` segundos."""
     t = df['t'].to_numpy()
-    return df[t >= t[0] + _ARRANQUE_S] if len(t) else df
+    if not len(t):
+        return df
+
+    resto = df[t >= t[0] + _ARRANQUE_S]
+    if not len(resto):
+        # Si no, lo que sigue promedia un cuadro vacío y devuelve NaN, que aguas
+        # abajo se convierte en un cero calibrado a partir de nada.
+        raise ValueError(
+            f'la captura dura {t[-1] - t[0]:.3f} s y se descartan los primeros '
+            f'{_ARRANQUE_S:g} s de arranque: no queda nada para promediar. '
+            f'Pedir al menos {2 * _ARRANQUE_S:g} s.')
+    return resto
 
 
 def leer_cableado(ruta=CABLEADO):
@@ -298,7 +309,21 @@ class Bench:
         mueve 1,1 y 1,4 mA de captura a captura. Por omisión, todos, que es lo que emite
         `capture()` si no se le pide otra cosa.
         """
-        self.cur_zero = round(self._reposo_de_corriente(seconds, canales))
+        reposo = self._reposo_de_corriente(seconds, canales)
+
+        # Una entrada al aire termina contra un riel del conversor. Eso es una
+        # ausencia y no un offset: tomarlo como cero deja un canal que informa ceros
+        # perfectos sin haber medido nada, y nada aguas abajo lo vuelve a mirar.
+        # bringup() ya hace esta comprobación; acá hace falta igual, porque
+        # zero_current() se llama sola desde los notebooks y desde declarar_divisor().
+        if not _ADC_RAIL <= reposo <= _ADC_FULL - _ADC_RAIL:
+            raise RuntimeError(
+                f'el sensor reposa en {reposo:.0f} cuentas de {_ADC_FULL}, contra un '
+                f'riel del conversor: eso es una entrada al aire o una saturación, no '
+                f'un offset. No se calibra nada; revisar A0. El cero queda en '
+                f'{self.cur_zero}.')
+
+        self.cur_zero = round(reposo)
         return self.cur_zero
 
     def _reposo_de_corriente(self, seconds=0.6, canales=None):
@@ -512,20 +537,40 @@ class Bench:
         en `CABLEADO`. Devuelve la relación en diezmilésimas.
         """
         relacion = abajo_ohm / (arriba_ohm + abajo_ohm)
-        self.cur_div = int(round(relacion * 10000))
-        ensayo.esperar_quieto(self, limite=15.0)
-        self.zero_current()
+        antes_div = int(self.cur_div)
+        antes_cero = int(self.cur_zero)
 
-        a1 = int(self.cur_a1)
+        # A1 no se puede mirar antes de declarar el divisor: la placa sólo alterna
+        # canales cuando `cur_div` no es cero, así que sin divisor declarado `cur_a1`
+        # vale 0 por definición. Lo que sí se puede es NO recalibrar el cero hasta
+        # haberlo mirado, que es donde estaba el defecto: el orden viejo re-cero
+        # primero y verificaba después, y al fallar restituía `cur_div` pero dejaba
+        # `cur_zero` calibrado contra un divisor que ya no está. Medido sobre el
+        # simulador, eso movía el cero de 3233 a 4095 y el reposo de +2,3 mA a
+        # -5823 mA. Es el mismo defecto que tenía medir_divisor().
         fondo = _ADC_FULL + 1
-        print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relación {relacion:.4f}; '
-              f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala)')
-        if a1 < 0.05 * fondo or a1 > 0.97 * fondo:
-            self.cur_div = 0
-            raise RuntimeError(
-                f'A1 lee {a1} cuentas: el divisor no está conectado, o la salida supera la '
-                f'alimentación del micro. La placa vuelve a medir contra AVCC; revisar el '
-                f'cableado y volver a declararlo.')
+        try:
+            self.cur_div = int(round(relacion * 10000))
+
+            # Una fila con el divisor ya puesto, para que `cur_a1` tenga algo que
+            # informar antes de decidir.
+            self.capture(0.2, warn=False)
+            a1 = int(self.cur_a1)
+            print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relación {relacion:.4f}; '
+                  f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala)')
+            if a1 < 0.05 * fondo or a1 > 0.97 * fondo:
+                raise RuntimeError(
+                    f'A1 lee {a1} cuentas: el divisor no está conectado, o la salida '
+                    f'supera la alimentación del micro. No queda declarado: la placa '
+                    f'vuelve a medir como venía. Revisar el cableado y volver a '
+                    f'declararlo.')
+
+            ensayo.esperar_quieto(self, limite=15.0)
+            self.zero_current()
+        except BaseException:
+            self.cur_div = antes_div
+            self.cur_zero = antes_cero
+            raise
 
         # El sensor reposa en la mitad de su alimentación, que en cuentas equivalentes
         # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto: la
@@ -542,7 +587,10 @@ class Bench:
               'de la tolerancia de ellas.')
 
         if guardar:
-            _actualizar_cableado(cur_div=self.cur_div)
+            # `cur_div_medido` en falso: esta relación sale de las resistencias
+            # declaradas, no del reposo del sensor. Sin esto, un divisor declarado
+            # después de uno medido seguía anunciándose como medido.
+            _actualizar_cableado(cur_div=self.cur_div, cur_div_medido=False)
             _borrar_del_cableado('cur_sag', 'cur_sagc', 'cur_sagd', 'cur_red')
         return self.cur_div
 
@@ -589,10 +637,16 @@ class Bench:
 
         late   = df.attrs['maxlate']
         margin = late / df.attrs['dt_us']
+        # Con períodos perdidos esto no es un margen: el lazo no llegó, y decir que
+        # sobra tiempo porque el retardo es chico sería mirar el número equivocado.
         report('margen de tiempo',
-               True if margin < 0.5 else (None if margin < 1.0 else False),
+               False if missed else (True if margin < 0.5 else
+                                     (None if margin < 1.0 else False)),
                f'peor retardo de atención {late} us de {df.attrs["dt_us"]:.0f} us '
-               f'({margin:.0%})')
+               f'({margin:.0%})'
+               + ('' if not missed else
+                  f' -- pero con {missed} período(s) perdido(s) no hay margen que '
+                  f'medir: el lazo no llegó'))
 
         # 2. El sensor, antes que el imán: si el AS5600 no contesta en el bus, lo
         #    que diga su registro del imán no significa nada.
@@ -649,7 +703,12 @@ class Bench:
         #    deja lugar para medir, aunque no llegue al riel.
         lsb = self.channel('i').scale       # mA por unidad publicada de `i`
         cuenta = self._ma_por_cuenta()      # mA por cuenta del conversor
-        adc = self.cur_zero + df['i'].mean() / cuenta
+        # Con el signo, igual que _reposo_de_corriente(): `i` se publica como
+        # s * (adc - cur_zero), así que sin deshacer `cur_inv` esto daba
+        # 2*cur_zero - adc. Los márgenes salían al revés y un riel podía quedar
+        # mapeado adentro del rango, o sea que bringup() daba por bueno el cero de
+        # una entrada al aire.
+        adc = self.cur_zero + self._signo_corriente() * df['i'].mean() / cuenta
         sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
         rest_ma = noise = 0.0
 
@@ -824,7 +883,6 @@ class Bench:
 
         poner(medidos)
         invierte = (v_pos > 0) != (v_neg > 0) if abs(v_neg) > _GIRO_MINIMO else None
-        self._guardar_cableado(medidos, mide_i, invierte)
 
         v_pos, df_pos = self._tiron(u)
         v_neg, df_neg = self._tiron(-u)
@@ -833,12 +891,21 @@ class Bench:
         # Sin `ang_inv` la placa no invierte el signo del ángulo, así que sólo se exige que gire.
         sube = v_pos > _GIRO_MINIMO if 'ang_inv' in medidos else abs(v_pos) > _GIRO_MINIMO
         ok = sube and (not mide_i or 'cur_inv' not in medidos or i_pos > 0)
+        # Se guardan recién acá, con los signos ya verificados por el tirón de
+        # arriba: escribir el archivo antes dejaba persistido un juego de signos que
+        # la comprobación siguiente podía desmentir, y el archivo es lo que se carga
+        # en la sesión siguiente.
+        if ok:
+            self._guardar_cableado(medidos, mide_i, invierte)
+
         report('signos', ok,
                ', '.join(f'{n} = {v}' for n, v in medidos.items())
                + ('' if mide_i else ' (la corriente no se despega del cero: sin medir)')
                + f'; +u da {v_pos:+.2f} vueltas, y la corriente arranca {i_pos:+.0f} mA '
                f'por encima de donde termina. '
-               f'Guardados en {CABLEADO.name}')
+               + (f'Guardados en {CABLEADO.name}' if ok else
+                  f'NO se guardaron en {CABLEADO.name}: la comprobación no los '
+                  f'confirmó. Quedan puestos en la placa para esta sesión.'))
 
         u_neg = df_neg[df_neg['t'] >= 0.01]['u'].min()
         if bidir:
