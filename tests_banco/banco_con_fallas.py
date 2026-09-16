@@ -115,8 +115,8 @@ class BancoConFallas(bs.BancoSimulado):
             publicado = a0
         else:
             with np.errstate(divide='ignore'):
-                publicado = np.where(a1 > 0, a0 / np.maximum(a1, 1e-9) * 4000 * div / 10000, 32767)
-            publicado = np.minimum(publicado, 32767)
+                publicado = np.where(a1 > 0, a0 / np.maximum(a1, 1e-9) * 4000 * div / 10000, 4095)
+            publicado = np.minimum(publicado, 4095)
         df['i'] = s_pub * (publicado - self.cur_zero) * lsb
 
         if canales is not None:

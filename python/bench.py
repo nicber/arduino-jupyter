@@ -431,28 +431,49 @@ class Bench:
                 'con dev.declarar_divisor(arriba_ohm, abajo_ohm).')
 
         ensayo.esperar_quieto(self, limite=15.0)
-        antes = int(self.cur_div)
-        reposo = self._reposo_de_corriente()
-        if reposo <= 0:
+        antes_div  = int(self.cur_div)
+        antes_cero = int(self.cur_zero)
+
+        # Todo lo que puede salir mal se revisa ANTES de escribir nada: una medición
+        # mala que dejara `cur_div` puesto y el cero recalibrado contra él daría un
+        # canal corrido de amperes, sin ningún aviso y para siempre.
+        a1 = int(self.cur_a1)
+        fondo = _ADC_FULL + 1
+        if not 0.05 * fondo < a1 < 0.97 * fondo:
             raise CtrlLinkError(
-                f'el sensor reposa en {reposo:.0f} cuentas equivalentes: contra un riel '
-                f'del conversor no hay nada que medir. Revisar A0 y el divisor de A1.')
+                f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala): el divisor no está '
+                f'conectado, o su salida supera la alimentación del micro. No se mide '
+                f'nada; queda {antes_div / 10000:.4f}, el de antes.')
 
-        medido = int(round(2000.0 * antes / reposo))
-        self.cur_div = medido
-        self.zero_current()
+        reposo = self._reposo_de_corriente()
+        if not _ADC_RAIL <= reposo <= _ADC_FULL - _ADC_RAIL:
+            raise CtrlLinkError(
+                f'el sensor reposa en {reposo:.0f} cuentas equivalentes, contra un riel '
+                f'del conversor: eso es una entrada al aire o una saturación, no un '
+                f'reposo. Revisar A0 y el divisor de A1. Queda '
+                f'{antes_div / 10000:.4f}, el de antes.')
 
-        say(f'divisor de A1 medido contra el reposo del sensor: relación '
-            f'{medido / 10000:.4f} ({medido}), {medido / antes - 1:+.1%} de lo que '
-            f'estaba puesto; el sensor queda en {self.cur_zero} cuentas equivalentes '
-            f'(2000 es la mitad de su alimentación)')
+        medido = int(round(2000.0 * antes_div / reposo))
         if not 1000 <= medido <= 6000:
-            self.cur_div = antes
             raise CtrlLinkError(
                 f'la relación medida, {medido / 10000:.4f}, no es la de un divisor que '
                 f'lleve 5 V a la entrada de este conversor. O el eje no estaba quieto, o '
                 f'A0 no es la salida del sensor, o A1 no cuelga de los 5 V. Queda '
-                f'{antes / 10000:.4f}, el de antes.')
+                f'{antes_div / 10000:.4f}, el de antes.')
+
+        # Recién ahora se toca la placa, y si algo falla acá se deshacen las dos cosas.
+        try:
+            self.cur_div = medido
+            self.zero_current()
+        except BaseException:
+            self.cur_div  = antes_div
+            self.cur_zero = antes_cero
+            raise
+
+        say(f'divisor de A1 medido contra el reposo del sensor: relación '
+            f'{medido / 10000:.4f} ({medido}), {medido / antes_div - 1:+.1%} de lo que '
+            f'estaba puesto; el sensor queda en {self.cur_zero} cuentas equivalentes '
+            f'(2000 es la mitad de su alimentación)')
 
         if guardar:
             _actualizar_cableado(cur_div=medido, cur_div_medido=True)

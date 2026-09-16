@@ -103,9 +103,7 @@ class SupplyRatio
             return 0;
         }
 
-        // Medias en dieciseisavos de cuenta: una suma de 32 filas de 91 conversiones
-        // de 4095 por 16 todavía entra en 32 bits.
-        const uint32_t mean0_q4 = (sum0 * 16UL + n0 / 2) / n0;
+        const uint32_t mean0_q4 = media_q4(sum0, n0);
 
         if (!active() || !n1)
         {
@@ -115,7 +113,7 @@ class SupplyRatio
             return cap((mean0_q4 * (uint32_t)AVCC_Q12 + 2048UL) >> 12);
         }
 
-        const uint32_t mean1_q4 = (sum1 * 16UL + n1 / 2) / n1;
+        const uint32_t mean1_q4 = media_q4(sum1, n1);
         supply = (uint16_t)((mean1_q4 + 8) >> FRAC_BITS);
         if (!mean1_q4)
         {
@@ -132,6 +130,21 @@ class SupplyRatio
     }
 
     private:
+
+    // La media en dieciseisavos de cuenta. El camino corto multiplica primero, que es
+    // una división y no dos, y entra en 32 bits mientras la suma no pase de 2^32/16:
+    // 32 filas de 91 conversiones de 4095 dan 190 millones y sobra. Pero `loop_div`
+    // llega a 255, y con filas de 255 ticks y la media de 4 ticks la ventana junta
+    // decenas de miles de conversiones: ahí la suma sí se pasa, y el camino largo la
+    // parte en cociente y resto, que es exacto y no desborda.
+    static uint32_t media_q4(uint32_t suma, uint32_t n)
+    {
+        if (suma <= 0xFFFFFFFFUL / 16UL)
+        {
+            return (suma * 16UL + n / 2) / n;
+        }
+        return (suma / n) * 16UL + ((suma % n) * 16UL + n / 2) / n;
+    }
 
     // AVCC_MV / 5120 en Q12. Con 5006 mV da 4005, que erra +50 ppm contra el cociente
     // exacto: tres órdenes de magnitud menos que la incertidumbre del propio 5006.

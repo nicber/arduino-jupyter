@@ -72,13 +72,25 @@ class MainsNotch
 
     // Y los bits que el lazo guarda por debajo de ésa. Cada uno baja 6 dB el redondeo
     // que se realimenta --simulado: 0,62, 0,35 y 0,21 mA RMS con 0, 1 y 2--, y lo que
-    // lo limita es el acumulador de 32 bits. La cota dura es la norma L1 de los
-    // coeficientes de la peor sección --la de 49,5 Hz con r = 0,95, que da 24230-- por
-    // el fondo de escala del estado: con el rango entero del canal, 2047 cuentas, el
-    // acumulador queda en el 74 % de 2^31 con un bit y desborda con dos. Quien quiera
-    // el segundo bit tiene que recortar el estado a 1023 cuentas (6,9 A con 185 mV/A),
-    // que alcanza para el ACS712 de 5 A pero no para el de 20.
-    static const uint8_t GUARD_BITS = 1;
+    // lo limita es el acumulador de 32 bits.
+    //
+    // Cuántos se pueden usar depende de las secciones que estén puestas, así que se
+    // eligen en apply() y no acá. La cota dura es la norma L1 de los coeficientes de la
+    // peor sección por el fondo de escala del estado, que con el rango entero del canal
+    // es 32767 << GUARD_MAX: hace falta L1 · (32767 << g) < 2^31. La L1 crece cuando
+    // f0/row_hz baja y cuando el polo se acerca al origen, así que depende de `loop_div`
+    // y de `pole_milli`: con el notch del Nyquist solo --lo de fábrica-- da 19016 y
+    // entran los dos bits de guarda; con los tres armónicos de la red a 500 Hz y
+    // r = 0,95, 24230, y también; pero con `loop_div = 1`, o sea filas a 5 kHz, la de
+    // 49,5 Hz da 37594 y ya no entra ninguno. Por eso se miden y se decide.
+    static const uint8_t GUARD_MAX = 1;
+
+    // Los dos topes de esa norma. Sin bits de guarda el estado llega a 32767, así que el
+    // acumulador aguanta hasta 2^31/32767; con un bit, la mitad. Una sección que no entre
+    // ni en el primero no se pone (ver add()); si entran todas en el segundo, el lazo
+    // trabaja con el bit de guarda. Los dos llevan margen para el resto arrastrado.
+    static const uint32_t L1_MAX       = 60000;
+    static const uint32_t L1_MAX_GUARD = 32000;
 
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección. Mover y llamar a apply().
@@ -108,6 +120,8 @@ class MainsNotch
         , pole_milli(950)
         , nyquist(0)
         , m_active(0)
+        , m_l1(0)
+        , m_guard(0)
         , m_fresh(true)
         , m_applied_harmonics(0xFF)
         , m_applied_milli(0)
@@ -141,6 +155,7 @@ class MainsNotch
 
         const float r = pole_milli / 1000.0f;
         m_active = 0;
+        m_l1     = 0;
 
         for (uint8_t k = 1; k <= MAX_HARMONICS; k++)
         {
@@ -164,6 +179,9 @@ class MainsNotch
             add_nyquist();
         }
 
+        // Con las secciones armadas, cuántos bits de guarda aguanta el acumulador.
+        m_guard = (m_l1 <= L1_MAX_GUARD) ? GUARD_MAX : 0;
+
         m_fresh = true;
     }
 
@@ -180,7 +198,8 @@ class MainsNotch
         }
 
         const int16_t y = step_q4(sat((int32_t)counts * (1L << FRAC_BITS)));
-        return (int16_t)((y + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
+        // En 32 bits: `y` puede valer INT16_MAX y el redondeo lo haría dar la vuelta.
+        return (int16_t)(((int32_t)y + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
     }
 
     // Una fila, en dieciseisavos de cuenta a la entrada y a la salida: la unidad en la
@@ -194,7 +213,7 @@ class MainsNotch
             return counts_q4;
         }
 
-        int32_t x = (int32_t)counts_q4 << GUARD_BITS;
+        int32_t x = (int32_t)counts_q4 << m_guard;
 
         // Al prender o cambiar algo, el estado arranca en la entrada: sin eso cada
         // cambio de parámetro sería un escalón desde cero, con su transitorio.
@@ -233,25 +252,43 @@ class MainsNotch
         }
 
         // De la unidad del lazo a la del canal, redondeando.
-        return (int16_t)((x + (1L << GUARD_BITS) / 2) >> GUARD_BITS);
+        return (int16_t)((x + (m_guard ? 1L : 0L)) >> m_guard);
     }
 
     private:
 
     void add(float f0, float row_hz, float r)
     {
-        const float c  = cos(2.0f * M_PI * f0 / row_hz);
-        const float a1 = -2.0f * r * c;
-        const float a2 = r * r;
-        const float g  = (1.0f + a1 + a2) / (2.0f - 2.0f * c);   // continua en 1
+        const float c   = cos(2.0f * M_PI * f0 / row_hz);
+        const float a1f = -2.0f * r * c;
+        const float a2f = r * r;
+        const float g   = (1.0f + a1f + a2f) / (2.0f - 2.0f * c);   // continua en 1
+        const float b1f = 1.0f + a1f + a2f - 2.0f * g;
+
+        // Con el polo lejos de la circunferencia y el cero cerca de la continua, g crece
+        // --con r = 0,9 y filas a 5 kHz llega a 3,9-- y con él los coeficientes y la
+        // norma L1, que es lo que carga el acumulador. La cuenta se hace en punto
+        // flotante, que es lo que esta función ya usa, y de paso asegura que cada
+        // coeficiente entre en Q12: ninguno puede ser más grande que la norma. Una
+        // sección que no entre no se pone, y `active()` dice cuántas quedaron: con esa
+        // ganancia ya no es un notch sino un amplificador de la banda de paso.
+        const float l1 = (2.0f * fabs(g) + fabs(b1f) + fabs(a1f) + fabs(a2f)) * 4096.0f;
+        if (!(l1 <= (float)L1_MAX))
+        {
+            return;
+        }
+        if (l1 > m_l1)
+        {
+            m_l1 = (uint16_t)l1;
+        }
 
         // b1 sale de los otros ya redondeados y no de -2 cos w0 g: así la continua
         // pasa con ganancia exactamente 1 también en Q12, y el cero se corre del
         // orden de 0,02 Hz.
         Section& s = m_sec[m_active++];
         s.b0 = q12(g);
-        s.a1 = q12(a1);
-        s.a2 = q12(a2);
+        s.a1 = q12(a1f);
+        s.a2 = q12(a2f);
         s.b1 = (int16_t)(4096 + s.a1 + s.a2 - 2 * s.b0);
     }
 
@@ -268,6 +305,13 @@ class MainsNotch
         s.a2 = (int16_t)(s.a2 - (resto > 2 ? resto - 4 : resto));
         s.b0 = (int16_t)((4096 + s.a1 + s.a2) / 4);
         s.b1 = (int16_t)(2 * s.b0);
+
+        // b1 = 2*b0, y los dos del denominador son positivos con estos polos.
+        const uint16_t l1 = (uint16_t)(4 * (int32_t)s.b0 + s.a1 + s.a2);
+        if (l1 > m_l1)
+        {
+            m_l1 = l1;
+        }
     }
 
     struct Section
@@ -290,15 +334,17 @@ class MainsNotch
     }
 
     // Lo mismo en la unidad del lazo: el rango del canal, con los bits de guarda.
-    static int32_t sat_guard(int32_t v)
+    int32_t sat_guard(int32_t v) const
     {
-        static const int32_t TOPE = (int32_t)INT16_MAX << GUARD_BITS;
-        if (v >  TOPE) return  TOPE;
-        if (v < -TOPE) return -TOPE;
+        const int32_t tope = (int32_t)INT16_MAX << m_guard;
+        if (v >  tope) return  tope;
+        if (v < -tope) return -tope;
         return v;
     }
 
     uint8_t  m_active;
+    uint16_t m_l1;          // la peor norma L1 de las secciones puestas
+    uint8_t  m_guard;       // bits de guarda que aguanta el acumulador con estas secciones
     bool     m_fresh;
     uint8_t  m_applied_harmonics;   // con qué se calcularon los coeficientes de ahora
     uint16_t m_applied_milli;
