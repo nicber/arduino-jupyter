@@ -48,8 +48,12 @@
 // de 300 kHz a 3 MHz: /32 son 500 kHz, y una conversión de 22 relojes son 44 us más
 // lo que tarde la interrupción en arrancar la siguiente. El ATmega328P quiere 50 a
 // 200 kHz para sus 10 bits: /128, 104 us. Medido en el clon con el divisor de A1
-// sin capacitor, a /32: el ruido de la corriente es de 17 mA por fila y 6 mA con 10
-// filas midiendo A0/A1, y de 21 y 5 mA midiendo sólo A0 contra AVCC.
+// sin capacitor, a /32 y en reposo, con la media de 4 ticks y el notch de 250 Hz
+// apagados para ver la ventana sola: el ruido de la corriente es de 2,9 mA por fila y
+// 0,37 mA con 10 filas midiendo A0/A1. Los dos son el desvío de la diferencia entre
+// filas consecutivas sobre raíz de dos, que es el ruido de banda: el desvío a secas
+// trae además la deriva del cero, que no se promedia y que en reposo es más grande
+// que todo esto (7 cuentas en un minuto, medidas).
 //
 // Siempre contra AVCC. Las alternativas para la referencia se descartan por lo
 // siguiente:
@@ -63,9 +67,11 @@
 //   probaron, y el divisor no lo mueve más que hasta 1,6 V; la referencia que usa
 //   el ADC en ese modo tampoco es la tensión del pin. De ahí el divisor en A1.
 //
-// Las dos placas publican en la misma escala: una cuenta son 5 * 1024 / 4096 =
-// 1,25 mV en la entrada, contra un AVCC de 5006 mV medidos en el UNO. Sin divisor esa
-// escala sólo vale en una placa a 5 V; con divisor la da SupplyRatio en cualquiera.
+// Lo que sale de acá son cuentas contra AVCC, corridas al fondo de escala de 4096 de
+// la placa de 12 bits, y nada más: cuánto vale AVCC no se sabe acá y no hace falta.
+// Llevarlas a la escala publicada --1,25 mV por cuenta-- es de SupplyRatio, que es
+// quien sabe si hay divisor. Con divisor, cualquier factor común a los dos canales se
+// cancela en el cociente, así que aplicarlo acá era un no-op que sólo truncaba.
 
 #ifndef SENSE_ROWADC_H
 #define SENSE_ROWADC_H
@@ -78,9 +84,6 @@ template <uint8_t Channel, uint8_t SupplyChannel>
 class RowAdc
 {
     public:
-
-    // Una cuenta publicada, en uV en la entrada: 5 * 1024 mV / 4096.
-    static const uint16_t UV_PER_COUNT = 1250;
 
     // 1 pasa cada tick por una media de los últimos 4 ticks antes de sumarlo a la fila;
     // 0 suma cada tick tal cual. Público porque la tabla del enlace toma su dirección.
@@ -189,9 +192,9 @@ class RowAdc
         }
     }
 
-    // Las sumas de la última fila cerrada, del sensor y de la alimentación, ya en la
-    // escala publicada, y cuántas conversiones entraron en cada una. Cero
-    // conversiones del sensor quiere decir que el ADC no corrió.
+    // Las sumas de la última fila cerrada, del sensor y de la alimentación, en cuentas
+    // contra AVCC y al fondo de escala de 4096, y cuántas conversiones entraron en
+    // cada una. Cero conversiones del sensor quiere decir que el ADC no corrió.
     void row(uint32_t& sum, uint16_t& n, uint32_t& supply_sum, uint16_t& supply_n) const
     {
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
@@ -202,12 +205,9 @@ class RowAdc
             supply_n   = m_row_n[1];
         }
 
-        // A 12 bits, y de 5006 mV a 5120 mV de fondo. 5006/5120 es 1 - 1/45 con cuatro
-        // decimales, y así no desborda con filas largas.
+        // A 12 bits, que es el fondo de escala en el que hablan las dos placas.
         sum <<= m_shift;
-        sum -= sum / 45;
         supply_sum <<= m_shift;
-        supply_sum -= supply_sum / 45;
     }
 
     private:

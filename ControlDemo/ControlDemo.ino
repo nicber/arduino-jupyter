@@ -174,12 +174,14 @@ static const float SENSE_MV_PER_A = 185.0f;
 // referencias internas del LGT8F328P se probaron y no sirven con el I2C del AS5600
 // funcionando: ver Sense/RowAdc.h.
 //
-// Todo cuenta en la escala de RowAdc en las dos placas: una cuenta son 1,25 mV en la
-// entrada, así que con 185 mV/A son 6,8 mA --27 en el UNO, que cuenta de a cuatro--.
+// Todo cuenta en la escala de SupplyRatio en las dos placas: una cuenta equivalente son
+// 1,25 mV en la entrada, así que con 185 mV/A son 6,8 mA --27 en el UNO, que cuenta de
+// a cuatro--. Acá el canal publica cuentas enteras y no dieciseisavos como en Banco:
+// las ganancias del PID de LoopCurrent están afinadas en cuentas.
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
 static const float    SENSE_MA_PER_LSB =
-    (float)RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
+    (float)SupplyRatio::UV_PER_COUNT / SENSE_MV_PER_A;
 
 // Son dos elecciones independientes, y vale la pena mantenerlas separadas.
 //

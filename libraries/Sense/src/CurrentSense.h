@@ -24,7 +24,7 @@ class CurrentSense
     typedef int16_t Counts;
 
     Counts zero;        // el cero del sensor, en cuentas crudas del conversor
-    Counts i;           // la corriente medida, alrededor de `zero`
+    Counts i;           // la corriente medida, alrededor de `zero`, en la unidad de update()
 
     constexpr explicit CurrentSense(Counts initial_zero)
         : zero(initial_zero)
@@ -35,6 +35,17 @@ class CurrentSense
     void update(Counts raw)
     {
         i = (Counts)(raw - zero);
+    }
+
+    // Lo mismo con la cuenta en dieciseisavos (ver Sense/SupplyRatio.h). El cero se
+    // queda en cuentas enteras a propósito: es la unidad en la que la computadora lo
+    // mide y la que informa `cur_zero`, y en dieciseisavos un reposo de 2000 cuentas
+    // son 32000, que no le deja al int16 margen para la tolerancia del divisor. La
+    // resta va en 32 bits por lo mismo, y satura.
+    void update_q4(int32_t raw_q4)
+    {
+        const int32_t d = raw_q4 - ((int32_t)zero << 4);
+        i = (Counts)(d > INT16_MAX ? INT16_MAX : (d < INT16_MIN ? INT16_MIN : d));
     }
 };
 

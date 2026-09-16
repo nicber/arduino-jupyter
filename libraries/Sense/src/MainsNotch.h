@@ -30,11 +30,14 @@
 // salida no se queda trabada a unas cuentas del valor. Los polos cerca de la
 // circunferencia amplifican el redondeo de cada sección: en cuartos de cuenta eso le
 // sumaba a la corriente unos 3,5 mA RMS de ruido, medido en el banco con la ventana de
-// 10 filas; en dieciseisavos queda por debajo del redondeo a cuentas de la salida. El
-// precio es el rango: la entrada va de -2047 a 2047 cuentas, que es la corriente
-// alrededor de su cero (el fondo del ACS712 de 5 A son ~735). Los coeficientes se
-// calculan con punto flotante en apply(), que corre sólo cuando la computadora mueve
-// algo.
+// 10 filas. El precio es el rango: la entrada va de -2047 a 2047 cuentas, que es la
+// corriente alrededor de su cero (el fondo del ACS712 de 5 A son ~735). Los
+// coeficientes se calculan con punto flotante en apply(), que corre sólo cuando la
+// computadora mueve algo.
+//
+// `step_q4()` entra y sale en esa misma unidad, y es lo que usa un canal que publique
+// dieciseisavos: el redondeo a cuentas de `step()` es, medido sobre capturas del banco,
+// uno de los dos que más ruido ponen en toda la cadena (1,75 a 1,93 mA RMS).
 //
 // Aritmética pura, salvo apply(), así que se prueba en la máquina de escritorio.
 
@@ -148,16 +151,31 @@ class MainsNotch
     // Cuántos notch quedaron activos: dos por armónico, menos los que no entran.
     uint8_t active(void) const { return m_active; }
 
-    // Una fila, en cuentas alrededor del cero. Sin secciones activas devuelve la
-    // entrada tal cual.
+    // Una fila, en cuentas alrededor del cero, redondeada a cuentas a la salida. Para
+    // quien no lleve la señal en fracciones; adentro es step_q4().
     int16_t step(int16_t counts)
     {
         if (!m_active)
         {
-            return counts;
+            return counts;      // sin secciones no hay por qué pasar por el rango de step_q4()
         }
 
-        int16_t x = sat((int32_t)counts * (1L << FRAC_BITS));
+        const int16_t y = step_q4(sat((int32_t)counts * (1L << FRAC_BITS)));
+        return (int16_t)((y + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
+    }
+
+    // Una fila, en dieciseisavos de cuenta a la entrada y a la salida: la unidad en la
+    // que el filtro trabaja. Sin secciones activas devuelve la entrada tal cual. El
+    // rango es el de int16 en esa unidad, o sea -2047 a 2047 cuentas alrededor del cero
+    // (el fondo del ACS712 de 5 A son ~735).
+    int16_t step_q4(int16_t counts_q4)
+    {
+        if (!m_active)
+        {
+            return counts_q4;
+        }
+
+        int16_t x = counts_q4;
 
         // Al prender o cambiar algo, el estado arranca en la entrada: sin eso cada
         // cambio de parámetro sería un escalón desde cero, con su transitorio.
@@ -195,8 +213,7 @@ class MainsNotch
             x = out;
         }
 
-        // De fracciones de cuenta a cuentas, redondeando.
-        return (int16_t)((x + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
+        return x;
     }
 
     private:

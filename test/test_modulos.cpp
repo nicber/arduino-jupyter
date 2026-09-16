@@ -171,6 +171,16 @@ int main()
     cur.update(1948);
     check_eq(cur.i, -100, "y cien por debajo, menos cien");
 
+    // La misma resta con la cuenta en dieciseisavos: el cero sigue en cuentas.
+    cur.update_q4(2048L * 16);
+    check_eq(cur.i, 0, "en dieciseisavos, la cuenta del cero da cero");
+
+    cur.update_q4(2048L * 16 + 7);
+    check_eq(cur.i, 7, "y siete dieciseisavos por encima dan siete");
+
+    cur.update_q4(0);
+    check_eq(cur.i, -32767 - 1, "una cuenta en cero satura en lugar de dar la vuelta");
+
     // ------------------------------------------------- el promedio de la corriente
 
     WindowMean win(3);
@@ -222,7 +232,10 @@ int main()
 
     SupplyRatio ratio;
     ratio.apply();
-    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3150, "sin divisor, la media de A0");
+    // Sin divisor la escala la fija AVCC, que es el único camino en el que no se
+    // cancela: 3150 cuentas contra AVCC son 3150 * 5006/5120 cuentas equivalentes.
+    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3080,
+             "sin divisor, la media de A0 llevada a la escala de AVCC");
     check_eq(ratio.counts(0UL, 0UL, 0UL, 0UL), 0, "sin conversiones, cero");
 
     ratio.div_e4 = 2817;        // 2 k / (5,1 k + 2 k)
@@ -233,10 +246,18 @@ int main()
     check_eq(ratio.supply, 1792, "y A1 queda como lectura");
     check_eq(ratio.counts(200000UL, 100UL, 112700UL, 100UL), 2000,
              "el sensor en la mitad de su alimentación da 2000 cualquiera sea el divisor");
-    check_eq(ratio.counts(200000UL, 100UL, 0UL, 100UL), INT16_MAX,
-             "A1 en cero (divisor suelto) satura en lugar de dividir por cero");
-    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3150,
-             "sin conversiones de A1, la media de A0");
+    check_eq(ratio.counts(200000UL, 100UL, 0UL, 100UL), 4095,
+             "A1 en cero (divisor suelto) satura contra el fondo de escala");
+    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3080,
+             "sin conversiones de A1, la media de A0 contra AVCC");
+
+    // Lo mismo en dieciseisavos, que es lo que publica el canal: la resolución que
+    // counts() pierde al redondear.
+    check_eq((long)ratio.counts_q4(314820UL, 100UL, 179220UL, 100UL), 31670L,
+             "counts_q4 da los mismos 1979 con cuatro bits más abajo");
+    check_eq(ratio.counts(314820UL, 100UL, 179220UL, 100UL),
+             (int16_t)((ratio.counts_q4(314820UL, 100UL, 179220UL, 100UL) + 8) >> 4),
+             "y counts() es counts_q4() redondeado");
 
     ratio.div_e4 = 20000;
     ratio.apply();

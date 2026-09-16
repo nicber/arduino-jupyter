@@ -200,18 +200,31 @@ int main()
             const unsigned long n = 91;
             const double esperada = (double)a0 / a1 * 4000.0 * k;
             const int16_t c = ratio.counts(a0 * n, n, a1 * n, n);
-            if (esperada < 32000 && fabs(c - esperada) > 1.0) exacta = false;
+            if (esperada < 4090 && fabs(c - esperada) > 1.0) exacta = false;
+            // Y en dieciseisavos, que es lo que publica el canal: la misma cuenta
+            // con cuatro bits más abajo.
+            const uint16_t cq = ratio.counts_q4(a0 * n, n, a1 * n, n);
+            // Dos dieciseisavos: uno del redondeo de la división y el resto del de
+            // las medias y del m_scale_q4 truncado (11 ppm). Medido, el peor del
+            // barrido es 1,18 dieciseisavos, contra 0,56 cuentas de counts().
+            if (esperada < 4090 && fabs(cq / 16.0 - esperada) > 2.0 / 16) exacta = false;
             // La referencia cae un 2 %: A0 y A1 suben juntos.
             const int16_t c2 = ratio.counts((unsigned long)(a0 * n * 1.02), n,
                                             (unsigned long)(a1 * n * 1.02), n);
-            if (esperada < 32000 && abs(c2 - c) > 1) cancela = false;
+            if (esperada < 4090 && abs(c2 - c) > 1) cancela = false;
         }
     }
     // La ventana más grande: 32 filas de 91 conversiones a fondo, en los dos canales.
     const unsigned long nmax = 32UL * 91UL;
     if (ratio.counts(4095UL * nmax, nmax, 4095UL * nmax, nmax) != (int16_t)lround(4000.0 * k)) sin_desborde = false;
-    if (ratio.counts(4095UL * nmax, nmax, 1UL * nmax, nmax) != INT16_MAX) sin_desborde = false;
-    check(exacta, "SupplyRatio da A0/A1 * 4000 * k a una cuenta, en todo el rango");
+    if (ratio.counts(4095UL * nmax, nmax, 1UL * nmax, nmax) != 4095) sin_desborde = false;
+    // El peor producto de counts_q4(): la media a fondo por la escala más grande.
+    ratio.div_e4 = 10000;
+    ratio.apply();
+    if (ratio.counts_q4(4095UL * nmax, nmax, 4095UL * nmax, nmax) != 64000) sin_desborde = false;
+    ratio.div_e4 = 2817;
+    ratio.apply();
+    check(exacta, "SupplyRatio da A0/A1 * 4000 * k a un dieciseisavo, en todo el rango");
     check(cancela, "y una caída de la referencia que corre A0 y A1 juntos no la mueve");
     check(sin_desborde, "con la ventana más grande a fondo no desborda, y un A1 chico satura");
     printf("\n%d falla(s)\n", fallas);

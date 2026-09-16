@@ -14,7 +14,8 @@
 // Acá no hay ley de control: `ctl_uff` va derecho al actuador, y el ángulo no tiene
 // ningún filtro. Derivar, filtrar y ajustar se hace en la computadora. La corriente
 // es la única excepción: cada fila publica el promedio de las conversiones de las
-// últimas `cur_filas` filas --lo que hay que sacarle, el rizado del PWM y la red, ya
+// últimas `cur_filas` filas, en dieciseisavos de cuenta del ADC --lo que hay que
+// sacarle, el rizado del PWM y la red, ya
 // no se puede sacar de filas de 2 ms, que lo traen plegado--. Antes de sumar la fila,
 // cada tick de 5 kHz pasa por una media de 4 ticks, un período del PWM (`cur_ma`), y
 // después de promediar, un notch en 250 Hz saca lo que el PWM deja en el Nyquist de
@@ -124,16 +125,23 @@ static const uint16_t PWM_TOP = 6400;
 // convierte cuentas en amperes: 185 mV/A el ACS712 de 5 A, 100 mV/A el de 20 A. Con
 // `cur_div` la corriente sale de A0/A1, contra la alimentación del sensor (ver
 // Sense/SupplyRatio.h); con `cur_div = 0`, de A0 contra AVCC. En las dos formas una
-// cuenta publicada son 1,25 mV contra 5 V (6,8 mA con 185 mV/A). Por qué hace falta
+// cuenta equivalente son 1,25 mV contra 5 V (6,8 mA con 185 mV/A). Por qué hace falta
 // el divisor en el clon a 3,3 V: hardware.ipynb, sección 4. El ruido es de 120 mA RMS
 // por conversión, medido en el clon, y por eso se promedia.
+//
+// El canal `i` no publica cuentas sino **dieciseisavos de cuenta**: el redondeo a
+// cuenta entera era, medido, el que más ruido ponía en toda la cadena, y el sensor usa
+// 735 de las 2047 cuentas que entran en un int16 en esa unidad. `cur_frac` dice
+// cuántos bits fraccionarios son, para que la computadora reconstruya la cuenta cruda
+// del ADC --que es la unidad de `cur_zero`-- sin tenerlo escrito en ninguna parte.
 static const uint8_t  SENSE_CHANNEL    = 0;
 static const uint8_t  SUPPLY_CHANNEL   = 1;
 static const float    SENSE_MV_PER_A   = 185.0f;
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
-static const float    SENSE_MA_PER_LSB =
-    (float)RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>::UV_PER_COUNT / SENSE_MV_PER_A;
+static const uint8_t  SENSE_FRAC_BITS   = SupplyRatio::FRAC_BITS;
+static const float    SENSE_MA_PER_LSB   =
+    (float)SupplyRatio::UV_PER_COUNT / SENSE_MV_PER_A / (float)(1 << SENSE_FRAC_BITS);
 
 // ------------------------------------------------------------------ los módulos
 
@@ -177,6 +185,11 @@ static uint16_t g_y_raw = 0;
 // Lo que se publica: el ángulo desenrollado y la corriente, con el signo del banco.
 static int32_t g_y_uw = 0;
 static int16_t g_i    = 0;
+
+// Los bits fraccionarios de la unidad de `i`. Es una constante del sketch y se publica
+// para que la computadora no la tenga escrita: ControlDemo publica `i` en cuentas
+// enteras con las mismas clases.
+static uint8_t g_cur_frac = SENSE_FRAC_BITS;
 
 // 1 si la cuenta de esta fila repite la anterior: la transferencia del AS5600 que
 // tenía que traerla no terminó a tiempo (un desborde). Derivada, esa fila da una
@@ -248,6 +261,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_buserr",  CTRL_U16, &g_health.errors,     0 },
 
     { "cur_zero",    CTRL_I16, &g_current.zero,      0 },
+    { "cur_frac",    CTRL_U8,  &g_cur_frac,          0 },
     { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
     { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
     { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0 },
@@ -363,7 +377,8 @@ static bool apply_sensor_filter(void)
 //
 // La corriente es el promedio de todas las conversiones de las últimas `cur_filas`
 // filas, de A0 y, con divisor, de A1, llevado a cuentas equivalentes; el cero se
-// resta después, sobre el promedio.
+// resta después, sobre el promedio. De ahí hasta el canal todo va en dieciseisavos de
+// cuenta, sin volver a redondear.
 static void step(void)
 {
     uint16_t raw;
@@ -383,10 +398,10 @@ static void step(void)
 
     g_window.push(sum, n);
     g_supply_window.push(supply_sum, supply_n);
-    g_current.update(g_ratio.counts(g_window.total(), g_window.count(),
-                                    g_supply_window.total(), g_supply_window.count()));
+    g_current.update_q4(g_ratio.counts_q4(g_window.total(), g_window.count(),
+                                          g_supply_window.total(), g_supply_window.count()));
 
-    const int16_t i = g_notch.step(g_current.i);
+    const int16_t i = g_notch.step_q4(g_current.i);
     g_i = g_cur_inv ? (int16_t)-i : i;
 
     g_y_raw = raw;
