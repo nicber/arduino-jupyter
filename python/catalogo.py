@@ -43,7 +43,7 @@ _CATALOGO = {
     'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor, en cuentas crudas del conversor y no en la unidad del canal i; `dev.zero_current()` lo mide'),
     'cur_frac':    ('lectura', 'bits',        'bits fraccionarios de la unidad del canal i: 4 son dieciseisavos de cuenta del conversor'),
     'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
-    'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La fija dev.declarar_divisor()'),
+    'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La mide dev.medir_divisor() o la declara dev.declarar_divisor()'),
     'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
     'cur_notch':   ('perilla', 'máscara',     'notch de la red sobre la corriente, cada uno por separado: 1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 ninguno (por omisión); dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
     'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),

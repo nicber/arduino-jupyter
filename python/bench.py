@@ -389,6 +389,72 @@ class Bench:
             if _ADC_RAIL <= adc <= _ADC_FULL - _ADC_RAIL:
                 self.cur_zero = round(adc)
 
+    def medir_divisor(self, guardar=True, say=print):
+        """Mide la relación del divisor de A1 contra el reposo del sensor.
+
+        El ACS712 es ratiométrico: con el actuador abierto reposa en la mitad de su
+        alimentación. Así que, en cuentas del conversor, A0 = V5/2 y A1 = V5·k, y
+
+            k = A1 / (2·A0)
+
+        donde V5 --y la referencia del conversor-- se cancelan. Eso es lo que hace falta
+        saber: cuánto vale V5 no interviene en ninguna parte, y medirlo desde adentro del
+        micro no se puede (5 V está por encima de AVCC, y el único camino es el divisor
+        mismo, que es lo que se quiere medir).
+
+        En términos de lo que la placa publica, con `c` el reposo en cuentas
+        equivalentes, es `k = 2000 · cur_div / c`: la cuenta no depende del `cur_div`
+        que hubiera puesto, así que una sola medición alcanza y no hay que iterar.
+        Verificado en la placa arrancando de 2500, 2817 y 3200: da 2794, 2790 y 2791.
+
+        Qué se gana y qué se pierde. Se gana no depender de la tolerancia de las
+        resistencias, que con las del 5 % deja la escala abierta ±7 %; medido en el
+        banco, esto se repite dentro del 0,09 % --diez medidas seguidas, cinco resets,
+        con una fila y con treinta y dos, emitiendo un canal y todos, y con el motor
+        recién girado--. Se pierde que ahora la escala depende de que el sensor repose
+        exactamente en la mitad de su alimentación, que es otra hipótesis y tampoco está
+        verificada con un multímetro. Que los dos caminos coincidan dentro del 0,9 %
+        --2792 medido contra 2817 declarado-- es lo que dice que ninguno de los dos está
+        groseramente mal.
+
+        Requiere el eje quieto y el actuador abierto, como `zero_current()`. Devuelve
+        `cur_div`.
+        """
+        if not self.cur_div:
+            raise CtrlLinkError(
+                'no hay divisor declarado, así que A1 no se está leyendo y no hay nada '
+                'que medir. Poner uno cualquiera con dev.cur_div = 2817 --el valor no '
+                'importa, la medición no depende de él-- o declarar las resistencias '
+                'con dev.declarar_divisor(arriba_ohm, abajo_ohm).')
+
+        ensayo.esperar_quieto(self, limite=15.0)
+        antes = int(self.cur_div)
+        reposo = self._reposo_de_corriente()
+        if reposo <= 0:
+            raise CtrlLinkError(
+                f'el sensor reposa en {reposo:.0f} cuentas equivalentes: contra un riel '
+                f'del conversor no hay nada que medir. Revisar A0 y el divisor de A1.')
+
+        medido = int(round(2000.0 * antes / reposo))
+        self.cur_div = medido
+        self.zero_current()
+
+        say(f'divisor de A1 medido contra el reposo del sensor: relación '
+            f'{medido / 10000:.4f} ({medido}), {medido / antes - 1:+.1%} de lo que '
+            f'estaba puesto; el sensor queda en {self.cur_zero} cuentas equivalentes '
+            f'(2000 es la mitad de su alimentación)')
+        if not 1000 <= medido <= 6000:
+            self.cur_div = antes
+            raise CtrlLinkError(
+                f'la relación medida, {medido / 10000:.4f}, no es la de un divisor que '
+                f'lleve 5 V a la entrada de este conversor. O el eje no estaba quieto, o '
+                f'A0 no es la salida del sensor, o A1 no cuelga de los 5 V. Queda '
+                f'{antes / 10000:.4f}, el de antes.')
+
+        if guardar:
+            _actualizar_cableado(cur_div=medido, cur_div_medido=True)
+        return medido
+
     def declarar_divisor(self, arriba_ohm, abajo_ohm, guardar=True):
         """Declara el divisor de los 5 V del sensor en A1, y mide la corriente contra ellos.
 
@@ -421,13 +487,18 @@ class Bench:
                 f'cableado y volver a declararlo.')
 
         # El sensor reposa en la mitad de su alimentación, que en cuentas equivalentes
-        # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto.
+        # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto: la
+        # misma cuenta, dada vuelta, es la relación que mide `medir_divisor()`.
         desvio = self.cur_zero / 2000 - 1
+        medido = 2000 * self.cur_div / max(self.cur_zero, 1)
         print(f'el sensor reposa en {self.cur_zero} cuentas equivalentes: '
-              f'{desvio:+.1%} de la mitad de su alimentación')
+              f'{desvio:+.1%} de la mitad de su alimentación, o sea que medido contra '
+              f'ese reposo el divisor da {medido / 10000:.4f} ({medido / self.cur_div - 1:+.1%})')
         if abs(desvio) > 0.08:
             print('  Atención: más de un 8 %. O la relación declarada no es la del divisor, o el '
                   'sensor no reposa en la mitad: revisar las resistencias.')
+        print('  dev.medir_divisor() usa ese reposo en lugar de las resistencias, y no depende '
+              'de la tolerancia de ellas.')
 
         if guardar:
             _actualizar_cableado(cur_div=self.cur_div)
@@ -579,6 +650,20 @@ class Bench:
                    f'{rest_ma:+.1f} mA en reposo, ruido {noise:.1f} mA RMS'
                    + ('' if noise > 0.1 * lsb else
                       '  -- sin dither: la señal no llega a un escalón del canal'))
+
+            # La relación del divisor, medida contra el mismo reposo que se acaba de
+            # calibrar: no cuesta ninguna captura más. No se la aplica sola --cambiar
+            # la escala de un canal es una decisión de quien arma el banco-- pero sí se
+            # dice cuánto difiere de lo declarado. Ver medir_divisor().
+            if self.cur_div and self.cur_zero > 0:
+                medido = 2000 * int(self.cur_div) / int(self.cur_zero)
+                aparta = medido / int(self.cur_div) - 1
+                report('divisor de i', None if abs(aparta) > 0.03 else True,
+                       f'declarado {int(self.cur_div) / 10000:.4f}, medido contra el '
+                       f'reposo del sensor {medido / 10000:.4f} ({aparta:+.1%})'
+                       + ('' if abs(aparta) <= 0.03 else
+                          '  -- más de un 3 %: revisar las resistencias, o tomar el '
+                          'medido con dev.medir_divisor()'))
 
         # 6. El actuador, y con él toda la cadena: un comando que sale, movimiento y
         #    corriente que vuelven. Sólo se usa la evidencia cuyo sensor está.
