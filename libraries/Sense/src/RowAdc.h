@@ -132,7 +132,19 @@
 // conversor, el largo de la ráfaga, el orden de los canales y las medias crudas de cada
 // canal-- viven acá pero se compilan afuera. Con `-DSENSE_DIAG=1` aparecen, y con ellas
 // se vuelve a elegir `SETTLE_US` si cambia el trabajo de alguna de las dos
-// interrupciones. El binario por omisión es el mismo que sin este bloque.
+// interrupciones. El binario por omisión es el mismo que sin este bloque, verificado
+// comparando el .hex.
+//
+// Se compila agregando la bandera a las propiedades de compilación de `python/placa.py`:
+//
+//   compiler.cpp.extra_flags=-O2 -DSENSE_DIAG=1
+//
+// y ahí aparecen, en la tabla del enlace, `dbg_settle` (el relleno, para barrerlo),
+// `dbg_lock` (una ráfaga de N conversiones por tick), `dbg_pre` (el preescalador),
+// `dbg_mix` (el canal elegido por un LFSR), `dbg_ocr` (el TOP del Timer2, que mueve el
+// ritmo del tick sin tocar esta interrupción) y `dbg_i2c` (corta las transferencias del
+// AS5600); y los canales `a0`, `a1` y `conv`, que son las medias crudas de cada canal y
+// cuántas conversiones entraron en la fila. Cuestan 874 bytes de flash y 15 de RAM.
 #ifndef SENSE_DIAG
 #define SENSE_DIAG 0
 #endif
