@@ -183,7 +183,8 @@ int main()
         n[f] = 40 + rand() % 10;
         sumas[f] = 0;
         for (unsigned c = 0; c < n[f]; c++) { sumas[f] += 3000 + rand() % 200; }
-        const int16_t m = win.push(sumas[f], (uint16_t)n[f]);
+        win.push(sumas[f], (uint16_t)n[f]);
+        const int16_t m = win.mean();
         unsigned long s = 0, cuantas = 0;
         for (int j = (f >= 9 ? f - 9 : 0); j <= f; j++) { s += sumas[j]; cuantas += n[j]; }
         if (m != (int16_t)((s + cuantas / 2) / cuantas)) exacto = false;

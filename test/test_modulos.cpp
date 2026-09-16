@@ -226,31 +226,44 @@ int main()
 
     WindowMean win(3);
 
-    // Una fila sola: el promedio de sus conversiones, redondeado.
-    check_eq(win.push(3 * 100 + 2, 3), 101, "una fila da el promedio de sus conversiones");
+    // Una fila sola: el promedio de sus conversiones, redondeado. push() ya no lo
+    // devuelve --lo calculaba en cada fila y nadie lo leía, y eran dos divisiones de
+    // 32 bits-- así que se pide con mean().
+    win.push(3 * 100 + 2, 3);
+    check_eq(win.mean(), 101, "una fila da el promedio de sus conversiones");
 
     // Promedia conversiones, no filas: 10 conversiones en 200 pesan más que 2 en 0.
     WindowMean pesos(2);
     pesos.push(10 * 200, 10);
-    check_eq(pesos.push(0, 2), 167, "una fila con más conversiones pesa más");
+    pesos.push(0, 2);
+    check_eq(pesos.mean(), 167, "una fila con más conversiones pesa más");
 
     // Las filas más antiguas salen de la ventana.
     win.push(3 * 100, 3);
     win.push(3 * 100, 3);
     win.push(3 * 400, 3);
     win.push(3 * 400, 3);
-    check_eq(win.push(3 * 400, 3), 400, "después de rows filas la más antigua ya no cuenta");
+    win.push(3 * 400, 3);
+    check_eq(win.mean(), 400, "después de rows filas la más antigua ya no cuenta");
 
-    // Una fila sin conversiones --el ADC no corrió-- no inventa un cero.
+    // Una ventana sin ninguna conversión --el ADC no corrió-- no tiene promedio, y
+    // devuelve cero en lugar del último. Antes `mean` era un campo pegajoso que
+    // guardaba el valor viejo; ahora se calcula cuando se pide, así que decir «no
+    // hay» es más honesto que devolver algo de hace rato. Quien necesite distinguir
+    // las dos cosas mira count(), que es lo que hace SupplyRatio.
     WindowMean vacia(1);
     vacia.push(4 * 250, 4);
-    check_eq(vacia.push(0, 0), 250, "una fila vacía deja el último promedio");
+    check_eq(vacia.mean(), 250, "una fila da su promedio");
+    vacia.push(0, 0);
+    check_eq((long)vacia.count(), 0L, "y una ventana sin conversiones se ve en count()");
+    check_eq(vacia.mean(), 0, "y no tiene promedio");
 
     // Cambiar rows empieza de nuevo y recorta al rango.
     win.rows = 0;
     win.apply();
     check_eq(win.rows, 1, "rows en cero se recorta a una fila");
-    check_eq(win.push(2 * 7, 2), 7, "y la ventana empieza de nuevo");
+    win.push(2 * 7, 2);
+    check_eq(win.mean(), 7, "y la ventana empieza de nuevo");
     win.rows = 200;
     win.apply();
     check_eq(win.rows, WindowMean::MAX_ROWS, "y por arriba a MAX_ROWS");
@@ -258,9 +271,8 @@ int main()
     // La ventana llena con el máximo de conversiones de la placa más rápida no
     // desborda: 32 filas de 91 conversiones de 4095.
     WindowMean llena(WindowMean::MAX_ROWS);
-    int16_t ultimo = 0;
-    for (int k = 0; k < 40; k++) { ultimo = llena.push(91UL * 4095UL, 91); }
-    check_eq(ultimo, 4095, "la ventana llena a fondo de escala no desborda");
+    for (int k = 0; k < 40; k++) { llena.push(91UL * 4095UL, 91); }
+    check_eq(llena.mean(), 4095, "la ventana llena a fondo de escala no desborda");
 
     // Los totales de la ventana, que usa SupplyRatio.
     WindowMean tot(2);

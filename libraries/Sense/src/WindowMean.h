@@ -27,11 +27,9 @@ class WindowMean
     static const uint8_t MAX_ROWS = 32;
 
     uint8_t rows;       // filas en la ventana, 1..MAX_ROWS; mover y llamar a apply()
-    int16_t mean;       // el último promedio, en cuentas, redondeado
 
     constexpr explicit WindowMean(uint8_t initial_rows)
         : rows(initial_rows)
-        , mean(0)
         , m_sums()
         , m_counts()
         , m_total(0)
@@ -62,20 +60,29 @@ class WindowMean
         }
     }
 
-    // Una fila: la suma de sus conversiones y cuántas fueron. Devuelve el promedio.
-    int16_t push(uint32_t sum, uint16_t n)
+    // Una fila: la suma de sus conversiones y cuántas fueron.
+    //
+    // No calcula el promedio. Lo calculaba en cada fila y nadie lo leía --ni Banco ni
+    // ControlDemo: los dos consumen total() y count() a través de SupplyRatio, que
+    // necesita el par y no el cociente-- y eran dos divisiones de 32 bits por fila,
+    // del orden de 550 ciclos. A 500 Hz es el 1,7 % del procesador y a 5 kHz, el 17 %.
+    // Quien quiera el promedio llama a mean().
+    void push(uint32_t sum, uint16_t n)
     {
         m_total += sum - m_sums[m_next];
         m_count += (uint32_t)n - m_counts[m_next];
         m_sums[m_next]   = sum;
         m_counts[m_next] = n;
-        m_next = (uint8_t)((m_next + 1) % m_size);
 
-        if (m_count)
-        {
-            mean = (int16_t)((m_total + m_count / 2) / m_count);
-        }
-        return mean;
+        // Una comparación y no un módulo: `m_size` no es constante de compilación, así
+        // que `%` es una llamada a __udivmodqi4.
+        m_next = (uint8_t)(m_next + 1 == m_size ? 0 : m_next + 1);
+    }
+
+    // El promedio de la ventana, redondeado. Se calcula cuando se pide.
+    int16_t mean(void) const
+    {
+        return m_count ? (int16_t)((m_total + m_count / 2) / m_count) : 0;
     }
 
     // La suma de las conversiones de la ventana y cuántas son: para quien necesite

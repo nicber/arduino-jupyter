@@ -1,5 +1,6 @@
-// Host-side checks for FixedPoint.h and FirstOrderFilter.h. Both are pure
-// arithmetic, so they are far easier to get right here than on the target.
+// Host-side checks for FixedPoint.h, FirstOrderFilter.h and MovingAverage.h. All
+// three are pure arithmetic, so they are far easier to get right here than on the
+// target.
 //
 //   g++ -std=c++11 -O2 -Wall -Wextra -I ../src test_controlmath.cpp -o test && ./test
 //
@@ -10,6 +11,15 @@
 #include <cmath>
 #include "FixedPoint.h"
 #include "FirstOrderFilter.h"
+#include "MovingAverage.h"
+
+// La media de referencia: al más cercano con los empates hacia más infinito, que
+// es dividir hacia abajo el total más medio N. Escrita a lo bruto a propósito.
+static long media_ref(long total, long n)
+{
+    const long x = total + n / 2;
+    return x >= 0 ? x / n : -((-x + n - 1) / n);
+}
 
 static int fails = 0;
 static void check(bool ok, const char* what, double got, double want)
@@ -136,6 +146,109 @@ int main()
         check(y == -1000, "converges downwards exactly", (double)y, -1000);
     }
 
-    printf(fails ? "\n%d FAILED\n" : "\nall fixed-point and filter checks passed\n", fails);
+    // ------------------------------------------------------- MovingAverage
+    //
+    // N es un parámetro de plantilla, así que la división que cierra la media es
+    // por una constante y el compilador no emite ninguna. Lo que se comprueba acá
+    // es que la media sea la correcta para cualquier N, potencia de dos o no.
+    {
+        typedef MovingAverage<int16_t, 4> MA4;
+        check(MA4::SIZE == 4, "window of 4", (double)MA4::SIZE, 4);
+
+        // Against a brute-force window, every step of the way, for a power of two
+        // and for one that is not.
+        {
+            MA4 ma;
+            int16_t v[4] = {0, 0, 0, 0};
+            bool media = true, suma = true, q2 = true;
+            for (int k = 1; k <= 400; k++)
+            {
+                const int16_t x = (int16_t)((k * 37) % 1000 - 500);
+                v[3] = v[2]; v[2] = v[1]; v[1] = v[0]; v[0] = x;
+                const long s4 = (long)v[0] + v[1] + v[2] + v[3];
+                const long m4 = media_ref(s4, 4);
+
+                if (ma.push(x) != m4) { media = false; }
+                if (ma.total() != s4) { suma  = false; }
+                // With N a power of two the running sum IS the mean in Q log2(N).
+                if (ma.mean_fixed<2>().raw() != s4) { q2 = false; }
+            }
+            check(media, "N = 4 matches a brute-force mean", media, 1);
+            check(suma,  "and total() is the running sum", suma, 1);
+            check(q2,    "and mean_fixed<2>() is that sum untouched", q2, 1);
+        }
+        {
+            MovingAverage<int16_t, 10> ma;      // not a power of two
+            int16_t v[10] = {0};
+            bool media = true;
+            for (int k = 1; k <= 400; k++)
+            {
+                const int16_t x = (int16_t)((k * 53) % 1400 - 700);
+                for (int j = 9; j > 0; j--) { v[j] = v[j - 1]; }
+                v[0] = x;
+                long s10 = 0;
+                for (int j = 0; j < 10; j++) { s10 += v[j]; }
+                const long m10 = media_ref(s10, 10);
+                if (ma.push(x) != m10) { media = false; }
+            }
+            check(media, "N = 10 matches a brute-force mean too", media, 1);
+        }
+
+        // The fraction is the point: a mean of 11.5 is 11.5, not 11 or 12.
+        MA4 medio;
+        medio.push(10); medio.push(11); medio.push(12); medio.push(13);
+        CHECK_NEAR(medio.mean_fixed<2>().to_float(), 11.5, 1e-9);
+        check(medio.mean() == 12, "and mean() rounds to the nearest",
+              (double)medio.mean(), 12);
+
+        // Rounding is symmetric about zero: truncation would put half an LSB of DC
+        // on a signal centred at zero.
+        MA4 neg;
+        neg.push(-10); neg.push(-11); neg.push(-12); neg.push(-13);
+        check(neg.mean() == -11, "and ties go towards +inf, as FixedPoint does",
+              (double)neg.mean(), -11);
+        check(neg.total() == -46, "a negative window is exact",
+              (double)neg.total(), -46);
+
+        // prime() fills the window so the mean starts there instead of climbing.
+        MA4 cebado;
+        cebado.prime(100);
+        check(cebado.mean() == 100, "prime() starts the window full",
+              (double)cebado.mean(), 100);
+        check(cebado.push(100) == 100, "and stays there", (double)cebado.push(100), 100);
+        cebado.reset();
+        check(cebado.total() == 0, "reset() empties it", (double)cebado.total(), 0);
+
+        // The division that closes the mean is exact for every value the sum type
+        // can hold, power of two or not. Exhaustive over all 65536 of an int16.
+        {
+            bool p2 = true, impar = true, par = true;
+            for (long t = -32768; t <= 32767; t++)
+            {
+                const int16_t x = (int16_t)t;
+                if (MaDividir<int16_t, 4>::de(x)   != media_ref(t, 4))   { p2 = false; }
+                if (MaDividir<int16_t, 45>::de(x)  != media_ref(t, 45))  { impar = false; }
+                if (MaDividir<int16_t, 10>::de(x)  != media_ref(t, 10))  { par = false; }
+            }
+            check(p2,    "N = 4 is exact over the whole int16 range", p2, 1);
+            check(impar, "and N = 45 too", impar, 1);
+            check(par,   "and N = 10 too", par, 1);
+        }
+
+        // A window of 1 is a pass-through, and it has to compile.
+        MovingAverage<int16_t, 1> uno;
+        check(uno.push(77) == 77, "a window of 1 passes the sample through",
+              (double)uno.push(77), 77);
+
+        // Sixteen, with a sum that would not fit in the sample type.
+        MovingAverage<int16_t, 16> ma16;
+        ma16.prime(30000);
+        check(ma16.total() == 480000L, "a window of 16 sums past the sample type",
+              (double)ma16.total(), 480000.0);
+        check(ma16.mean() == 30000, "and its mean comes back",
+              (double)ma16.mean(), 30000);
+    }
+
+    printf(fails ? "\n%d FAILED\n" : "\nall fixed-point, filter and moving-average checks passed\n", fails);
     return fails != 0;
 }

@@ -154,15 +154,26 @@ por captura (ver `chans` más abajo).
 Medido en el banco con `Banco`, `loop_div = 1` y el muestreador del AS5600
 corriendo a 5 kHz (2026-09-16), filas efectivamente atendidas por segundo:
 
-| Fila | Techo |
-|---|---|
-| 27 B (cinco canales) | 674 filas/s |
-| 17 B (dos canales) | 797 filas/s |
-| 9 B (un canal) | 919 filas/s |
+| Fila | Techo | (antes de la pasada de interrupciones) |
+|---|---|---|
+| 27 B (cinco canales) | 922 filas/s | 673 |
+| 17 B (dos canales) | 1138 filas/s | 797 |
+| 9 B (un canal) | 1396 filas/s | 919 |
+
+Y el `loop_div` más chico que no pierde ni un período con los cinco canales pasó
+de 8 (625 Hz) a **6 (833 Hz)**; a 833 Hz se perdían 113 períodos por captura y
+ahora no se pierde ninguno.
 
 **En las tres, `drops = 0`**: no se descartó una sola fila por falta de buffer. A
-674 filas/s de 27 bytes son 18 kB/s, el 18 % del cable. Lo que se acaba es el
+922 filas/s de 27 bytes son 25 kB/s, el 25 % del cable. Lo que se acaba es el
 CPU, nunca el enlace, y por eso cortar canales sube el techo.
+
+De dónde salió la diferencia, medido aislando cada cambio y alternando las
+versiones para que la deriva del banco no favorezca a ninguna: sacar de
+`WindowMean` el promedio que se calculaba en cada fila y nadie leía (dos
+divisiones de 32 bits) da 673 -> 846, y reescribir `close_tick()` sobre
+`MovingAverage` más mover el trabajo de la interrupción del ADC antes de arrancar
+la conversión siguiente, 846 -> 922.
 
 La tabla que estaba acá antes --45 B a 1 kHz, 29 B a 1250 Hz, 17 B a 1667 Hz-- es
 del sketch de lazo cerrado que precedió a éste, que no muestreaba el AS5600 a

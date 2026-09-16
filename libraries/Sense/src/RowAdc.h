@@ -139,6 +139,8 @@
 #include <util/atomic.h>
 #include <util/delay.h>
 
+#include <MovingAverage.h>
+
 // Las perillas con las que se midió la paridad de las conversiones --el ritmo del
 // conversor, el largo de la ráfaga, el orden de los canales y las medias crudas de cada
 // canal-- viven acá pero se compilan afuera. Con `-DSENSE_DIAG=1` aparecen, y con ellas
@@ -174,22 +176,45 @@ class RowAdc
     // `-DSENSE_DIAG=1` (ver SENSE_DIAG, arriba).
     //
     // Medido en el clon, barriendo el ritmo del tick de 4,35 a 5,56 kHz --veinte veces
-    // más de lo que se corre el reloj RC de esta placa-- con los cinco canales emitiendo:
+    // más de lo que se corre el reloj RC de esta placa-- con los cinco canales
+    // emitiendo. Con el trabajo de la conversión hecho ANTES del ADSC (ver
+    // on_conversion()) y close_tick() sobre MovingAverage:
     //
-    //   relleno   conteo por tick, de 5,56 a 4,35 kHz          períodos perdidos
-    //     0 us    3,00 3,00 3,70 3,99 4,00 4,00                    0
-    //     2 us    3,00 3,00 3,00 3,75 4,00 4,00                    0
-    //     3 us    2,61 3,00 3,00 3,08 3,03 3,65                    0
-    //     4 us    2,41 3,00 3,00 3,00 3,03 3,47                  128
-    //     6 us    2,28 2,73 3,00 3,00 3,01 3,02                  508
+    //   relleno   conteo por tick, de 5,56 a 4,35 kHz     clavado en par   perdidos
+    //     0 us    2,68 3,00 3,00 3,09 3,31 3,95               sí (3,95)        78
+    //     1 us    2,53 2,99 3,00 3,02 3,16 3,66               no               99
+    //     2 us    2,39 2,97 3,00 3,00 3,09 3,46               no              130
+    //     3 us    2,24 2,83 3,00 3,00 3,00 3,38               no              175
+    //     4 us    2,16 2,63 3,00 3,00 3,00 3,02               no              218
+    //     6 us    2,20 2,43 2,92 3,00 3,00 3,00               no              312
     //
-    // Con 2 o menos el conteo todavía llega a 4 en los ritmos lentos; con 4 o más el
-    // muestreador empieza a perder períodos. Tres es el único que cumple las dos cosas.
-    static const uint8_t SETTLE_US = 3;
+    // Sin relleno el conteo se clava en 4 en los ritmos lentos, que es la condición
+    // que engancha el salto; de 1 en adelante no, y lo que crece es lo que el
+    // muestreador pierde. Uno es el más chico que cumple las dos cosas.
+    //
+    // Era 3 cuando la interrupción del ADC hacía su trabajo DESPUÉS de arrancar la
+    // conversión siguiente y close_tick() corría el historial a mano. Los dos cambios
+    // juntos liberan unos 2 us de relleno: medido alternando las dos versiones, el
+    // techo de filas atendidas con los cinco canales pasa de 673 a 748 por segundo.
+    // La tabla de arriba y la de cualquier otra versión no se pueden comparar fila a
+    // fila: lo que se elige es la columna, no el número.
+    //
+    // Y no elegirlo bien se paga en el acto: con el relleno que quedó viejo (3 us
+    // sobre la interrupción nueva) el conteo vuelve a clavarse en un par y el salto
+    // de dos niveles reaparece --medido, el rango del reposo entre veinte capturas
+    // pasa de 2,3 a 7,9 mA, con la distribución partida en dos grupos--.
+    static const uint8_t SETTLE_US = 1;
 
-    // 1 pasa cada tick por una media de los últimos 4 ticks antes de sumarlo a la fila;
-    // 0 suma cada tick tal cual. Público porque la tabla del enlace toma su dirección.
+    // 1 pasa cada tick por una media de los últimos MA_TICKS ticks antes de sumarlo a
+    // la fila; 0 suma cada tick tal cual. Público porque la tabla del enlace toma su
+    // dirección.
     uint8_t ma;
+
+    // Cuántos ticks entran en esa media. Potencia de dos a propósito: MovingAverage
+    // resuelve la división de la media con un corrimiento, y acá ni siquiera hace
+    // falta la media --lo que se usa es la suma corrida, porque lo que sigue divide
+    // por las conversiones y no por los ticks--.
+    static const unsigned MA_TICKS = 4;
 
 #if SENSE_DIAG
     uint8_t settle_us;  // reemplaza a SETTLE_US, para barrerlo
@@ -210,8 +235,8 @@ class RowAdc
 #endif
         , m_sum()
         , m_n()
-        , m_hist_sum()
-        , m_hist_n()
+        , m_ma_sum()
+        , m_ma_n()
         , m_acc_sum()
         , m_acc_n()
         , m_row_sum()
@@ -288,9 +313,27 @@ class RowAdc
 #endif
 
     // Alternar con el canal de la alimentación, o quedarse en el del sensor.
+    //
+    // Al apagar la alternancia hay que llevarse el estado del canal 1: close_tick()
+    // deja de tocarlo para no mover ceros en cada tick, así que lo que quedara ahí
+    // se seguiría publicando como si fuera de ahora.
     void alternate(bool on)
     {
-        m_alternate = on;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+        {
+            if (m_alternate && !on)
+            {
+                m_sum[1]     = 0;
+                m_n[1]       = 0;
+                m_acc_sum[1] = 0;
+                m_acc_n[1]   = 0;
+                m_row_sum[1] = 0;
+                m_row_n[1]   = 0;
+                m_ma_sum[1].reset();
+                m_ma_n[1].reset();
+            }
+            m_alternate = on;
+        }
     }
 
     // Llamar desde ISR(ADC_vect).
@@ -325,6 +368,16 @@ class RowAdc
         m_channel = (m_alternate && !k) ? 1 : 0;
 #endif
         ADMUX = (uint8_t)((ADMUX & ~0x1F) | ((m_channel ? SupplyChannel : Channel) & 0x1F));
+
+        // El trabajo de ESTA conversión, entre escribir el canal y arrancar la
+        // siguiente. Lo que separa una conversión de la otra es lo que importa, y no
+        // que ese rato sea tiempo muerto: haciendo acá lo que antes se hacía después
+        // del ADSC, el mismo hueco sale con menos relleno y la interrupción termina
+        // antes. Son ~15 000 conversiones por segundo, así que cada microsegundo que
+        // se le saca es un 1,5 % del procesador.
+        m_sum[k] += (TickSum)v;
+        m_n[k]++;
+
         if (m_alternate)
         {
 #if SENSE_DIAG
@@ -334,9 +387,6 @@ class RowAdc
 #endif
         }
         ADCSRA |= _BV(ADSC);
-
-        m_sum[k] += v;
-        m_n[k]++;
     }
 
     // Llamar desde la ISR del muestreador en cada tick, antes de close_row(). Cierra
@@ -355,30 +405,33 @@ class RowAdc
         }
 #endif
 
-        for (uint8_t k = 0; k < 2; k++)
+        // Sin alternancia el canal 1 no recibe una sola conversión, así que su mitad
+        // del trabajo es mover ceros. alternate() se ocupa de dejarlo en cero cuando
+        // se apaga, para que lo que se publique no sea la ventana vieja.
+        const uint8_t canales = m_alternate ? 2 : 1;
+
+        for (uint8_t k = 0; k < canales; k++)
         {
-            const uint32_t s = m_sum[k];
+            const TickSum  s = m_sum[k];
             const uint16_t n = m_n[k];
             m_sum[k] = 0;
             m_n[k]   = 0;
 
+            m_ma_sum[k].add(s);
+            m_ma_n[k].add((int16_t)n);
+
             if (ma)
             {
-                m_acc_sum[k] += s + m_hist_sum[k][0] + m_hist_sum[k][1] + m_hist_sum[k][2];
-                m_acc_n[k]   += (uint16_t)(n + m_hist_n[k][0] + m_hist_n[k][1] + m_hist_n[k][2]);
+                // La suma corrida de la ventana y no su media: lo que sigue divide
+                // por las conversiones, no por los ticks.
+                m_acc_sum[k] += (uint32_t)m_ma_sum[k].total();
+                m_acc_n[k]   += (uint16_t)m_ma_n[k].total();
             }
             else
             {
-                m_acc_sum[k] += s;
+                m_acc_sum[k] += (uint32_t)s;
                 m_acc_n[k]   += n;
             }
-
-            m_hist_sum[k][2] = m_hist_sum[k][1];
-            m_hist_sum[k][1] = m_hist_sum[k][0];
-            m_hist_sum[k][0] = s;
-            m_hist_n[k][2]   = m_hist_n[k][1];
-            m_hist_n[k][1]   = m_hist_n[k][0];
-            m_hist_n[k][0]   = n;
         }
     }
 
@@ -415,6 +468,20 @@ class RowAdc
 
     private:
 
+    // Lo que puede juntar un tick. A /32 la conversión son 32 us y en un tick de
+    // 200 us entran 6 como mucho: 6 x 4095 = 24570, que sobra en 16 bits. Con
+    // SENSE_DIAG el preescalador baja a /8 y entran 25 (102 375), así que ahí hace
+    // falta el de 32. Vale la pena la diferencia: en el camino que se graba, cada
+    // suma y cada movimiento del anillo cuestan la mitad.
+#if SENSE_DIAG
+    typedef int32_t TickSum;
+#else
+    typedef int16_t TickSum;
+#endif
+
+    typedef MovingAverage<TickSum, MA_TICKS, int32_t> SumaMovil;
+    typedef MovingAverage<int16_t, MA_TICKS, int16_t> CuentaMovil;
+
     uint8_t prescaler(void) const
     {
 #if SENSE_DIAG
@@ -427,10 +494,10 @@ class RowAdc
                      : (uint8_t)(_BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0));        // /128
     }
 
-    volatile uint32_t m_sum[2];         // lo del tick en curso
+    volatile TickSum  m_sum[2];         // lo del tick en curso
     volatile uint16_t m_n[2];
-    uint32_t          m_hist_sum[2][3]; // los tres ticks anteriores, para la media de 4
-    uint16_t          m_hist_n[2][3];
+    SumaMovil         m_ma_sum[2];      // los últimos MA_TICKS ticks, en un anillo
+    CuentaMovil       m_ma_n[2];
     uint32_t          m_acc_sum[2];     // lo de la fila en curso
     uint16_t          m_acc_n[2];
     volatile uint32_t m_row_sum[2];
