@@ -465,8 +465,10 @@ static void refresh_tuning(void)
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
 
-#if SENSE_DIAG
+    // Siempre: si la cadena del ADC quedó parada, esto es lo único que la levanta.
     g_adc.reconfigure();
+
+#if SENSE_DIAG
     if (g_dbg_ocr >= 40)
     {
         OCR2A = g_dbg_ocr;
@@ -542,6 +544,12 @@ static void reset_health_on_capture(void)
     if (now && !g_was_streaming)
     {
         g_clock.clear_health();
+    }
+    else if (!now && g_was_streaming)
+    {
+        // Y se congelan al cerrarla: la computadora los lee varios comandos después
+        // del `stop`, y lo que pase entre medio no describe la captura.
+        g_clock.hold_health();
     }
 
     g_was_streaming = now;

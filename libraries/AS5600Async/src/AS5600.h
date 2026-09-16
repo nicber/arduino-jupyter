@@ -72,6 +72,20 @@ class AS5600
     // no confundir una falla transitoria del bus con una desconexión.
     static const uint8_t MISSING_AFTER = 32;
 
+    // Ticks con una transferencia en curso a partir de los cuales se da el bus por
+    // trabado y se reinicia la máquina de estados de TWI. `m_inflight` sólo lo bajan
+    // las dos devoluciones de llamada, así que si TWI se cuelga --SDA sujeto por el
+    // esclavo, un NACK en un estado no contemplado-- no se lanza ninguna
+    // transferencia nunca más: el ángulo se congela en su último valor, cada tick
+    // cuenta un desborde y `bus_recover()` sólo corre en setup(). Y nI2C no lo
+    // arregla: en el camino asíncrono no hay plazo, WaitForComplete() vive adentro
+    // de #ifdef CTWI_USING_BLOCKING_ACCESS.
+    //
+    // 512 ticks a 5 kHz son 102 ms. Muy por encima de cualquier transferencia real
+    // --una muestra son ~90 us y la más larga ~140-- y de sobra para no confundirlo
+    // con una transferencia lenta: lo que se recupera son bloqueos permanentes.
+    static const uint16_t STALL_TICKS = 512;
+
     // Dado por ausente, una de cada RETRY_SAMPLES muestras vuelve a intentar
     // una transferencia. A 5 kHz son dos sondeos por segundo, que alcanzan para que el
     // sensor se detecte solo al reconectarlo y no le cuestan nada al lazo.
@@ -104,8 +118,25 @@ class AS5600
             {
                 m_overruns++;
             }
+
+            // Y si lleva demasiados ticks así, el bus está trabado: reiniciar TWI
+            // es lo único que lo devuelve a un estado del que se pueda salir.
+            if (++m_stall >= STALL_TICKS)
+            {
+                m_stall = 0;
+#ifdef TWCR
+                TWCR = (uint8_t)(TWCR & ~_BV(TWEN));
+                TWCR = (uint8_t)(TWCR |  _BV(TWEN));
+#endif
+                m_armed        = false;
+                m_aux_inflight = false;
+                m_inflight     = false;
+                fail();
+            }
             return;
         }
+
+        m_stall = 0;
 
         // Con el sensor desconectado cada intento falla, y a 5 kHz esa sucesión
         // de errores le quita al lazo de control casi la mitad de sus períodos:
@@ -129,6 +160,7 @@ class AS5600
             // siguiente tiene que volver a prepararlo.
             m_aux_request  = false;
             m_aux_inflight = true;
+            m_aux_flying   = m_aux_seq;
             m_armed = false;
             started = Bus::read_register(m_aux_reg, m_aux, m_aux_len, &process_aux_data);
         }
@@ -183,14 +215,25 @@ class AS5600
             return false;
         }
 
+        // Cada pedido lleva su número, y quien espera compara contra el suyo. Sin
+        // eso, un pedido que venció después de que la ISR ya lo había tomado deja la
+        // transferencia en curso: `m_aux_ready` se pone en verdadero más tarde, con
+        // `m_aux[]` cargado del registro VIEJO, y el pedido siguiente --que acaba de
+        // poner `m_aux_ready` en falso-- lo ve puesto enseguida y devuelve los bytes
+        // equivocados. En concreto: los dos bytes de MAGNITUDE adentro de
+        // `g_health.status`. Con el número, una respuesta atrasada no lo satisface a
+        // nadie y el que espera vence, que es lo correcto.
+        const uint8_t seq = (uint8_t)(m_aux_seq + 1);
+
         m_aux_ready   = false;
         m_aux_reg     = reg;
         m_aux_len     = length;
+        m_aux_seq     = seq;
         m_aux_request = true;
 
         uint32_t deadline = millis() + timeout_ms;
 
-        while (!m_aux_ready)
+        while (!(m_aux_ready && m_aux_done == seq))
         {
             if ((int32_t)(millis() - deadline) >= 0)
             {
@@ -282,6 +325,7 @@ class AS5600
     {
         if (Bus::ok(status))
         {
+            m_aux_done  = m_aux_flying;
             m_aux_ready = true;
             succeed();
         }
@@ -312,8 +356,16 @@ class AS5600
     // haría que un STATUS a destiempo apareciera como un ángulo.
     static uint8_t m_rx[2];
     static uint8_t m_aux[AUX_MAX];
-    static uint8_t m_aux_reg;
-    static uint8_t m_aux_len;
+    // volatile: se escriben en loop() y la ISR del muestreador los lee, así que el
+    // orden contra la escritura de m_aux_request --que sí era volatile-- no estaba
+    // garantizado por el lenguaje. No cuesta nada.
+    static volatile uint8_t m_aux_reg;
+    static volatile uint8_t m_aux_len;
+
+    static volatile uint8_t  m_aux_seq;     // el número del último pedido
+    static volatile uint8_t  m_aux_flying;  // el del que la ISR tomó
+    static volatile uint8_t  m_aux_done;    // el del que contestó
+    static volatile uint16_t m_stall;       // ticks seguidos con el bus ocupado
 
     static volatile bool     m_inflight;
     static volatile bool     m_armed;
@@ -333,8 +385,12 @@ class AS5600
 
 template <class Bus> uint8_t           AS5600<Bus>::m_rx[2];
 template <class Bus> uint8_t           AS5600<Bus>::m_aux[AS5600<Bus>::AUX_MAX];
-template <class Bus> uint8_t           AS5600<Bus>::m_aux_reg        = 0;
-template <class Bus> uint8_t           AS5600<Bus>::m_aux_len        = 0;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_aux_reg        = 0;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_aux_len        = 0;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_aux_seq        = 0;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_aux_flying     = 0;
+template <class Bus> volatile uint8_t  AS5600<Bus>::m_aux_done       = 0;
+template <class Bus> volatile uint16_t AS5600<Bus>::m_stall          = 0;
 template <class Bus> volatile bool     AS5600<Bus>::m_inflight       = false;
 template <class Bus> volatile bool     AS5600<Bus>::m_armed          = false;
 template <class Bus> volatile bool     AS5600<Bus>::m_aux_request    = false;

@@ -233,9 +233,15 @@ class RowAdc
         ADCSRA |= _BV(ADSC);
     }
 
-#if SENSE_DIAG
     // Reaplicar el preescalador sin reiniciar el ADC entero, y levantar la cadena si
-    // quedó parada: al volver de la ráfaga al modo libre no la arranca nadie más.
+    // quedó parada.
+    //
+    // Se compila SIEMPRE, no sólo con SENSE_DIAG. on_conversion() rearranca la cadena
+    // en cada conversión, pero si la cadena se corta por cualquier motivo no queda
+    // quién la vuelva a arrancar, y esto era lo único que lo hacía. Medido con ADEN
+    // bajado y subido sin ADSC: la corriente publicada se fue a +13648 mA y se quedó
+    // ahí a través de tres capturas, sin que nada del diagnóstico lo delatara.
+    // Cuesta ~10 ciclos por escritura de parámetro, que ocurre entre corridas.
     void reconfigure(void)
     {
         const uint8_t p = prescaler();
@@ -245,13 +251,16 @@ class RowAdc
         }
         if (!(ADCSRA & _BV(ADSC)))
         {
-            m_burst   = 0;
+#if SENSE_DIAG
+            m_burst = 0;
+#endif
             m_channel = 0;
             ADMUX = (uint8_t)((ADMUX & ~0x1F) | (Channel & 0x1F));
             ADCSRA |= _BV(ADSC);
         }
     }
 
+#if SENSE_DIAG
     // Las medias crudas de la última fila, en dieciseisavos de cuenta, y cuántas
     // conversiones entraron: para mirar cada canal por separado.
     void raw_means(uint16_t& a0, uint16_t& a1, uint16_t& conv) const

@@ -6,6 +6,14 @@
 // perderse: `late` dice cuánto tardó el lazo en atender un tick y `missed` cuenta
 // los que nunca atendió.
 //
+// `late` se mide desde el PRIMER tick sin atender, no desde el último. Medido en el
+// banco: con `loop_div = 1` y cinco canales se pierde el 92 % de los períodos, y
+// midiendo desde el último tick eso informaba 268 us --el 134 % de un período-- con
+// el retardo real en 1,8 ms. O sea que el número no podía expresar un lazo
+// desbordado, y bench.py lo convertía en «margen de tiempo» y lo daba por bueno.
+// Cuesta cero ciclos medirlo bien: es no pisar la marca de tiempo cuando ya hay un
+// período sin atender.
+//
 // No sabe nada de qué se muestrea. Quien lo use pone en la ISR lo que haya que
 // muestrear y le pregunta a on_isr() si además vence un período de control.
 //
@@ -31,11 +39,18 @@ class SampleClock
     typedef uint8_t  Divider;
     typedef uint16_t Micros;     // un retardo de atención, en us
 
+    // Los dos contadores de salud saturan en lugar de dar la vuelta: un número chico
+    // y tranquilizador después de haber dado la vuelta es peor que un tope. `missed`
+    // llegaba a 65535 en 11,9 s de captura con `loop_div = 1`, y `late` da la vuelta
+    // a los 65,5 ms. Leer el tope significa «por lo menos esto», no «esto».
+    static const Micros   LATE_MAX   = 0xFFFF;
+    static const uint16_t MISSED_MAX = 0xFFFF;
+
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección.
 
     Divider  divide;     // muestras por período de control
-    Micros   late;       // peor retardo observado entre el tick y su atención
+    Micros   late;       // peor retardo entre el primer tick sin atender y su atención
     uint16_t missed;     // períodos que el lazo nunca atendió
 
     constexpr SampleClock(Divider initial_divide)
@@ -43,6 +58,7 @@ class SampleClock
         , late(0)
         , missed(0)
         , m_due(false)
+        , m_hold(false)
         , m_fired_us(0)
         , m_missed_isr(0)
         , m_divider(initial_divide)
@@ -91,12 +107,20 @@ class SampleClock
         if (m_due)
         {
             // El lazo no atendió el tick anterior: el período de control se está
-            // perdiendo del todo, que es peor que una simple fluctuación.
-            m_missed_isr++;
+            // perdiendo del todo, que es peor que una simple fluctuación. La marca de
+            // tiempo NO se pisa, así que sigue siendo la del primer tick sin atender
+            // y `late` mide el retardo de verdad y no uno acotado a un período.
+            if (m_missed_isr != MISSED_MAX)
+            {
+                m_missed_isr++;
+            }
+        }
+        else
+        {
+            m_fired_us = micros();
         }
 
-        m_fired_us = micros();
-        m_due       = true;
+        m_due = true;
         return true;
     }
 
@@ -124,9 +148,24 @@ class SampleClock
         m_due        = false;
         interrupts();
 
-        missed += lost;
+        // Fuera de una ventana de emisión los contadores no se tocan: la computadora
+        // los lee varios comandos después del `stop`, y lo que pase entre medio --una
+        // lectura de mantenimiento que se destapa justo cuando el flujo para-- no
+        // pertenece a la ventana. Medido: dos corridas idénticas informaban 32 us y
+        // 9872 us de `late` según cuánto tardara el `get`.
+        if (m_hold)
+        {
+            return true;
+        }
 
-        const Micros delay = (Micros)((uint16_t)micros() - (uint16_t)fired);
+        missed = (missed > (uint16_t)(MISSED_MAX - lost)) ? MISSED_MAX
+                                                          : (uint16_t)(missed + lost);
+
+        // En 32 bits y saturando: con el lazo desbordado el retardo pasa de los
+        // 65,5 ms que entran en un uint16, y dar la vuelta ahí informaría un retardo
+        // chico justo cuando es enorme.
+        const uint32_t d = micros() - fired;
+        const Micros delay = (Micros)(d > (uint32_t)LATE_MAX ? LATE_MAX : d);
         if (delay > late)
         {
             late = delay;
@@ -161,11 +200,25 @@ class SampleClock
     {
         noInterrupts();
         m_missed_isr = 0;
+
+        // La marca de tiempo también, y no sólo los contadores: ahora que no se pisa
+        // en cada tick, un tick sin atender de ANTES de la ventana la dejaría
+        // apuntando al pasado, y el primer take() de la captura le cargaría los
+        // milisegundos de puerto serie que costó arrancarla. Que es exactamente lo
+        // que esta función existe para descartar. Medido en la placa: sin esto, una
+        // captura por omisión sana informaba 12,7 ms de retardo con cero períodos
+        // perdidos, que es una contradicción.
+        m_fired_us = micros();
         interrupts();
 
         missed = 0;
         late   = 0;
+        m_hold = false;
     }
+
+    // Congela `late` y `missed` en lo que describieron la ventana. Se llama al
+    // cerrarla; clear_health() los descongela al abrir la siguiente.
+    void hold_health(void) { m_hold = true; }
 
     // Para una pausa acotada en la que nadie puede pedirle el bus al sensor. Se usa
     // para escribirle un registro: encolar una escritura reserva memoria, y el
@@ -176,6 +229,7 @@ class SampleClock
     private:
 
     volatile bool     m_due;
+    bool              m_hold;     // fuera de una ventana de emisión: no acumular salud
     volatile uint32_t m_fired_us;
     volatile uint16_t m_missed_isr;
     volatile Divider  m_divider;
