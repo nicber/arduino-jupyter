@@ -94,9 +94,10 @@ corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede 
 Antes de promediar, la placa saca el rizado del PWM con una media de 4 ticks
 (`cur_ma`) y un notch en 250 Hz (`cur_nyq`), los dos prendidos. El notch de la red
 arranca apagado; `cur_notch` lo prende, cada armónico por separado. El canal `i` no
-publica cuentas del ADC sino **dieciseisavos de cuenta** (`cur_frac`): redondear a
-cuenta entera era lo que más ruido le ponía a la medición, y el sensor usa 735 de las
-2047 cuentas que entran en la telemetría con esa unidad. `cur_zero`, en cambio, sigue
+publica cuentas del ADC sino **dieciseisavos de cuenta** (`cur_frac`), o sea 0,42 mA por
+unidad en lugar de 6,8: redondear a cuenta entera era lo que más ruido le ponía a la
+medición, y el sensor usa 735 de las 2047 cuentas que entran en la telemetría con esa
+unidad. `cur_zero`, en cambio, sigue
 en cuentas enteras, que es como se mide. La escala en mA no
 está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
 relación del divisor. El montaje, los números medidos y la confiabilidad del

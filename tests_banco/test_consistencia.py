@@ -50,6 +50,41 @@ import banco_simulado  # noqa: E402
 check('el banco simulado integra con el período real del PWM',
       abs(banco_simulado.PWM_T * f_pwm - 1) < 1e-3, f'{1 / banco_simulado.PWM_T:.1f} Hz')
 
+# ------------------------------------------------- la unidad del canal de corriente
+# El golden de test_tablas.py guarda la escala como el texto `SENSE_MA_PER_LSB`, así que
+# un cambio de unidad --que es el más visible de todos, porque cambia lo que significa
+# cada número de `i`-- pasa sin que el golden se mueva. Acá se la calcula desde las
+# constantes y se la compara contra lo que afirman el README, el notebook y el banco
+# simulado.
+def _entero(patron, texto, archivo):
+    m = re.search(patron, texto)
+    check(m is not None, f'{archivo} declara {patron}', patron)
+    return int(m.group(1)) if m else 0
+
+
+SUPPLY = texto(RAIZ / 'libraries' / 'Sense' / 'src' / 'SupplyRatio.h')
+uv     = _entero(r'UV_PER_COUNT\s*=\s*(\d+)', SUPPLY, 'SupplyRatio.h')
+frac   = _entero(r'FRAC_BITS\s*=\s*(\d+)', SUPPLY, 'SupplyRatio.h')
+mv_a   = float(re.search(r'SENSE_MV_PER_A\s*=\s*([\d.]+)f', BANCO).group(1))
+ma_por_unidad = uv / mv_a / (1 << frac)
+
+check('la escala del canal i sale de las constantes',
+      abs(ma_por_unidad - 0.4223) < 0.0005, f'{ma_por_unidad:.4f} mA por unidad')
+
+for nombre, t in DOCS.items():
+    check(f'{nombre} dice la escala del canal i', '0,42 mA' in t,
+          'falta «0,42 mA» en el texto')
+
+banco_simulado_txt = fuentes['python/banco_simulado.py']
+check('el banco simulado publica la misma unidad que la placa',
+      _entero(r'CUR_FRAC\s*=\s*(\d+)', banco_simulado_txt, 'banco_simulado.py') == frac,
+      f'CUR_FRAC contra FRAC_BITS = {frac}')
+
+NOTCH = texto(RAIZ / 'libraries' / 'Sense' / 'src' / 'MainsNotch.h')
+check('el notch lleva la señal en la misma unidad que el cociente',
+      _entero(r'FRAC_BITS\s*=\s*(\d+)', NOTCH, 'MainsNotch.h') == frac,
+      f'MainsNotch contra SupplyRatio = {frac}')
+
 # ----------------------------------------------------- los parámetros de la placa
 import test_tablas  # noqa: E402
 import catalogo  # noqa: E402

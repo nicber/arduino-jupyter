@@ -191,6 +191,12 @@ static int16_t g_i    = 0;
 // enteras con las mismas clases.
 static uint8_t g_cur_frac = SENSE_FRAC_BITS;
 
+// La unidad del canal la fija SupplyRatio y la tiene que compartir el notch, que lleva la
+// señal adentro sin volver a escalarla. Separarlas cambiaría la escala publicada sin que
+// nada se queje, así que no se pueden separar.
+static_assert((int)MainsNotch::FRAC_BITS == (int)SupplyRatio::FRAC_BITS,
+              "el notch y el cociente tienen que llevar la senal en la misma unidad");
+
 // 1 si la cuenta de esta fila repite la anterior: la transferencia del AS5600 que
 // tenía que traerla no terminó a tiempo (un desborde). Derivada, esa fila da una
 // velocidad falsa, y sin la marca no hay manera de saber cuál es.
