@@ -655,6 +655,150 @@ except Exception as exc:
     check('un error del dispositivo levanta excepción',
           'comando desconocido' in str(exc), str(exc))
 
+# -------------------------------------- lo que volvía mal sin quejarse
+#
+# Todo lo de acá tiene la misma forma: el dispositivo contesta algo bien formado
+# pero equivocado, y la computadora lo daba por bueno. Un error del enlace que
+# levanta excepción se ve; uno que devuelve un DataFrame de aspecto normal, no.
+
+
+def _levanta(fn, tipos=(Exception,)):
+    """(si levantó, el mensaje). Para afirmar sobre el mensaje y no sólo el tipo."""
+    try:
+        fn()
+    except tipos as exc:
+        return True, str(exc)
+    return False, 'no levantó nada'
+
+
+# Un f32 no tiene cuantización, así que la verificación de un `set` no puede
+# aflojarse medio LSB entero para él: eso dejaba pasar 0,4 de error.
+class _MienteEnFloat(FakeUno):
+    def command(self, cmd):
+        if cmd.startswith('set kp '):
+            pedido = float(cmd.split()[2])
+            self.params['kp'] = ('f32', 0, pedido)      # guarda lo que se le pide
+            self.println(f'# v kp {pedido + 0.4:.6f}')  # e informa otra cosa
+            self.println('# ok')
+            return
+        super().command(cmd)
+
+
+dev_f = connect(_MienteEnFloat())
+salto, msg = _levanta(lambda: dev_f.set('kp', 2.0))
+check('un f32 informado con 0,4 de error no se acepta', salto, msg)
+
+# Un nombre mal escrito no puede quedarse en el objeto y leerse de vuelta: con un
+# motor del otro lado eso es creer que se bajó una ganancia y que el lazo siga con
+# la vieja.
+dev_n = connect(FakeUno())
+salto, msg = _levanta(lambda: setattr(dev_n, 'reff', 1000), (AttributeError,))
+check('un parámetro mal escrito levanta en lugar de guardarse en el objeto', salto, msg)
+check('y no llegó a la placa', dev_n.ref == 0, str(dev_n.ref))
+
+# El nombre que devuelve `# v` se compara: es la única deformación que produce una
+# respuesta bien formada.
+class _ContestaOtroParametro(FakeUno):
+    def command(self, cmd):
+        if cmd == 'get ref':
+            self.println('# v mode 77')
+            self.println('# ok')
+            return
+        super().command(cmd)
+
+
+salto, msg = _levanta(lambda: connect(_ContestaOtroParametro()).get('ref'))
+check('un `# v` que contesta por otro parámetro se rechaza', salto, msg)
+
+# La máscara de canales se arma con la posición en la tabla que armó la
+# computadora, así que una línea perdida corría la tabla entera y se pedía un canal
+# y volvía otro con el nombre del pedido.
+class _PierdeUnCanal(FakeUno):
+    def command(self, cmd):
+        if cmd == 'chans':
+            for i, (n, t, sc, u) in enumerate(CHANS):
+                if i == 1:
+                    continue
+                self.println(f'# c {i} {n} {t} {sc:.7f} {u}'.rstrip())
+            self.println('# ok')
+            return
+        super().command(cmd)
+
+
+salto, msg = _levanta(lambda: connect(_PierdeUnCanal()))
+check('una línea perdida de la tabla de canales se detecta', salto, msg)
+
+# Un valor que no entra en el tipo del dispositivo queda guardado deformado y nadie
+# lo restituye, así que se rechaza antes de mandarlo.
+dev_r = connect(FakeUno())
+salto, msg = _levanta(lambda: dev_r.set('ref', 40000))
+check('un valor que no entra en el i16 se rechaza antes de mandarlo', salto, msg)
+check('y el parámetro quedó donde estaba', dev_r.ref == 0, str(dev_r.ref))
+salto, msg = _levanta(lambda: dev_r.set('kq', 1000))
+check('y con punto fijo también: kq es i32 con frac 22, o sea +/-512', salto, msg)
+
+# Una línea que no es hexadecimal pero mide lo mismo que una fila --un reinicio por
+# brownout, un print de depuración-- tiraba la captura entera con un ValueError que
+# no decía qué línea había sido.
+class _EscupeBasura(FakeUno):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._filas = 0
+
+    def _pump(self):
+        antes = len(self.out)
+        super()._pump()
+        if self.streaming and len(self.out) > antes:
+            self._filas += 1
+            if self._filas == 5:
+                ancho = WIDTH['u16'] + sum(WIDTH[CHANS[i][1]] for i in self.active)
+                self.out += (b'Z' * ancho) + b'\n'
+
+
+df_b = connect(_EscupeBasura()).capture(0.2, warn=False)
+check('una línea de basura del ancho justo no mata la captura', len(df_b) > 0,
+      str(len(df_b)))
+check('y se cuenta en lugar de pasar inadvertida', df_b.attrs.get('basura') == 1,
+      str(df_b.attrs.get('basura')))
+
+# El `set` de un evento se manda sin verificar a propósito, porque el `# mark` que
+# devuelve el dispositivo ES la verificación. Si no llega, el escalón puede no haber
+# ocurrido, y volver con un cuadro de aspecto normal es lo peor que se puede hacer.
+class _SordoAlSet(FakeUno):
+    def command(self, cmd):
+        if self.streaming and cmd.startswith('set '):
+            self.println('# ok')
+            return
+        super().command(cmd)
+
+
+salto, msg = _levanta(
+    lambda: connect(_SordoAlSet()).step('ref', 1000, pre=0.05, post=0.1, warn=False))
+check('un escalón sin marca levanta en lugar de devolver datos sin escalón', salto, msg)
+
+# «no existe ese parametro» sobre un nombre que SÍ está en la tabla es prueba de
+# que se deformó en tránsito, no una objeción legítima: es lo que produce un byte
+# perdido adentro del nombre, que es la deformación más probable que hay.
+class _ComeUnaLetra(FakeUno):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._primero = True
+
+    def command(self, cmd):
+        if cmd.startswith('set ref ') and self._primero:
+            self._primero = False
+            self.println('# err no existe ese parametro')
+            return
+        super().command(cmd)
+
+
+dev_d = connect(_ComeUnaLetra())
+dev_d.set('ref', 1000)
+check('«no existe ese parametro» sobre un nombre de la tabla se reintenta',
+      dev_d.ref == 1000, str(dev_d.ref))
+salto, msg = _levanta(lambda: connect(FakeUno()).set('noexiste', 1))
+check('y un nombre que de verdad no está en la tabla sigue levantando', salto, msg)
+
 print()
 print(f'{len(failures)} falla(s)' + (': ' + ', '.join(failures) if failures else ''))
 sys.exit(1 if failures else 0)

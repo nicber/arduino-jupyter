@@ -196,8 +196,25 @@ class Bench:
 
         if link is not None and name not in self._PROPIOS and name in link._params:
             link.set(name, value)
-        else:
-            object.__setattr__(self, name, value)
+            return
+
+        # Un nombre que no es un parámetro de la placa ni un atributo que este
+        # objeto ya tenga es, casi siempre, un parámetro mal escrito. Guardarlo acá
+        # lo deja leerse de vuelta --__getattr__ ni se entera-- así que
+        # `dev.cur_zeroo = 5` confirmaba un valor que la placa nunca recibió. Es el
+        # mismo razonamiento que CtrlLink.__setattr__, y hace falta en las dos capas
+        # porque los notebooks usan ésta.
+        if (link is not None and not name.startswith('_')
+                and name not in self._PROPIOS and name not in self.__dict__):
+            import difflib
+            parecidos = difflib.get_close_matches(name, link._params, n=3)
+            sugerencia = (f' ¿Quiso decir {" o ".join(map(repr, parecidos))}?'
+                          if parecidos else '')
+            raise AttributeError(
+                f'{name!r} no es un parámetro de la placa ni un atributo del banco, '
+                f'así que asignarlo no llegaría al equipo.{sugerencia}')
+
+        object.__setattr__(self, name, value)
 
     def __dir__(self):
         return sorted(set(super().__dir__()) | set(dir(self.link)))

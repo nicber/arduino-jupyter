@@ -57,12 +57,35 @@ _TYPES = {
     'f32': np.dtype('>f4'),
 }
 
+# Lo que entra en cada tipo del cable. El dispositivo hace strtol y un cast, así
+# que un valor que no entre queda guardado deformado y nadie lo restituye: más vale
+# no mandarlo. Con punto fijo se llega antes de lo que parece --un i32 con frac 22
+# se pasa en 512--, y el mensaje tiene que hablar del pedido y no del almacenamiento.
+_LIMITS = {
+    'i8':  (-128, 127),
+    'u8':  (0, 255),
+    'i16': (-32768, 32767),
+    'u16': (0, 65535),
+    'i32': (-2**31, 2**31 - 1),
+    'u32': (0, 2**32 - 1),
+}
+
+# Los dígitos de una fila. El ancho solo no alcanza para reconocerla: una línea de
+# texto que por casualidad mida lo mismo rompía la captura entera.
+_HEXDIG = b'0123456789ABCDEFabcdef'
+
 # Respuestas que dan por terminada la contestación a un comando.
 _TERMINATORS = ('# ok', '# err', '# data')
 
 # Errores que significan que el dispositivo no recibió lo que se le mandó, y no
 # que lo recibió y objetó. Sólo vale la pena reintentar éstos.
 _GARBLED = ('comando desconocido', 'comando demasiado largo', 'necesita')
+
+# Y éste, que depende del comando: un byte perdido adentro del *nombre* da
+# exactamente «no existe ese parametro», que parece una objeción legítima y no lo
+# es. Si el nombre que se mandó está en la tabla del dispositivo, que no exista es
+# prueba de deformación. Ver _es_deformacion().
+_GARBLED_SI_EXISTE = 'no existe ese parametro'
 
 # Contadores de salud del lazo. Son los únicos que este módulo conoce, y lo son
 # porque no dependen de ningún hardware: cualquier dispositivo que hable este
@@ -298,8 +321,12 @@ class CtrlLink:
                 self._reset_board(reset_wait)
 
             self.info = self.sync()
-            self._params = self._read_params()
+            # `_params` se asigna al final a propósito: es lo que __setattr__ usa
+            # para decidir si un nombre es un parámetro, y mientras no exista los
+            # atributos normales del objeto se asignan sin pasar por esa comprobación.
+            params = self._read_params()
             self.channels = self._read_channels()
+            self._params = params
         except BaseException:
             # El puerto ya está abierto, y un puerto serie es exclusivo. En un
             # notebook el traceback de la celda sobrevive en sys.last_traceback,
@@ -540,9 +567,27 @@ class CtrlLink:
                     return reply
 
                 reason = text[6:]
-                if attempt + 1 < tries and any(g in reason for g in _GARBLED):
+                if attempt + 1 < tries and self._es_deformacion(line, reason):
                     break  # el comando se deformó en tránsito; se manda de nuevo
                 raise CtrlLinkError(f'{line!r}: {reason}')
+
+    def _es_deformacion(self, line, reason):
+        """Si el error significa que al dispositivo le llegó otra cosa de la que se mandó.
+
+        Los tres de _GARBLED lo significan siempre. «no existe ese parametro» sólo
+        si el nombre que se mandó SÍ está en la tabla: entonces lo que no existe es
+        lo que llegó, no lo que se pidió, y reintentar es lo correcto. Sin esto, un
+        byte perdido adentro del nombre --la deformación más probable que hay-- se
+        trataba como una objeción legítima y el `set` no se reintentaba.
+        """
+        if any(g in reason for g in _GARBLED):
+            return True
+
+        if _GARBLED_SI_EXISTE not in reason:
+            return False
+
+        campos = line.split()
+        return len(campos) > 1 and campos[1] in self.__dict__.get('_params', {})
 
     def sync(self, timeout=4.0) -> str:
         """Vacía lo que el dispositivo estuviera diciendo y confirma que escucha."""
@@ -590,12 +635,40 @@ class CtrlLink:
         return params
 
     def _read_channels(self) -> list[Column]:
+        """La tabla de canales, verificada contra lo que el propio dispositivo declara.
+
+        El índice de cada línea y el total que informa `id` se comparan en lugar de
+        descartarse. La máscara de _select_channels() se arma con la posición en
+        ESTA lista, así que una línea perdida corría la tabla entera: se pedía el
+        canal `e` y volvía `y` rotulado `e`, sin un solo aviso.
+        """
         chans = []
         for text in self.cmd('chans'):
-            if text.startswith('# c '):
-                _, name, type_, scale, *unit = text[4:].split()
-                chans.append(Column(name, type_, float(scale),
-                                    unit[0] if unit else ''))
+            if not text.startswith('# c '):
+                continue
+            indice, name, type_, scale, *unit = text[4:].split()
+            if int(indice) != len(chans):
+                raise CtrlLinkError(
+                    f'la tabla de canales llegó incompleta: el canal {name!r} dice '
+                    f'ser el número {indice} y va en la posición {len(chans)}. '
+                    f'Se perdió una línea en el cable; volver a conectar.')
+            if type_ not in _TYPES:
+                raise CtrlLinkError(
+                    f'el canal {name!r} declara un tipo que este módulo no conoce '
+                    f'({type_!r}): se deformó en el cable, o el sketch habla una '
+                    f'versión más nueva del protocolo.')
+            chans.append(Column(name, type_, float(scale),
+                                unit[0] if unit else ''))
+
+        for field in self.info.split():
+            if field.startswith('chans='):
+                if int(field[6:]) != len(chans):
+                    raise CtrlLinkError(
+                        f'el dispositivo declara {field[6:]} canales y describió '
+                        f'{len(chans)}: se perdió alguna línea en el cable. '
+                        f'Volver a conectar.')
+                break
+
         return chans
 
     @property
@@ -648,12 +721,26 @@ class CtrlLink:
         return {name: self.get(name) for name in self._params}
 
     def get(self, name):
-        """El valor del parámetro, en unidades reales."""
+        """El valor del parámetro, en unidades reales.
+
+        El nombre que devuelve el dispositivo se compara en lugar de descartarse: el
+        protocolo ya lo manda, verificarlo es gratis, y es la única deformación que
+        produce una respuesta bien formada. Sin esto, `get('ref')` podía devolver el
+        valor de `mode`.
+        """
         for text in self.cmd(f'get {name}'):
             if text.startswith('# v '):
-                _, value = text[4:].split(None, 1)
+                echoed, value = text[4:].split(None, 1)
+                self._mismo_nombre(name, echoed)
                 return self._coerce(name, value)
         raise CtrlLinkError(f'no hay valor en la respuesta para {name!r}')
+
+    @staticmethod
+    def _mismo_nombre(pedido, contestado):
+        if contestado != pedido:
+            raise CtrlLinkError(
+                f'se preguntó por {pedido!r} y el dispositivo contestó por '
+                f'{contestado!r}: la respuesta se deformó en el cable.')
 
     def set(self, name, value, tries=3):
         """Fija un parámetro, en unidades reales, y confirma lo que guardó el dispositivo.
@@ -671,7 +758,8 @@ class CtrlLink:
             for text in self.cmd(f'set {name} {self._encode(name, value)}'):
                 if not text.startswith('# v '):
                     continue
-                _, echoed = text[4:].split(None, 1)
+                nombre, echoed = text[4:].split(None, 1)
+                self._mismo_nombre(name, nombre)
                 stored = self._coerce(name, echoed)
                 if self._agrees(name, stored, value):
                     return stored
@@ -683,12 +771,30 @@ class CtrlLink:
         return None
 
     def _encode(self, name, value):
-        """Unidades reales -> el entero (o float) que el dispositivo quiere en el cable."""
+        """Unidades reales -> el entero (o float) que el dispositivo quiere en el cable.
+
+        Se verifica que entre en el tipo del dispositivo ANTES de mandarlo: allá hay
+        un strtol y un cast, así que un valor que no entra queda guardado deformado
+        y nadie lo restituye. Con punto fijo se llega mucho antes de lo que parece,
+        y el mensaje que salía hablaba del almacenamiento y no de la causa.
+        """
         param = self._params[name]
 
         if not param.integral:
-            return float(value)
-        return int(round(float(value) * 2.0 ** param.frac))
+            # Nueve cifras redondean un float32 sin pérdida, y dejan la línea muy por
+            # debajo del largo máximo de un comando: str(float) de un número chico
+            # con exponente se pasa.
+            return f'{float(value):.9g}'
+
+        raw = int(round(float(value) * 2.0 ** param.frac))
+        lo, hi = _LIMITS.get(param.type, (None, None))
+        if lo is not None and not lo <= raw <= hi:
+            escala = param.scale if param.frac else 1
+            raise CtrlLinkError(
+                f'{value!r} no entra en {name}, que el dispositivo guarda como '
+                f'{param.type} con {param.frac} bit(s) fraccionarios: el rango va de '
+                f'{lo * escala:g} a {hi * escala:g}.')
+        return raw
 
     def _coerce(self, name, text):
         """El entero (o float) del cable -> unidades reales."""
@@ -709,7 +815,15 @@ class CtrlLink:
 
         # Medio paso de lo que el dispositivo realmente puede representar, más
         # lugar para los seis decimales con los que imprime los float.
-        slack = max(1e-6, abs(wanted) * 1e-6, abs(param.scale) / 2)
+        #
+        # El término de cuantización vale para un parámetro ENTERO y sólo para ése.
+        # Un `f32` declara `frac` 0 por convención, así que su `scale` es 1.0 y ese
+        # término valía 0,5 sobre un valor que no tiene ninguna cuantización: toda
+        # la verificación quedaba desarmada justo para el único tipo que guarda
+        # exactamente lo que se le pide. Un dispositivo que informara kp + 0,4 pasaba.
+        slack = max(5e-7, abs(wanted) * 1e-6)
+        if param.integral:
+            slack = max(slack, abs(param.scale) / 2)
         return abs(float(stored) - wanted) <= slack
 
     # Los parámetros como atributos, para que en un notebook se lea
@@ -725,8 +839,25 @@ class CtrlLink:
         params = self.__dict__.get('_params', {})
         if name in params:
             self.set(name, value)
-        else:
-            super().__setattr__(name, value)
+            return
+
+        # Un nombre que no está en la tabla y que tampoco es un atributo que este
+        # objeto ya tenga es, casi siempre, un parámetro mal escrito. Dejarlo caer
+        # en el manejo normal de atributos lo guardaba en el objeto, __getattr__ ni
+        # se enteraba, y `dev.reff = 1000` se leía de vuelta como 1000 con la placa
+        # sin enterarse. Con un motor del otro lado eso es creer que se bajó una
+        # ganancia y que el lazo siga con la vieja.
+        if params and not name.startswith('_') and name not in self.__dict__:
+            import difflib
+            parecidos = difflib.get_close_matches(name, params, n=3)
+            sugerencia = (f' ¿Quiso decir {" o ".join(map(repr, parecidos))}?'
+                          if parecidos else '')
+            raise AttributeError(
+                f'{name!r} no es un parámetro del dispositivo ni un atributo de '
+                f'este objeto, así que asignarlo no llegaría a la placa.'
+                f'{sugerencia}')
+
+        super().__setattr__(name, value)
 
     def __dir__(self):
         return list(super().__dir__()) + list(self.__dict__.get('_params', {}))
@@ -763,24 +894,31 @@ class CtrlLink:
         Ctrl-C—, el dispositivo queda callado igual antes de que la excepción
         llegue a la celda: ver _hold().
         """
-        previous = None
+        # El valor previo se publica acá adentro y no por el valor devuelto: si la
+        # interrupción cae DENTRO de _select_channels --entre el `set chans` y la
+        # lectura de su respuesta-- el dispositivo ya aplicó la máscara nueva y
+        # `previous` todavía valdría None, así que no se restituía nada y la captura
+        # siguiente volvía con las columnas que dejó ésta.
+        self._chans_previo = None
 
         try:
             with self._hold():
-                previous = self._select_channels(canales)
+                self._select_channels(canales)
                 df = self._capture(duration, events, poll, warn)
         except BaseException:
             # _hold() ya dejó el enlace limpio, así que restituir es un comando
             # común. Si ni eso sale, la excepción que viene es la noticia.
-            if previous is not None:
+            if self._chans_previo is not None:
                 try:
-                    self.set('chans', previous)
+                    self.set('chans', self._chans_previo)
                 except Exception:
                     pass
             raise
+        finally:
+            previo, self._chans_previo = self._chans_previo, None
 
-        if previous is not None:
-            self.set('chans', previous)
+        if previo is not None:
+            self.set('chans', previo)
 
         return df
 
@@ -806,7 +944,10 @@ class CtrlLink:
         for name in canales:
             mask |= 1 << names.index(name)
 
+        # Se publica ANTES de emitir el `set`: a partir de ahí la máscara puede
+        # estar cambiada, y quien limpie tiene que saber a qué volver.
         previous = self.get('chans')
+        self._chans_previo = previous
         self.set('chans', mask)
         return previous
 
@@ -939,11 +1080,50 @@ class CtrlLink:
                 f'fila le cuesta al lazo más que el cálculo de control--, bajar '
                 f'la frecuencia del lazo, o sacarle trabajo al paso de control.')
 
+        if missed and dt_us:
+            notes.append(
+                f'el eje `t` quedó {missed * dt_us * 1e-6:.3f} s corto: los ticks '
+                f'avanzan una vez por período ATENDIDO, así que un período perdido '
+                f'no deja hueco y no se ve en los datos. Toda constante de tiempo '
+                f'que se identifique de acá sale chica en esa proporción. '
+                f'`df.attrs["wall"]` tiene la duración real de la ventana.')
+
         late = df.attrs.get('maxlate')
         if late is not None and dt_us and late > dt_us * _LATE_WARN:
+            # El retardo se mide desde el primer tick sin atender, así que puede
+            # valer muchos períodos: decir «llegó, pero por poco» con el 7530 % era
+            # exactamente al revés.
+            veces = late / dt_us
+            cola = ('el lazo llegó, pero por poco.' if veces < 2 else
+                    'o sea que el lazo se atrasó ' + f'{veces:.1f} períodos enteros.')
             notes.append(
                 f'peor retardo de atención {late} us contra un período de '
-                f'{dt_us} us ({late / dt_us:.0%}): el lazo llegó, pero por poco.')
+                f'{dt_us} us ({veces:.0%}): {cola}')
+
+        # El eje de tiempo contra el reloj de pared, que es la única referencia
+        # independiente que hay. Cualquier forma de que los dos se separen --no sólo
+        # un período perdido-- aparece acá.
+        wall = df.attrs.get('wall')
+        tick = df.attrs.get('tick')
+        if wall and dt_us and tick is not None and len(tick) > 1:
+            span = (int(tick[-1]) - int(tick[0]) + df.attrs.get('dec', 1)) * dt_us * 1e-6
+            if abs(span - wall) > max(0.05 * wall, 4 * dt_us * 1e-6):
+                notes.append(
+                    f'el eje `t` abarca {span:.3f} s y la ventana de emisión duró '
+                    f'{wall:.3f} s: los ticks y el reloj de pared no coinciden, así '
+                    f'que el eje de tiempo de esta captura no es de fiar.')
+
+        basura = df.attrs.get('basura') or 0
+        if basura:
+            notes.append(
+                f'se descartaron {basura} línea(s) que no eran ni comentario ni '
+                f'fila: algo más está escribiendo en el puerto, o se perdieron '
+                f'bytes. Las filas que sí llegaron se decodificaron igual.')
+
+        if df.attrs.get('dec_movido'):
+            notes.append(
+                '`dec` se movió durante la captura, así que el paso entre ticks no '
+                'es uno solo y no se buscaron huecos en la secuencia.')
 
         drops = df.attrs.get('drops') or 0
         if drops:
@@ -993,13 +1173,32 @@ class CtrlLink:
                     pass
             raise
 
-        marks = [m for m in df.attrs['marks'] if m[1] == name]
+        filas = df.attrs.get('mark_rows') or [None] * len(df.attrs['marks'])
+        marks = [(m, f) for m, f in zip(df.attrs['marks'], filas) if m[1] == name]
+        if not marks:
+            # El `set` del evento se manda sin verificar a propósito --verificarlo
+            # costaría tráfico en medio de la captura-- porque el `# mark` que
+            # devuelve el dispositivo trae el valor que efectivamente guardó. Si no
+            # está, esa verificación no ocurrió y el escalón puede no haber ocurrido
+            # tampoco: volver con un DataFrame de aspecto normal, con `t` medido
+            # desde el arranque y sin escalón adentro, es lo peor que se puede hacer.
+            raise CtrlLinkError(
+                f'el dispositivo nunca confirmó el escalón de {name!r}: no hay '
+                f'ninguna marca en la captura. El `set` se perdió en el cable, así '
+                f'que estos datos no tienen el escalón adentro.')
+
+        marca, fila = marks[0]
+        if not self._agrees(name, marca[2], value):
+            raise CtrlLinkError(
+                f'se pidió un escalón de {name} a {value!r} y el dispositivo marcó '
+                f'{marca[2]!r}: el valor se deformó en el cable.')
+
         if marks:
             # Se desplaza en el espacio de ticks, no en segundos: restar dos float
             # que son cada uno un tick por un período deja un residuo de redondeo,
             # y un t de -5e-17 pone la muestra del escalón del lado equivocado de
             # t < 0.
-            origin = self._mark_tick(df, marks[0][0])
+            origin = self._mark_tick(df, marca[0], fila)
             df['t'] = (df.attrs['tick'] - origin) * (df.attrs['dt_us'] * 1e-6)
 
         if back is not None:
@@ -1008,11 +1207,16 @@ class CtrlLink:
         return df
 
     @staticmethod
-    def _mark_tick(df, raw_tick):
+    def _mark_tick(df, raw_tick, fila=None):
         """Tick desenrollado de una marca, que el dispositivo informa en 16 bits crudos.
 
         Los ticks del propio cuadro ya están desenrollados, así que los dos viven
         en espacios distintos y no se pueden restar sin más.
+
+        `fila` es en qué fila de la captura llegó la marca, que es lo que desempata
+        cuando hay más de un tick del cuadro cuyos 16 bits bajos coinciden --una
+        captura de más de 65536 ticks, o sea 65 s a 1 kHz--. Sin desempatar se
+        tomaba el primer candidato y el origen quedaba 65,5 s corrido.
         """
         tick = df.attrs['tick']
 
@@ -1021,12 +1225,18 @@ class CtrlLink:
 
         here = np.flatnonzero((tick & 0xFFFF) == raw_tick)
         if len(here):
-            return int(tick[here[0]])
+            if len(here) == 1 or fila is None:
+                return int(tick[here[0]])
+            return int(tick[here[int(np.argmin(np.abs(here - fila)))]])
 
         # La diezmación o una fila descartada pueden dejar al tick marcado sin
         # fila propia; se lo ubica por cuánto queda pasado el primer tick de la
-        # captura.
-        return int(tick[0] + ((raw_tick - (tick[0] & 0xFFFF)) & 0xFFFF))
+        # captura. La diferencia va CON SIGNO: la marca puede preceder al primer
+        # tick del cuadro --las filas que más se descartan son justo las primeras,
+        # porque el encabezado de `start` deja el buffer cargado-- y sin signo eso
+        # daba 65536 - 1 y corría el origen 65,5 s.
+        delta = ((raw_tick - (tick[0] & 0xFFFF) + 0x8000) & 0xFFFF) - 0x8000
+        return int(tick[0] + delta)
 
     # ---------------------------------------------------------- decodificación
 
@@ -1037,6 +1247,15 @@ class CtrlLink:
         for text in lines:
             if text.startswith('# col '):
                 name, type_, scale, *unit = text[6:].split()
+                if type_ not in _TYPES:
+                    # Acá todavía se está a tiempo: esto corre inmediatamente
+                    # después de `start` y antes de que salga una sola fila. Sin
+                    # esta comprobación el tipo se tocaba recién en _decode(), o
+                    # sea un KeyError pelado después de toda la captura.
+                    raise CtrlLinkError(
+                        f'el encabezado declara el canal {name!r} con un tipo que '
+                        f'este módulo no conoce ({type_!r}): se deformó en el cable, '
+                        f'o el sketch habla una versión más nueva del protocolo.')
                 columns.append(Column(name, type_, float(scale),
                                       unit[0] if unit else ''))
             elif text.startswith('# rate '):
@@ -1060,24 +1279,40 @@ class CtrlLink:
         # tipos de línea.
         lines = buf.replace(b'\r', b'').split(b'\n')
 
-        marks, notes = [], []
+        marks, notes, mark_rows = [], [], []
         stats = {'rows': None, 'drops': None}
         rows = []
+        basura = 0
 
         for line in lines:
             if line.startswith(b'#'):
                 text = line.decode('ascii', 'replace')
                 if text.startswith('# mark '):
                     tick, name, value = text[7:].split(None, 2)
+                    if name not in self._params:
+                        raise CtrlLinkError(
+                            f'el dispositivo marcó un parámetro que no está en su '
+                            f'tabla ({name!r}): la línea se deformó en el cable.')
                     marks.append((int(tick), name, self._coerce(name, value)))
+                    # En qué fila de la captura cayó. El tick de una marca viaja en
+                    # 16 bits crudos, y en una captura de más de 65536 ticks hay más
+                    # de una fila que le corresponde: esto dice cuál.
+                    mark_rows.append(len(rows))
                 elif text.startswith('# note '):
                     notes.append(text[7:])
                 elif text.startswith('# end '):
                     stats.update((k, int(v)) for k, v in
                                  (f.split('=', 1) for f in text[6:].split()
                                   if '=' in f))
-            elif len(line) == width:
+            elif len(line) == width and not line.translate(None, _HEXDIG):
                 rows.append(line)
+            elif line:
+                # Una línea que no es ni comentario ni fila. Antes bastaba con que
+                # midiera lo mismo que una fila para que entrara, y entonces
+                # bytes.fromhex() tiraba la captura entera con un ValueError que no
+                # decía qué línea había sido. Se cuentan y las informa
+                # _health_notes(), que es la maquinaria que ya existe para esto.
+                basura += 1
 
         raw = bytes.fromhex(b''.join(rows).decode('ascii')) if rows else b''
 
@@ -1100,10 +1335,17 @@ class CtrlLink:
         # Un hueco en la secuencia de ticks es una fila que el dispositivo descartó
         # o una que se perdió en el camino. En cualquier caso es un agujero en la
         # serie temporal, no una pausa.
-        gaps = int(np.count_nonzero(np.diff(tick) != dec)) if len(tick) > 1 else 0
+        # `dec` sale del encabezado, que se imprime en `start`, pero el protocolo
+        # permite moverlo durante el flujo: si se movió, el paso entre ticks deja de
+        # ser uno solo y contar diferencias distintas de `dec` informa huecos que no
+        # existen. Medido: 140 filas enviadas, 140 recibidas, y 63 «huecos».
+        dec_movido = any(m[1] == 'dec' for m in marks)
+        gaps = (0 if dec_movido or len(tick) <= 1
+                else int(np.count_nonzero(np.diff(tick) != dec)))
 
         df.attrs.update(dt_us=dt_us, dec=dec, marks=marks, notes=notes,
-                        gaps=gaps, tick=tick,
+                        gaps=gaps, tick=tick, mark_rows=mark_rows,
+                        basura=basura, dec_movido=dec_movido,
                         units={c.name: c.unit for c in columns},
                         **stats)
         return df

@@ -249,8 +249,11 @@ def connect(uno, diagnostico=None):
     dev._diag = diagnostico
     dev.ser = FakeSerial(uno)
     dev.info = dev.sync()
-    dev._params = dev._read_params()
+    # En el mismo orden que CtrlLink.__init__: `_params` al final, que es lo que
+    # habilita la comprobación de __setattr__.
+    params = dev._read_params()
     dev.channels = dev._read_channels()
+    dev._params = params
     # Permite que una verificación mire lo que el dispositivo realmente guardó, en
     # lugar de lo que informa la computadora después de reescalarlo.
     dev._uno_raw = lambda name: uno.params[name][2]
