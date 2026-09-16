@@ -65,6 +65,15 @@
 // pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los cinco canales de 3,6 a 1,4 mA.
 // El ruido entre filas no cambia (0,53 mA) y no se pierde ningún período.
 //
+// **Esto vale para el clon a /32, no para un UNO.** `SETTLE_US = 3` está elegido para
+// que a /32 --32 us por conversión-- el tick cierre con 3 y no con 4. En un UNO el
+// preescalador es /128 y la conversión son 104 us: entran 1,92 conversiones por tick, y
+// el relleno las lleva a 1,87. Eso no impide que un tick cierre con 2, que es par, o sea
+// que alternando canales en un UNO el salto de dos niveles volvería. Un UNO funciona a
+// 5 V y no necesita el divisor (`cur_div = 0` y sin alternancia), así que hoy no se
+// alcanza; quien ponga el divisor en un UNO tiene que volver a elegir `SETTLE_US` con
+// las perillas de SENSE_DIAG, y el valor será otro.
+//
 // Las dos alternativas se probaron y son peores:
 //
 // - **Romper la alternancia**, eligiendo el canal con un bit pseudoaleatorio, mata el
