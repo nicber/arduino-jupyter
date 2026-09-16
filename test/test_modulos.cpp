@@ -130,13 +130,54 @@ int main()
     if (!parity) { printf("       peor desvío: %d cuentas\n", worst); }
 
     // El checksum distingue dos entradas intercambiadas, que es el error que se
-    // comete cargando una tabla y que una suma simple no detecta.
+    // comete cargando una tabla y que una suma simple no detecta. Se prueban todos
+    // los pares y no uno solo: el par (3,4) lo detectaba igual la versión de bytes
+    // módulo 256, y los que se le escapaban eran los que están a distancia 32.
     const uint16_t before = lut.checksum();
-    const Lut::Eighths tmp = lut.entry[3];
-    lut.entry[3] = lut.entry[4];
-    lut.entry[4] = tmp;
-    check(lut.checksum() != before,
-          "el checksum cambia si se intercambian dos entradas");
+    unsigned swaps = 0;
+    unsigned blind = 0;
+    for (unsigned i = 0; i < Lut::SIZE; i++)
+    {
+        for (unsigned j = i + 1; j < Lut::SIZE; j++)
+        {
+            if (lut.entry[i] == lut.entry[j]) { continue; }
+
+            const Lut::Eighths tmp = lut.entry[i];
+            lut.entry[i] = lut.entry[j];
+            lut.entry[j] = tmp;
+
+            swaps++;
+            if (lut.checksum() == before) { blind++; }
+
+            lut.entry[j] = lut.entry[i];
+            lut.entry[i] = tmp;
+        }
+    }
+    check(lut.checksum() == before, "la tabla quedó como estaba");
+    check(blind == 0,
+          "el checksum cambia con cualquier par de entradas intercambiadas");
+    if (blind) { printf("       %u de %u intercambios no se detectan\n", blind, swaps); }
+
+    // La media de la ventana con una suma cerca de 2^32/16: el camino corto
+    // multiplica por 16 y suma medio divisor para redondear, y la guarda tiene que
+    // descontar las dos cosas. Sin eso hay una ventana de 4080 valores en la que la
+    // media sale 0 y la corriente publicada salta a -2048 cuentas.
+    {
+        SupplyRatio r;
+        r.div_e4 = 0;
+        r.apply();
+
+        const uint32_t n = 32;
+        bool bien = true;
+        for (uint32_t s = 0xFFFFFFFFUL / 16UL - 4200UL; s <= 0xFFFFFFFFUL / 16UL + 8UL; s++)
+        {
+            // Sin divisor: la media de A0 llevada a la escala de AVCC, que es
+            // monótona en la suma. Un salto a cero es el desborde.
+            const uint16_t q4 = r.counts_q4(s, n, 0, 0);
+            if (q4 == 0) { bien = false; break; }
+        }
+        check(bien, "la media no desborda con la suma pegada a 2^32/16");
+    }
 
     // --------------------------------------------------------- ángulo desenrollado
 

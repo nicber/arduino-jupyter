@@ -34,7 +34,10 @@ class CurrentSense
 
     void update(Counts raw)
     {
-        i = (Counts)(raw - zero);
+        // La resta va en 32 bits y satura, igual que update_q4(): con el cero cerca
+        // de un extremo, `raw - zero` se sale del int16 y daría la vuelta, o sea la
+        // corriente publicada con el signo cambiado.
+        i = sat((int32_t)raw - (int32_t)zero);
     }
 
     // Lo mismo con la cuenta en dieciseisavos (ver Sense/SupplyRatio.h). El cero se
@@ -44,8 +47,16 @@ class CurrentSense
     // resta va en 32 bits por lo mismo, y satura.
     void update_q4(int32_t raw_q4)
     {
-        const int32_t d = raw_q4 - ((int32_t)zero << 4);
-        i = (Counts)(d > INT16_MAX ? INT16_MAX : (d < INT16_MIN ? INT16_MIN : d));
+        i = sat(raw_q4 - ((int32_t)zero << 4));
+    }
+
+    private:
+
+    static Counts sat(int32_t v)
+    {
+        if (v > INT16_MAX) return INT16_MAX;
+        if (v < INT16_MIN) return INT16_MIN;
+        return (Counts)v;
     }
 };
 

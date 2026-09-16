@@ -144,10 +144,14 @@ int main()
     salud.accumulate(2, 3, true);
     check_eq(salud.overruns, (long)(3 + (0xFFFF - 18) + 3), "el contador del sensor puede dar la vuelta");
 
+    // La primera vuelta va al ritmo rápido; cuando se completa, afloja. La prueba
+    // vieja hacía las tres vueltas ANTES de comprobar el ritmo rápido, así que pedía
+    // los 50 ms cuando el objeto ya estaba en 500: no fallaba porque en esta máquina
+    // no había g++ de escritorio y sólo se comprobaba que compilara.
     check(salud.due(1000), "el primer diagnóstico vence enseguida");
     check(!salud.due(1020), "y el siguiente no antes de 50 ms");
+    check(salud.due(1060), "después de 50 ms sí");
     for (int k = 0; k < 3; k++) { salud.advance(3); }
-    check(salud.due(1100), "después de 50 ms sí");
     check(!salud.due(1300), "completada una vuelta de registros, espera 500 ms");
     check(salud.due(1650), "y vence a los 500 ms");
 

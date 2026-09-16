@@ -251,13 +251,16 @@ class FakeUnoConLut(FakeUno):
                 valor = valor - 65536 if valor > 32767 else valor
                 self.lut[indice] = max(-4095, min(4095, valor))
 
+        # Reimplementado a partir del C y no importado de calib.py: si las dos
+        # mitades compartieran la implementación, la prueba no diría nada.
         a = b = 0
         for v in self.lut:
-            for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
-                a = (a + byte) & 0xFF
-                b = (b + a) & 0xFF
+            s = (a + (v & 0xFFFF)) & 0xFFFF
+            a = (s + 1) & 0xFFFF if s < a else s
+            s = (b + a) & 0xFFFF
+            b = (s + 1) & 0xFFFF if s < b else s
 
-        self.params['ang_lutsum'] = ('u16', 0, (b << 8) | a)
+        self.params['ang_lutsum'] = ('u16', 0, (a + b) & 0xFFFF)
 
     def lut_lookup(self, counts):
         i = (counts >> 6) & 63

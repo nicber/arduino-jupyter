@@ -137,9 +137,15 @@ class SupplyRatio
     // llega a 255, y con filas de 255 ticks y la media de 4 ticks la ventana junta
     // decenas de miles de conversiones: ahí la suma sí se pasa, y el camino largo la
     // parte en cociente y resto, que es exacto y no desborda.
+    //
+    // La guarda descuenta el medio divisor que se suma para redondear, y no sólo el
+    // producto: sin eso hay una ventana de 4080 valores de `suma` --justo debajo de
+    // 2^32/16-- en la que `suma * 16 + n / 2` da la vuelta y la media sale 0 en lugar
+    // de 32896, o sea la corriente publicada a -2048 cuentas de golpe. Se alcanza con
+    // `loop_div` de 129 para arriba y la ventana de 32 filas.
     static uint32_t media_q4(uint32_t suma, uint32_t n)
     {
-        if (suma <= 0xFFFFFFFFUL / 16UL)
+        if (suma <= (0xFFFFFFFFUL - n / 2) / 16UL)
         {
             return (suma * 16UL + n / 2) / n;
         }

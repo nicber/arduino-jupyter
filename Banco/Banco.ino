@@ -440,7 +440,9 @@ static void step(void)
                                           g_supply_window.total(), g_supply_window.count()));
 
     const int16_t i = g_notch.step_q4(g_current.i);
-    g_i = g_cur_inv ? (int16_t)-i : i;
+    // En 32 bits y saturando: -INT16_MIN no entra en un int16 y dejaría el signo sin
+    // aplicar (ver LoopCurrent::update()).
+    g_i = g_cur_inv ? (int16_t)(i == INT16_MIN ? INT16_MAX : -i) : i;
 
     g_y_raw = raw;
     g_y_rep = !fresh;

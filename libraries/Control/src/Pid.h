@@ -112,17 +112,23 @@ class Pid
         m_e_prev = m_e_filt;
         m_e_filt = m_filt.update(e);
 
-        const int32_t candidate = Kp::from_raw(kp).scale(e)
-                                + Ki::from_raw(ki).scale(m_integral)
-                                + Kd::from_raw(kd).scale(m_e_filt - m_e_prev)
-                                + (int32_t)feed_forward;
+        // La suma va en el tipo ancho y se acota una sola vez, al final. Cada término
+        // por separado entra en un int32_t, pero la suma de los tres no tiene por qué:
+        // con ki alto y el integrador cargado, el término integral solo llega a
+        // INT32_MAX/2, y sumarle un proporcional grande da la vuelta. Acotar después
+        // de que se dio la vuelta no arregla el signo, y un comando con el signo
+        // cambiado es el actuador empujando para el lado contrario.
+        const int64_t candidate = Kp::from_raw(kp).scale_wide(e)
+                                + Ki::from_raw(ki).scale_wide(m_integral)
+                                + Kd::from_raw(kd).scale_wide((int32_t)(m_e_filt - m_e_prev))
+                                + (int64_t)feed_forward;
 
         const Command u = clamp(candidate, lo, hi);
 
         // Integración condicional: dejar de cargar el integrador en cuanto el
         // actuador satura en el sentido hacia el que el integrador está empujando.
-        const bool saturated = (candidate > hi && e > 0)
-                            || (candidate < lo && e < 0);
+        const bool saturated = (candidate > (int64_t)hi && e > 0)
+                            || (candidate < (int64_t)lo && e < 0);
 
         if (!saturated)
         {
@@ -173,10 +179,10 @@ class Pid
     // dejaría a la computadora metiendo mano adentro de la integración.
     int32_t integral(void) const { return m_integral; }
 
-    static Command clamp(int32_t v, Command lo, Command hi)
+    static Command clamp(int64_t v, Command lo, Command hi)
     {
-        if (v < (int32_t)lo) return lo;
-        if (v > (int32_t)hi) return hi;
+        if (v < (int64_t)lo) return lo;
+        if (v > (int64_t)hi) return hi;
         return (Command)v;
     }
 

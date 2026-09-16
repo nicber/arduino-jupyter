@@ -2,10 +2,14 @@
 
     python tests_banco/correr.py
 
-Las de Python corren siempre. Las de C++ (cpp/test_modulos_extra.cpp y el
-test/test_modulos.cpp del proyecto) se compilan y corren si hay un g++ o clang de
-escritorio; si no, se verifica al menos que compilen con el avr-g++ del Arduino IDE
-(sólo las que no usan la biblioteca estándar de C++, que avr-libc no trae).
+Las de Python corren siempre. Las de C++ se compilan y corren si hay un g++ o clang
+de escritorio; si no, se verifica al menos que compilen con el avr-g++ del Arduino
+IDE (sólo las que no usan la biblioteca estándar de C++, que avr-libc no trae). Son
+cuatro: cpp/test_modulos_extra.cpp de acá, test/test_modulos.cpp del proyecto, y las
+dos que viven con su biblioteca, libraries/ControlMath/test y libraries/Control/test.
+
+En Windows no hay g++ de fábrica; con conda alcanza `conda create -p C:/envs/cxx -c
+conda-forge m2w64-toolchain` y agregar `C:/envs/cxx/Library/mingw-w64/bin` al PATH.
 """
 import os
 import shutil
@@ -39,20 +43,35 @@ print(f'proyecto: {RAIZ}\n')
 for prueba in ('test_bringup_y_divisor.py', 'test_consistencia.py'):
     correr(prueba, [sys.executable, str(AQUI / prueba)], AQUI)
 
+def _inc(*libs):
+    return sum((['-I', str(RAIZ / 'libraries' / l / 'src')] for l in libs), [])
+
+
 incluir = {
-    'extra': ['-I', str(AQUI / 'cpp')] + sum((['-I', str(RAIZ / 'libraries' / l / 'src')]
-                                              for l in ('Actuator', 'Sampler', 'AngleSensor', 'Sense')), []),
-    'proyecto': sum((['-I', str(RAIZ / 'libraries' / l / 'src')]
-                     for l in ('Calibracion', 'AngleSensor', 'Sense')), []),
+    'extra': ['-I', str(AQUI / 'cpp')] + _inc('Actuator', 'Sampler', 'AngleSensor', 'Sense'),
+    'proyecto': _inc('Calibracion', 'AngleSensor', 'Sense'),
+    # Las dos suites que viven con su biblioteca. No las corría nadie: ni esto ni
+    # verificar.py, así que cubrían el PID, la rampa y el filtro sólo en teoría.
+    'controlmath': _inc('ControlMath'),
+    'control': _inc('Control', 'ControlMath', 'AngleSensor', 'Sense'),
 }
-fuentes = {'extra': AQUI / 'cpp' / 'test_modulos_extra.cpp', 'proyecto': RAIZ / 'test' / 'test_modulos.cpp'}
+fuentes = {
+    'extra': AQUI / 'cpp' / 'test_modulos_extra.cpp',
+    'proyecto': RAIZ / 'test' / 'test_modulos.cpp',
+    'controlmath': RAIZ / 'libraries' / 'ControlMath' / 'test' / 'test_controlmath.cpp',
+    'control': RAIZ / 'libraries' / 'Control' / 'test' / 'test_control.cpp',
+}
 
 cxx = shutil.which('g++') or shutil.which('clang++')
 if cxx:
     with tempfile.TemporaryDirectory() as tmp:
         for clave, fuente in fuentes.items():
             exe = Path(tmp) / f'{clave}.exe'
-            compila = subprocess.run([cxx, '-std=c++11', '-O2', '-Wall'] + incluir[clave]
+            # _USE_MATH_DEFINES: con -std=c++11 el mingw define __STRICT_ANSI__ y
+            # esconde M_PI, que avr-g++ sí da. Es la única diferencia que apareció
+            # entre compilar estas pruebas con el AVR y con un g++ de escritorio.
+            compila = subprocess.run([cxx, '-std=c++11', '-O2', '-Wall', '-D_USE_MATH_DEFINES']
+                                     + incluir[clave]
                                      + [str(fuente), '-o', str(exe)], capture_output=True, text=True)
             if compila.returncode:
                 resultados.append((fuente.name, False))

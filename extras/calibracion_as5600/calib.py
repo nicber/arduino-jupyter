@@ -500,22 +500,26 @@ class Calibracion:
     # que hace el dispositivo, para poder validarlo de forma independiente.
 
     def checksum(self):
-        """Suma de Fletcher de 16 bits, igual que lut_checksum() en el sketch.
+        """Suma de Fletcher de 16 bits, igual que checksum() en el sketch.
 
         Fletcher y no una suma simple porque una suma no distingue una tabla de
         otra con dos entradas intercambiadas, y una entrada en el índice
         equivocado es justo el error que se comete acá.
 
-        Se recorre byte por byte, primero el bajo y después el alto de cada
-        entrada, que es lo que hace el sketch: así esto no depende del orden de
-        bytes del AVR.
+        Sobre palabras de 16 bits y módulo 65535, con la suma del complemento a
+        uno escrita igual que en AngleLut.h para que las dos mitades den
+        exactamente lo mismo y no sólo valores congruentes. Por qué no sobre
+        bytes módulo 256, en el comentario de allá.
         """
+        def ones_add(x, y):
+            s = (x + y) & 0xFFFF
+            return (s + 1) & 0xFFFF if s < x else s
+
         a = b = 0
         for v in self.lut:
-            for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
-                a = (a + byte) & 0xFF
-                b = (b + a) & 0xFF
-        return (b << 8) | a
+            a = ones_add(a, v & 0xFFFF)
+            b = ones_add(b, a)
+        return (a + b) & 0xFFFF
 
     def corregir(self, cuentas):
         """La corrección que aplicaría el dispositivo, en cuentas.

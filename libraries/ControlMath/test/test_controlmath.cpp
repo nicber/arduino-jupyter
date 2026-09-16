@@ -91,6 +91,35 @@ int main()
         check(y > 99000000L && y <= 100000000L, "guard 4 holds 1e8 counts", (double)y, 1e8);
     }
 
+    // past the headroom the filter must saturate, never wrap: a filtered position
+    // that jumps to the opposite extreme is the worst thing it could report
+    {
+        typedef FirstOrderFilter<4> F;
+        F f(F::alpha_for(0.0f, 0.001f));        // alpha = 1: follows the input exactly
+
+        check(f.update(F::limit()) == F::limit(), "guard 4 reaches its limit",
+              f.update(F::limit()), F::limit());
+        check(f.update(2000000000L) == F::limit(), "and saturates past it instead of wrapping",
+              f.update(2000000000L), F::limit());
+        check(f.update(-2000000000L) == -F::limit(), "on the negative side too",
+              f.update(-2000000000L), -F::limit());
+    }
+
+    // a free-running counter run far past the limit keeps its sign
+    {
+        typedef FirstOrderFilter<4> F;
+        F f(F::alpha_for(0.05f, 0.001f));
+        int32_t y = 0;
+        bool signo = true;
+        for (int64_t x = 0; x < 3000000000LL; x += 65536)
+        {
+            y = f.update((int32_t)(x > F::limit() ? F::limit() : x));
+            if (y < 0) signo = false;
+        }
+        check(signo && y == F::limit(), "32768 turns in one direction never flip the sign",
+              (double)y, (double)F::limit());
+    }
+
     // a very long time constant: the carry has to do all the work here
     {
         FirstOrderFilter<8> f(FirstOrderFilter<8>::alpha_for(10.0f, 0.001f));

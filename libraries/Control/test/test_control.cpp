@@ -18,6 +18,7 @@
 #include "LoopAngle.h"
 #include "LoopCurrent.h"
 #include "Pid.h"
+#include "Setpoint.h"
 
 static int fails = 0;
 
@@ -128,6 +129,57 @@ int main()
     for (int k = 0; k < 3000; k++) { pid.step(30000, -255, 255, 0); }
     check(pid.integral() == 3000L * 30000L,
           "con ki chico la suma crece libre sin desbordar");
+
+    // ------------------------------------------------- la rampa de la referencia
+    {
+        Setpoint s(0, 0);
+        s.ref  = 0;
+        s.rate = 100 << Setpoint::FRAC;
+
+        // Sin acotar, la suma da la vuelta y la referencia salta al extremo opuesto:
+        // el eje recibiría la orden de irse millones de cuentas para el otro lado.
+        for (long k = 0; k < 400000L; k++) { s.advance(); }
+        check(s.ref == INT32_MAX, "la rampa satura en lugar de dar la vuelta");
+        check(s.value() > 0, "y la referencia no cambia de signo");
+
+        s.rate = -(100 << Setpoint::FRAC);
+        for (long k = 0; k < 800000L; k++) { s.advance(); }
+        check(s.ref == INT32_MIN, "lo mismo para el otro lado");
+    }
+
+    // --------------------------------------- la suma de los tres terminos del PID
+    {
+        Pid pid;
+        pid.kp = Pid::Kp::from_float(400.0f).raw();
+        pid.ki = Pid::Ki::from_float(1.5f).raw();
+        pid.kd = 0;
+        pid.configure(1, 0, 0);
+
+        // El integrador cargado hasta su cota mas un proporcional grande: cada
+        // termino entra en un int32_t y la suma no. Acotar despues de que se dio la
+        // vuelta no arregla el signo, y un comando con el signo cambiado es el
+        // actuador empujando para el lado contrario.
+        for (long k = 0; k < 20000L; k++) { pid.step(30000, -255, 255, 0); }
+        const int16_t u = pid.step(30000, -255, 255, 0);
+        check(u == 255, "con el integrador cargado y un error grande el comando satura arriba");
+
+        pid.reset(0);
+        for (long k = 0; k < 20000L; k++) { pid.step(-30000, -255, 255, 0); }
+        check(pid.step(-30000, -255, 255, 0) == -255, "y abajo con el error al reves");
+    }
+
+    // ------------------------------------------- el signo de la corriente medida
+    {
+        LoopCurrent lazo(2048);
+        lazo.invert = 1;
+        lazo.set_alpha(LoopCurrent::Alpha::from_int(1));   // sin filtrar
+
+        // Una fila sin conversiones de A0 publica 0 cuentas equivalentes, que con el
+        // cero en 2048 da exactamente INT16_MIN: -INT16_MIN no entra en un int16 y
+        // el signo no se aplicaria.
+        lazo.update(INT16_MIN);
+        check(lazo.i > 0, "invertir la corriente en el tope negativo no deja el signo sin aplicar");
+    }
 
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;

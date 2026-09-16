@@ -113,13 +113,20 @@ _PONERSE_AL_DIA_S = 20.0
 
 
 def _fletcher(valores):
-    """La suma de Fletcher de 16 bits de AngleLut, byte bajo primero."""
+    """La suma de Fletcher de AngleLut: palabras de 16 bits, módulo 65535.
+
+    La suma del complemento a uno está escrita igual que en AngleLut.h para que
+    las dos mitades den exactamente lo mismo y no sólo valores congruentes.
+    """
+    def ones_add(x, y):
+        s = (x + y) & 0xFFFF
+        return (s + 1) & 0xFFFF if s < x else s
+
     a = b = 0
     for v in valores:
-        for byte in ((v & 0xFF), ((v >> 8) & 0xFF)):
-            a = (a + byte) & 0xFF
-            b = (b + a) & 0xFF
-    return (b << 8) | a
+        a = ones_add(a, v & 0xFFFF)
+        b = ones_add(b, a)
+    return (a + b) & 0xFFFF
 
 
 class BancoSimulado:

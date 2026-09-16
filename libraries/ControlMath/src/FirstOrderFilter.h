@@ -26,6 +26,25 @@
 // eso ya se ocupa el arrastre—, así que un contador que corre libre puede
 // arreglarse con Guard = 4 (+/-2^27 cuentas) y un canal de ADC acotado puede
 // gastar 8.
+//
+// Ese límite se respeta saturando la entrada, no dejándola dar la vuelta. Sin eso,
+// un contador de posición que corre libre da la vuelta: con Guard = 4 y 4096 cuentas
+// por vuelta, a las 32768 vueltas, o sea 10,9 minutos a 3000 rpm en un solo sentido.
+// Y dar la vuelta ahí es lo peor que puede hacer la posición que lee un lazo, porque
+// el valor filtrado salta al extremo contrario; saturado se queda pegado al tope, que
+// se ve y no miente el signo. El estado no necesita acotarse aparte: se mueve hacia
+// una entrada ya acotada, y una combinación convexa de dos valores de la cota está
+// adentro de la cota.
+//
+// Lo que sí queda supuesto es que la entrada no salta de un extremo del rango al
+// otro entre dos muestras: la diferencia x - estado se forma en un int32_t, y dos
+// valores en extremos opuestos están a 2^32 de distancia. Vale la pena anotar por qué
+// se deja así en lugar de pasar la diferencia a 64 bits: cuesta 638 bytes de flash
+// medidos en ControlDemo, que ya va por el 91 %, y lo que evita no se alcanza —un
+// contador de posición es continuo y no salta, y las entradas que no lo son (un
+// error de control, una corriente) están acotadas por el int16 del canal, cuatro
+// órdenes de magnitud por debajo de la cota—. Quien alimente este filtro con algo que
+// sí pueda saltar tiene que reiniciarlo con reset(), no dejarlo interpolar.
 
 #ifndef CONTROLMATH_FIRSTORDERFILTER_H
 #define CONTROLMATH_FIRSTORDERFILTER_H
@@ -72,13 +91,13 @@ class FirstOrderFilter
 
     void reset(int32_t x)
     {
-        m_state = State::from_int(x);
+        m_state = State::from_int(fit(x));
         m_carry = 0;
     }
 
     int32_t update(int32_t x)
     {
-        int32_t step = m_alpha.scale_carry(State::from_int(x).raw() - m_state.raw(),
+        int32_t step = m_alpha.scale_carry(State::from_int(fit(x)).raw() - m_state.raw(),
                                            m_carry);
 
         m_state = m_state + State::from_raw(step);
@@ -87,7 +106,22 @@ class FirstOrderFilter
 
     int32_t value(void) const { return m_state.to_int(); }
 
+    // Dónde satura este filtro, para que quien lo use lo sepa en lugar de
+    // descubrirlo.
+    static constexpr int32_t limit(void)
+    {
+        return (int32_t)(((uint32_t)1 << (31 - Guard)) - 1u);
+    }
+
     private:
+
+    // Acota la entrada a lo que el filtro puede representar.
+    static int32_t fit(int32_t x)
+    {
+        if (x >  limit()) return  limit();
+        if (x < -limit()) return -limit();
+        return x;
+    }
 
     Alpha   m_alpha;
     State   m_state;
