@@ -85,8 +85,11 @@ girando con el comando en cero--: `hardware.ipynb`, secciones 2.1 y 2.2.
 **La corriente**: un ACS712 en A0, en serie del lado de +5 V del motor, promediado en
 la placa sobre `cur_filas` filas (20 ms por omisión, con ~10 ms de retardo). En una
 placa a 3,3 V, como el clon del banco, A1 lee los 5 V del sensor por un divisor y la
-placa usa el cociente A0/A1; el divisor se declara una vez por banco con
-`dev.declarar_divisor(5100, 2000)`. **Un divisor suelto no da error**: corre la
+placa usa el cociente A0/A1. La relación de ese divisor se mide con
+`dev.medir_divisor()`, contra el reposo del sensor --que está en la mitad de su
+alimentación, así que no hace falta saber cuánto vale ésta--, o se declara a mano con
+`dev.declarar_divisor(5100, 2000)`, y ahí la tolerancia de las resistencias entra en la
+escala. `bringup()` compara las dos. **Un divisor suelto no da error**: corre la
 corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
 Antes de promediar, la placa saca el rizado del PWM con una media de 4 ticks
 (`cur_ma`) y un notch en 250 Hz (`cur_nyq`), los dos prendidos. El notch de la red
@@ -304,7 +307,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que fija `declarar_divisor()`, y lo que lee A1 |
 | `cur_notch`, `cur_notchr` | notch de la red para la corriente, como máscara (1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 apagado, por omisión), con dos notch en 49,5 y 50,5 Hz cada uno, y el radio del polo |
 | `cur_ma` | 1 (por omisión) pasa cada tick de 5 kHz por una media de 4 ticks, un período del PWM, antes de sumar la fila |
-| `cur_nyq` | 1 (por omisión) agrega un notch en 250 Hz, el Nyquist de las filas, donde cae lo que queda del PWM |
+| `cur_nyq` | 1 (por omisión) agrega un notch en 250 Hz, el Nyquist de las filas, donde cae lo que queda del PWM. Se gana el lugar con `cur_filas = 1`; con la ventana de 10 filas, que ya tiene un cero ahí, sólo agrega su propio redondeo |
 | `ang_cal` | 1 si se aplica la tabla de calibración del sensor; ver *Calibrar el sensor* |
 | `ang_lutw`, `ang_lutsum` | una entrada de la tabla de calibración, y la suma que verifica las 64 |
 | `loop_late`, `loop_missed`, `ang_busovr`, `ang_buserr` | contadores de salud |
