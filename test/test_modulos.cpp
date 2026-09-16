@@ -341,6 +341,30 @@ int main()
     for (int k = 0; k < 200; k++) { dc = nyq.step(1500); }
     check_eq(dc, 1500, "y deja pasar la continua exacta");
 
+    // En dieciseisavos, que es la unidad del canal: el lazo resuelve por debajo de la
+    // cuenta, así que una alternancia de dos cuentas y media no sale en cero.
+    MainsNotch fino;
+    fino.nyquist = 1;
+    fino.apply(500.0f);
+    int16_t chico = 0;
+    for (int k = 0; k < 400; k++)
+    {
+        const int16_t y = fino.step_q4((int16_t)((k & 1) ? 40 : -40));
+        if (k > 200 && abs(y) > chico) { chico = (int16_t)abs(y); }
+    }
+    check(chico <= 4, "en dieciseisavos también saca la alternancia, sin trabarse");
+
+    // Y a fondo de escala con las siete secciones, que es donde más grande se hace el
+    // acumulador: la continua pasa sin dar la vuelta. Ver GUARD_BITS.
+    MainsNotch tope;
+    tope.harmonics = 7;
+    tope.nyquist   = 1;
+    tope.apply(500.0f);
+    int16_t lleno = 0;
+    for (int k = 0; k < 3000; k++) { lleno = tope.step_q4(INT16_MAX); }
+    check(lleno >= INT16_MAX - 2,
+          "a fondo de escala y con siete secciones la continua pasa sin desbordar");
+
     printf("\n%d falla(s)\n", fails);
     return fails ? 1 : 0;
 }

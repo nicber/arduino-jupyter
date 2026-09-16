@@ -39,6 +39,12 @@
 // dieciseisavos: el redondeo a cuentas de `step()` es, medido sobre capturas del banco,
 // uno de los dos que más ruido ponen en toda la cadena (1,75 a 1,93 mA RMS).
 //
+// Adentro del lazo, en cambio, la señal lleva `GUARD_BITS` más: lo que se realimenta se
+// redondea a esa unidad más fina y no al dieciseisavo. Sin eso, publicando en
+// dieciseisavos, el redondeo del lazo quedaba a la vista: medido en el banco con
+// `cur_filas = 10` y sólo la sección del Nyquist, le ponía 0,5 mA RMS a la corriente,
+// que era el término más grande que quedaba en toda la cadena.
+//
 // Aritmética pura, salvo apply(), así que se prueba en la máquina de escritorio.
 
 #ifndef SENSE_MAINSNOTCH_H
@@ -58,8 +64,19 @@ class MainsNotch
     static const uint16_t LOW_CHZ  = 4950;
     static const uint16_t HIGH_CHZ = 5050;
 
-    // La señal adentro del filtro, en fracciones de cuenta: 2^FRAC_BITS por cuenta.
+    // La señal en la entrada y la salida, en fracciones de cuenta: 2^FRAC_BITS por
+    // cuenta. Es la unidad del canal (ver Sense/SupplyRatio.h).
     static const uint8_t FRAC_BITS = 4;
+
+    // Y los bits que el lazo guarda por debajo de ésa. Cada uno baja 6 dB el redondeo
+    // que se realimenta --simulado: 0,62, 0,35 y 0,21 mA RMS con 0, 1 y 2--, y lo que
+    // lo limita es el acumulador de 32 bits. La cota dura es la norma L1 de los
+    // coeficientes de la peor sección --la de 49,5 Hz con r = 0,95, que da 24230-- por
+    // el fondo de escala del estado: con el rango entero del canal, 2047 cuentas, el
+    // acumulador queda en el 74 % de 2^31 con un bit y desborda con dos. Quien quiera
+    // el segundo bit tiene que recortar el estado a 1023 cuentas (6,9 A con 185 mV/A),
+    // que alcanza para el ACS712 de 5 A pero no para el de 20.
+    static const uint8_t GUARD_BITS = 1;
 
     // --------------------------------------------------------------- parámetros
     // Públicos porque la tabla del enlace toma su dirección. Mover y llamar a apply().
@@ -175,7 +192,7 @@ class MainsNotch
             return counts_q4;
         }
 
-        int16_t x = counts_q4;
+        int32_t x = (int32_t)counts_q4 << GUARD_BITS;
 
         // Al prender o cambiar algo, el estado arranca en la entrada: sin eso cada
         // cambio de parámetro sería un escalón desde cero, con su transitorio.
@@ -205,7 +222,7 @@ class MainsNotch
             int32_t y = acc >> 12;
             s.carry = (int16_t)(acc - (y << 12));
 
-            const int16_t out = sat(y);
+            const int32_t out = sat_guard(y);
             s.x2 = s.x1;
             s.x1 = x;
             s.y2 = s.y1;
@@ -213,7 +230,8 @@ class MainsNotch
             x = out;
         }
 
-        return x;
+        // De la unidad del lazo a la del canal, redondeando.
+        return (int16_t)((x + (1L << GUARD_BITS) / 2) >> GUARD_BITS);
     }
 
     private:
@@ -253,7 +271,7 @@ class MainsNotch
     struct Section
     {
         int16_t b0, b1, a1, a2;     // Q12; b2 = b0
-        int16_t x1, x2, y1, y2;     // fracciones de cuenta, ver FRAC_BITS
+        int32_t x1, x2, y1, y2;     // fracciones de cuenta, ver FRAC_BITS y GUARD_BITS
         int16_t carry;
     };
 
@@ -267,6 +285,15 @@ class MainsNotch
         if (v > INT16_MAX) return INT16_MAX;
         if (v < INT16_MIN) return INT16_MIN;
         return (int16_t)v;
+    }
+
+    // Lo mismo en la unidad del lazo: el rango del canal, con los bits de guarda.
+    static int32_t sat_guard(int32_t v)
+    {
+        static const int32_t TOPE = (int32_t)INT16_MAX << GUARD_BITS;
+        if (v >  TOPE) return  TOPE;
+        if (v < -TOPE) return -TOPE;
+        return v;
     }
 
     uint8_t  m_active;
