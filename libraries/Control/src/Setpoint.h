@@ -49,7 +49,18 @@ class Setpoint
 
     // Un período de rampa. Es lo único que distingue una rampa de un escalón, así que
     // un modo de rampa es el controlador de siempre más esta línea.
-    void advance(void) { ref += rate; }
+    //
+    // La suma satura en lugar de dar la vuelta. Con `rate` en 100 cuentas por período
+    // y filas a 500 Hz, `ref` llega a INT32_MAX en 168 s: dando la vuelta, el eje
+    // recibiría de golpe la orden de irse 8,4 millones de cuentas para el otro lado.
+    // Saturada, la rampa simplemente se queda donde no puede seguir.
+    void advance(void)
+    {
+        const int64_t next = (int64_t)ref + (int64_t)rate;
+
+        ref = (Fixed)(next > (int64_t)INT32_MAX ? INT32_MAX
+                    : (next < (int64_t)INT32_MIN ? INT32_MIN : next));
+    }
 
     // Cuánto le falta a la medición para llegar a la referencia.
     //

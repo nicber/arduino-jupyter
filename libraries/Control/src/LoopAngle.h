@@ -39,6 +39,8 @@ class LoopAngle
         , track()
         , y_uwf(0)
         , m_filt()
+        , m_bias(0)
+        , m_primed(false)
     {
     }
 
@@ -53,6 +55,28 @@ class LoopAngle
         y_uwf = m_filt[1].update(m_filt[0].update(track.y_uw));
     }
 
+    // Lo mismo, a partir de un ángulo del imán que ya viene desenrollado --por
+    // ejemplo, desde la ISR del muestreador, sobre cada muestra--. update() desenrolla
+    // una vez por período del lazo, así que sólo vale mientras el eje gire menos de
+    // media vuelta por período; esto no tiene ese límite.
+    //
+    // Arranca donde arrancaría update() --en la primera muestra y_uw vale lo mismo
+    // que y-- y después sigue la diferencia sin volver a desenrollar.
+    void update_unwrapped(Unwrapped corrected_uw)
+    {
+        const Unwrapped shaft = (Unwrapped)offset - corrected_uw;
+
+        track.y = Tracker::wrapped_error(offset, (Counts)(corrected_uw & (PerRev - 1)));
+        if (!m_primed)
+        {
+            m_bias   = (Unwrapped)track.y - shaft;
+            m_primed = true;
+        }
+        track.y_uw = shaft + m_bias;
+
+        y_uwf = m_filt[1].update(m_filt[0].update(track.y_uw));
+    }
+
     void set_alpha(Alpha alpha)
     {
         m_filt[0].set_alpha(alpha);
@@ -61,7 +85,9 @@ class LoopAngle
 
     private:
 
-    Filter m_filt[2];
+    Filter    m_filt[2];
+    Unwrapped m_bias;       // de la cuenta desenrollada del imán a la del eje
+    bool      m_primed;
 };
 
 #endif  // CONTROL_LOOPANGLE_H

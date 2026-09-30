@@ -45,7 +45,11 @@ class LoopCurrent
     {
         sense.update(raw);
 
-        const Counts sensed = invert ? (Counts)-sense.i : sense.i;
+        // La negación va en 32 bits y vuelve por clamp(): -INT16_MIN no entra en un
+        // int16 y se queda en INT16_MIN, o sea que el signo no se aplicaría. Y se
+        // alcanza sin ninguna perilla rara: una fila sin conversiones de A0 publica
+        // 0 cuentas equivalentes, que con el cero en 2048 da exactamente INT16_MIN.
+        const Counts sensed = invert ? clamp(-(int32_t)sense.i) : sense.i;
 
         i = clamp(m_filt[1].update(m_filt[0].update(sensed)));
     }

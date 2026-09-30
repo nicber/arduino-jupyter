@@ -101,6 +101,17 @@ class Fixed
         return round_shift((wide_type)m_raw * (wide_type)x);
     }
 
+    // scale(), sin bajar el resultado a `Raw`. Para quien sume varios términos antes
+    // de acotarlos: cada scale() por separado puede entrar en `Raw` y la suma no, y
+    // acotar después de que ya se dio la vuelta no arregla nada. El producto se forma
+    // igual en el tipo ancho, así que esto no cuesta nada de más; lo único que cambia
+    // es que no se trunca al devolverlo.
+    template <typename Int>
+    constexpr wide_type scale_wide(Int x) const
+    {
+        return (wide_type)(((wide_type)m_raw * (wide_type)x + (wide_type)HALF) >> Frac);
+    }
+
     // scale(), pero exacto a lo largo de una secuencia de llamadas. Los bits por
     // debajo del LSB del resultado se devuelven en `carry` en lugar de perderse
     // por redondeo, así que pasarle el mismo carry a la llamada siguiente los

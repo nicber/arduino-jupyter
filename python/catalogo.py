@@ -6,7 +6,7 @@ está lo que hace falta para entenderla. Unidad, si se puede mover o sólo mirar
 línea de qué es.
 
 Vive en un módulo propio y sin una sola dependencia, y eso importa por dos razones.
-Lo usan las dos puntas, el banco de verdad y el simulado, y el simulado tiene que
+Lo usan las dos puntas, el banco real y el simulado, y el simulado tiene que
 poder correr sin pyserial para que la clase se pueda dar con el cable desenchufado.
 
 Que no se desactualice no depende de la buena voluntad: `test_catalogo.py` compara
@@ -22,9 +22,13 @@ idea que el golden de `test_tablas.py`.
 #   cuenta    un total acumulado; ponerla en cero empieza a contar de nuevo
 _CATALOGO = {
     # Lo único que mueve el motor.
-    'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió de verdad es el canal u'),
+    'ctl_uff':     ('perilla', '-255 a 255',  'el comando sobre el actuador; lo que salió efectivamente es el canal u'),
+
+    # El actuador.
+    'mot_bidir':   ('perilla', '0, 1',        '1 con puente en H; 0 con un solo cuadrante, y un comando negativo sale como cero'),
 
     # El sensor de ángulo y su calibración.
+    'ang_inv':     ('perilla', '0, 1',        '1 si el ángulo se publica con el signo invertido; lo mide bringup()'),
     'ang_cal':     ('perilla', '0, 1',        '1 si la corrección de la tabla está aplicada'),
     'ang_lutw':    ('perilla', 'empaquetado', 'una entrada de la tabla: (índice << 16) | valor'),
     'ang_lutsum':  ('lectura', '',            'suma de Fletcher de la tabla: verifica las 64 con una lectura'),
@@ -36,7 +40,16 @@ _CATALOGO = {
     'ang_buserr':  ('cuenta',  'transferencias', 'transferencias del sensor que fallaron'),
 
     # La medición de corriente.
-    'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor; `dev.zero_current()` lo mide'),
+    'cur_zero':    ('perilla', 'cuentas ADC', 'el cero del sensor, en cuentas crudas del conversor y no en la unidad del canal i; `dev.zero_current()` lo mide'),
+    'cur_frac':    ('lectura', 'bits',        'bits fraccionarios de la unidad del canal i: 4 son dieciseisavos de cuenta del conversor'),
+    'cur_inv':     ('perilla', '0, 1',        '1 si la corriente se publica con el signo invertido; lo mide bringup()'),
+    'cur_div':     ('perilla', '1/10000',     'relación del divisor de los 5 V del sensor en A1: la corriente sale de A0/A1; 0 = sin divisor, contra AVCC. La mide dev.medir_divisor() o la declara dev.declarar_divisor()'),
+    'cur_a1':      ('lectura', 'cuentas',     'A1: la fracción de los 5 V del sensor que lee el divisor; 0 sin divisor'),
+    'cur_notch':   ('perilla', 'máscara',     'notch de la red sobre la corriente, cada uno por separado: 1 = 50 Hz, 2 = 100 Hz, 4 = 150 Hz, 7 los tres, 0 ninguno (por omisión); dos notch por armónico, en 49,5 y 50,5 Hz, sin calibrar la red'),
+    'cur_notchr':  ('perilla', '1/1000',      'radio del polo del notch: más cerca de 1, más angosto y más lento'),
+    'cur_nyq':     ('perilla', '0, 1',        'notch en el Nyquist de las filas (250 Hz a 500 Hz), donde cae lo que queda del PWM: 1 prendido (por omisión), 0 apagado'),
+    'cur_ma':      ('perilla', '0, 1',        'media de 4 ticks de 5 kHz, un período del PWM, antes de sumar la fila: 1 prendida (por omisión), 0 apagada'),
+    'cur_filas':   ('perilla', 'filas',       'promedio de la corriente sobre tantas filas: 10 a 500 Hz son 20 ms y anulan la red y lo que queda del PWM; 1 = sólo la fila'),
 
     # El reloj del muestreo.
     'loop_div':    ('perilla', 'muestras',    'muestras de 5 kHz por fila: 10 son 500 Hz, 5 son 1 kHz'),
@@ -48,10 +61,30 @@ _CATALOGO = {
     'chans':       ('perilla', 'bits',        'qué canales van en la fila, uno por bit; mejor capture(..., canales=[...])'),
 }
 
+# Las perillas que no son de configuración: el comando es el experimento mismo --y
+# ya viene en el canal u--, `ang_lutw` es un registro de escritura y las dos del
+# enlace no cambian lo que se mide.
+_NO_CONFIGURAN = ('ctl_uff', 'ang_lutw', 'dec', 'chans')
+
+# Y una lectura que sí configura: la suma dice qué tabla estaba puesta.
+_TABLAS = ('ang_lutsum',)
+
+
+def de_configuracion():
+    """Las perillas que cambian lo que mide una captura, en el orden de la tabla.
+
+    Es lo que `df.attrs['config']` registra de cada captura, y lo que
+    `ensayo.guardar()` escribe arriba del CSV.
+    """
+    return tuple(n for n, (clase, _, _) in _CATALOGO.items()
+                 if (clase == 'perilla' and n not in _NO_CONFIGURAN) or n in _TABLAS)
+
+
 # El título de cada grupo, en el orden en que conviene leerlos: primero lo que se
 # mueve para hacer un experimento, después lo que se mira.
 _GRUPOS = (
     ('ctl',   'El comando'),
+    ('mot',   'El actuador'),
     ('ang',   'El sensor de ángulo'),
     ('cur',   'La medición de corriente'),
     ('loop',  'El reloj del muestreo'),
@@ -99,7 +132,7 @@ def por_grupo(nombres):
 #
 # Las dos formas de mostrar lo mismo: texto para una terminal y una tabla para
 # Jupyter. Las dos toman los mismos datos en lugar de un objeto, así que sirven igual
-# para el banco de verdad y para el simulado, y ninguna de las dos puntas tiene que
+# para el banco real y para el simulado, y ninguna de las dos puntas tiene que
 # saber de la otra.
 #
 #   encabezado  qué dispositivo es, en una línea
@@ -110,7 +143,7 @@ def por_grupo(nombres):
 
 _AYUDA = (
     'para verificar el equipo: rest()  zero_current()  bringup()',
-    'para medir: capture(segundos)  step(parametro, valor)',
+    'para medir: capture(segundos)  step(parámetro, valor)',
     'para procesar: ensayo.velocidad()  ensayo.normalizar()  ensayo.guardar()',
 )
 
@@ -129,7 +162,7 @@ def texto(encabezado, resumen, nombres, valor_de, canales=()):
 
     if canales:
         lineas += ['', 'los canales que devuelve capture(), con su escala:']
-        lineas += [f'  {n:<7} {escala:>12.5f} {unidad} por cuenta'
+        lineas += [f'  {n:<7} {escala:>12.5f} {unidad} por unidad del canal'
                    for n, escala, unidad in canales]
 
     return '\n'.join(lineas + [''] + list(_AYUDA))

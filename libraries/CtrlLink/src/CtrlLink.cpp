@@ -146,7 +146,7 @@ uint16_t CtrlLink::all_channels(void)
 // caracteres, y eso tiene que poder rechazarse en lugar de dar la vuelta.
 uint8_t CtrlLink::row_width(uint16_t mask)
 {
-    uint16_t width = 4 + 1;  // tick, fin de linea
+    uint16_t width = 4 + 1;  // tick, fin de línea
 
     for (uint8_t i = 0; i < m_channel_count; i++)
     {
@@ -474,7 +474,7 @@ void CtrlLink::handle_command(char* line)
     }
     if (*line == '\0')
     {
-        return;  // linea vacia: un empujon para resincronizar, no un error
+        return;  // línea vacía: sirve para resincronizar, no es un error
     }
 
     char* rest = split(line);

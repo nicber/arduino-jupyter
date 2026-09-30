@@ -2,12 +2,12 @@
 
 #include <Arduino.h>
 
-// El bus I2C: destrabarlo, y decir que le pasa a sus dos cables.
+// El bus I2C: destrabarlo, y diagnosticar el estado de sus dos cables.
 //
-// Parte de BoardStart, que eran tres trabajos en un header: el reloj, el ADC y el
-// bus. Cada uno falla de manera distinta y se arregla en otro lugar, asi que cada
-// uno tiene el suyo. BoardStart.h sigue existiendo e incluye los tres, para quien
-// quiera el arranque entero sin elegir.
+// Parte de BoardStart, que reúne tres trabajos: el reloj, el ADC y el bus. Cada uno
+// falla de manera distinta y se arregla en otro lugar, así que cada uno tiene su
+// header. BoardStart.h incluye los tres, para quien quiera el arranque entero sin
+// elegir.
 
 namespace board
 {
@@ -21,9 +21,8 @@ namespace board
 // queda esperando los pulsos de reloj que le faltan, y mientras espera mantiene
 // SDA en bajo. Para el maestro que arranca de nuevo eso es un bus ocupado, así
 // que no llega a generar el START --TWSTA queda pedido y TWINT nunca se activa--
-// y se queda ahí para siempre. El muestreador de 5 kHz informa entonces cero
-// muestras y un desborde por tick, que es la forma más confusa posible de decir
-// «un cable». Y como depende de en qué parte de una transferencia cayó el reset,
+// y se queda ahí indefinidamente. El muestreador de 5 kHz informa entonces cero
+// muestras y un desborde por tick, un síntoma que no apunta a la causa. Y como depende de en qué parte de una transferencia cayó el reset,
 // aparece y desaparece entre una grabación y la siguiente.
 //
 // El remedio es el de la especificación: darle al esclavo los pulsos de reloj
@@ -44,7 +43,8 @@ inline uint8_t bus_recover()
     uint8_t pulses = 0;
     while (digitalRead(SDA) == LOW && pulses < 9) {
         // Bajar el pin es soltar el pull-up antes de pasar a salida: al revés,
-        // entre las dos instrucciones el pin queda en alto y le pelea al esclavo.
+        // entre las dos instrucciones el pin queda en alto y entra en conflicto
+        // con el esclavo.
         digitalWrite(SCL, LOW);
         pinMode(SCL, OUTPUT);
         delayMicroseconds(5);
@@ -70,13 +70,13 @@ inline uint8_t bus_recover()
 
 // Mientras TWEN esté puesto, SDA y SCL los gobierna el TWI y no el puerto, así que
 // toda medición o maniobra a mano tiene que soltarlos primero y devolverlos
-// después. bus_recover() ya lo hacía; lo que sigue también tiene que hacerlo.
+// después. bus_recover() lo hace; lo que sigue también tiene que hacerlo.
 //
 // Y acá TWEN ya está puesto antes de que empiece setup(): nI2C construye su objeto
 // global durante la inicialización estática y su constructor enciende el
-// periférico. Olvidarlo no da un error: da mediciones mudas. El detector de cruce
-// informó que no había cruce con los cables cruzados sobre la mesa, porque sus
-// pulsos nunca salieron de los pines.
+// periférico. Olvidarlo no da un error: da mediciones sin efecto. El detector de
+// cruce informaría que no hay cruce aun con los cables cruzados, porque sus pulsos
+// nunca saldrían de los pines.
 inline uint8_t release_twi(void)
 {
     const uint8_t twcr = TWCR;
@@ -164,7 +164,7 @@ inline uint8_t bus_check(uint16_t fondo)
 // perfecto --hay pull-ups en las dos líneas, las dos reposan arriba y las dos se
 // dejan bajar--, el módulo tiene alimentación, los cables llegan, y no contesta
 // nadie, porque cada mensaje sale por el cable equivocado. Desde el protocolo es
-// indistinguible de un módulo quemado, y se arregla dando vuelta dos fichas.
+// indistinguible de un módulo quemado, y se arregla intercambiando SDA y SCL.
 //
 // La prueba hay que hacerla por software, moviendo los pines a mano: el TWI sólo
 // sabe hablar por donde está cableado. Y no puede dar un falso positivo, porque un
@@ -182,7 +182,8 @@ inline void sw_release(uint8_t pin)
 inline void sw_pull_low(uint8_t pin)
 {
     // Bajar el pin es soltar el pull-up antes de pasar a salida: al revés, entre
-    // las dos instrucciones el pin queda en alto y le pelea al esclavo.
+    // las dos instrucciones el pin queda en alto y entra en conflicto con el
+    // esclavo.
     digitalWrite(pin, LOW);
     pinMode(pin, OUTPUT);
 }
@@ -241,10 +242,10 @@ inline void sw_unwedge(uint8_t sda, uint8_t scl)
 // START, dirección, STOP. Devuelve si alguien dio ACK.
 //
 // Suelta el bus antes de preguntar y se niega a preguntar sobre una línea que
-// sigue abajo. Sin eso la prueba miente en el peor momento: un esclavo que quedó a
-// mitad de camino sujeta su línea de datos, y una línea sujeta se lee exactamente
-// igual que un ACK. Así fue como el detector de cruce informó que no había cruce
-// justo cuando los cables estaban cruzados.
+// sigue abajo. Sin eso el resultado deja de ser válido justo en el caso que se
+// quiere detectar: un esclavo que quedó a mitad de camino sujeta su línea de datos,
+// y una línea sujeta se lee exactamente igual que un ACK, así que el detector
+// informaría que no hay cruce con los cables cruzados.
 inline bool sw_probe(uint8_t sda, uint8_t scl, uint8_t addr)
 {
     sw_unwedge(sda, scl);
@@ -281,7 +282,7 @@ inline bool sw_probe(uint8_t sda, uint8_t scl, uint8_t addr)
 
 // Si `addr` contesta con los dos cables cambiados de lugar. Se pregunta primero
 // por el cableado derecho: si ahí contesta no hay nada que informar, y de paso no
-// se le mandan pulsos raros a un bus que anda.
+// se le mandan pulsos fuera de protocolo a un bus que funciona.
 //
 // Conviene llamarla antes de bus_recover(), que después deja el bus en un estado
 // conocido por si esta sonda dejó a alguien a mitad de camino.

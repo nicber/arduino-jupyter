@@ -2,13 +2,13 @@
 
 Los notebooks las usan como atributos de Python --`dev.ctl_uff`, `df['y_uw']`-- así
 que un nombre que cambia, una entrada que se reordena o un `frac` que queda con el
-del vecino rompen el otro lado en silencio. No hay ningún test que mire eso: los de
-ctrllink prueban el protocolo contra un dispositivo inventado, y los de calib
+del vecino rompen el otro lado sin ningún aviso. Ninguna otra prueba mira eso: las de
+ctrllink prueban el protocolo contra un dispositivo simulado, y las de calib
 prueban la aritmética de la tabla de calibración.
 
 Éste compara las dos tablas contra un golden guardado en el repositorio. Lee el
 sketch en lugar de preguntarle a una placa, así corre sin hardware y sin compilar,
-que es lo que hace que sirva de red durante un reacomodo grande.
+y sirve de control durante una reorganización del sketch.
 
     python test_tablas.py             verifica contra el golden
     python test_tablas.py --guardar   vuelve a escribir el golden
@@ -72,9 +72,21 @@ def _tabla(texto, declaracion):
     resto  = texto[inicio:]
     fin    = resto.index('\n};')
 
+    # Lo que está adentro de un `#if SENSE_DIAG` no es de la interfaz: son las perillas
+    # de diagnóstico del conversor, que se compilan afuera salvo que se las pida. Ver
+    # SENSE_DIAG en Sense/RowAdc.h.
     entradas = []
+    diagnostico = 0
     for linea in resto[:fin].split('\n'):
         linea = re.sub(r'//.*$', '', linea)
+        if re.match(r'\s*#\s*if\s+SENSE_DIAG', linea):
+            diagnostico += 1
+            continue
+        if diagnostico and re.match(r'\s*#\s*(endif|else)\b', linea):
+            diagnostico -= 1
+            continue
+        if diagnostico:
+            continue
         m = _ENTRADA.match(linea)
         if m:
             entradas.append(_campos(m.group(1)))
@@ -113,7 +125,7 @@ def main():
     if '--guardar' in sys.argv:
         GOLDEN.write_text(json.dumps(tablas, indent=2, ensure_ascii=False) + '\n',
                           encoding='utf-8')
-        print(f'golden escrito: {len(tablas["params"])} parametros, '
+        print(f'golden escrito: {len(tablas["params"])} parámetros, '
               f'{len(tablas["chans"])} canales')
         return 0
 
@@ -148,7 +160,7 @@ def main():
     # de transmisión. Lo recalcula el dispositivo, pero acá se ve sin grabar nada.
     ancho = {'CTRL_I8': 2, 'CTRL_U8': 2, 'CTRL_I16': 4, 'CTRL_U16': 4}
     fila  = 4 + 1 + sum(ancho.get(c['tipo'], 8) for c in tablas['chans'])
-    fallas = _contar(fallas, fila <= 63, 'la fila entra en el buffer de transmision',
+    fallas = _contar(fallas, fila <= 63, 'la fila entra en el buffer de transmisión',
                      f'{fila} bytes de 63')
 
     print(f'\n{fallas} falla(s)')

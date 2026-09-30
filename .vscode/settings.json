@@ -2,8 +2,10 @@
     // El entorno de conda del curso, donde lo crea el README.
     "python.defaultInterpreterPath": "C:\\envs\\dyc\\python.exe",
     "python.terminal.activateEnvironment": true,
-    // Las pruebas y los notebooks importan bench, ensayo, calib... desde python/.
-    "python.analysis.extraPaths": ["${workspaceFolder}/python"],
+    // Las pruebas y los notebooks importan bench, ensayo... desde python/, y calib
+    // desde extras/calibracion_as5600/.
+    "python.analysis.extraPaths": ["${workspaceFolder}/python",
+                                   "${workspaceFolder}/extras/calibracion_as5600"],
     "terminal.integrated.env.windows": { "PYTHONPATH": "${workspaceFolder}\\python" },
     "terminal.integrated.env.osx": { "PYTHONPATH": "${workspaceFolder}/python" },
     "terminal.integrated.env.linux": { "PYTHONPATH": "${workspaceFolder}/python" },

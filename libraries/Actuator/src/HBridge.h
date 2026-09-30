@@ -6,10 +6,12 @@
 // comunes, y eso es lo que permite apagar el puente entero con una sola
 // escritura. Ver write().
 //
-// Sirve igual para el actuador más pobre, un transistor a masa con su diodo de
+// Sirve igual para el actuador más simple, un transistor a masa con su diodo de
 // rueda libre gobernado desde ENA: IN1 e IN2 no van a ningún lado, y un comando
-// negativo empuja para el mismo lado que uno positivo. Eso no se esconde acá: la
-// placa pone lo que se le pide y es la medición la que muestra qué hizo el eje.
+// negativo empujaría para el mismo lado que uno positivo. Para eso está `bidir`:
+// en cero, un comando negativo se recorta a cero y `u` informa ese cero, que es lo
+// que efectivamente salió. Qué actuador hay no lo puede averiguar el puente; lo dice
+// quien arma el banco.
 //
 // El pin de ENA no es una preferencia: este código habla con OC1A del Timer1
 // directamente, porque es el único temporizador que queda libre en un AVR de la
@@ -17,9 +19,9 @@
 // Ena tiene que ser el pin de OC1A --el 9 en un UNO-- y mudarlo al 10 es cambiar
 // OCR1A por OCR1B y COM1A1 por COM1B1 acá adentro. IN1 e IN2 van a donde sea.
 //
-// Los pines son parámetros de plantilla y no argumentos, para que digitalWrite()
-// los vea como constantes y el compilador no cargue una tabla en tiempo de
-// ejecución para resolverlos.
+// Los pines son parámetros de plantilla y no argumentos: quedan fijados en
+// tiempo de compilación, cada puente es un tipo con sus pines, y el objeto no
+// guarda ningún número de pin en RAM.
 
 #ifndef ACTUATOR_HBRIDGE_H
 #define ACTUATOR_HBRIDGE_H
@@ -43,12 +45,17 @@ class HBridge
     // una división.
     static const Command MAX = 255;
 
-    Command u;          // el último comando aplicado, para la telemetría
+    Command u;          // el último comando aplicado, ya recortado, para la telemetría
+    uint8_t bidir;      // 1: acciona en los dos sentidos; 0: un solo cuadrante
 
     // `top` es el TOP del Timer1: f = F_CPU / (2 * top). Por debajo de 255 el
     // ciclo de trabajo tendría menos escalones que el comando.
+    //
+    // Arranca en un solo cuadrante: un sketch que no sepa qué actuador tiene
+    // nunca invierte el sentido de un motor que no lo esperaba.
     constexpr explicit HBridge(Top top)
         : u(0)
+        , bidir(0)
         , m_top(top < 255 ? 255 : top)
         , m_dir(0)
     {
@@ -72,12 +79,12 @@ class HBridge
         digitalWrite(In2, LOW);
     }
 
-    // Cambia el TOP con el puente andando, y devuelve el que quedó puesto.
+    // Cambia el TOP con el puente en marcha, y devuelve el que quedó puesto.
     //
     // ICR1 no está amortiguado en este modo, así que escribirlo con el contador ya
     // pasado del TOP nuevo cuesta un período largo hasta que la cuenta dé la vuelta
     // entera; rearrancar el temporizador desde cero lo evita. Pero eso interrumpe
-    // el PWM, así que sólo se hace si el TOP de verdad cambió.
+    // el PWM, así que sólo se hace si el TOP efectivamente cambió.
     Top set_top(Top top)
     {
         if (top < 255)
@@ -95,7 +102,7 @@ class HBridge
     }
 
     // Pone `command` sobre el puente: la magnitud en ENA por PWM, el sentido en
-    // IN1/IN2. Se recorta a -MAX..MAX.
+    // IN1/IN2. Se recorta a -MAX..MAX, o a 0..MAX si `bidir` está en cero.
     //
     // Un cambio de sentido no escribe las entradas de sentido con el puente vivo.
     // Primero baja ENA, que apaga las cuatro llaves de una sola escritura; recién
@@ -115,6 +122,7 @@ class HBridge
     {
         if (command >  MAX) command =  MAX;
         if (command < -MAX) command = (Command)-MAX;
+        if (command < 0 && !bidir) command = 0;
 
         u = command;
 
@@ -144,9 +152,8 @@ class HBridge
     // La magnitud sola, sin tocar el sentido.
     //
     // El camino normal es write(), que decide las dos cosas juntas y es el único que
-    // garantiza que un cambio de sentido no atraviese un estado conduciendo. Esto
-    // existe para un diagnóstico que necesita las dos mitades por separado: mover
-    // ENA con IN1 e IN2 quietos, y leer cada pin de vuelta. Ver Puente_Bringup.
+    // garantiza que un cambio de sentido no atraviese un estado conduciendo; esto
+    // es la mitad que usa write() para la magnitud.
     //
     // `magnitude` va de 0 a MAX y el temporizador cuenta hasta el TOP, que es otra
     // escala. Se divide por MAX + 1 = 256 en lugar de por 255, que es un

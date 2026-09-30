@@ -13,6 +13,7 @@ build/
 # La calibración medida en un banco concreto. Es un dato de ese banco, no del
 # proyecto: cada uno guarda la suya.
 notebooks/calibracion*.json
+extras/*/calibracion*.json
 
 # Y el cableado de ese banco, por lo mismo: qué puente tiene y de qué lado miran
 # el imán y el sensor de corriente. Lo escribe bringup().

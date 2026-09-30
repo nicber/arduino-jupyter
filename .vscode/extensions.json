@@ -21,7 +21,7 @@
         "tomoki1207.pdf"
     ],
     "unwantedRecommendations": [
-        // Genera su propio c_cpp_properties.json en cada sketch y pisa el de acá.
+        // Genera su propio c_cpp_properties.json en cada sketch y sobrescribe el de este proyecto.
         "vsciot-vscode.vscode-arduino",
         "vscode-arduino.vscode-arduino-community"
     ]

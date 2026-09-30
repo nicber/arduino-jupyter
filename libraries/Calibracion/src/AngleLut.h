@@ -8,8 +8,9 @@
 //
 // Acá vive nada más que la corrección. Quién la calcula y de dónde sale es asunto
 // de la computadora, y esta tabla no se guarda en la placa: un dispositivo que
-// arranca sin corregir no puede mentirle a nadie, y el caso feo no es la tabla que
-// falta sino la tabla vieja, de otro montaje, que se aplica en silencio.
+// arranca sin corregir no aplica una corrección equivocada, y el caso crítico no es
+// la tabla que falta sino la tabla desactualizada, de otro montaje, que se aplica
+// en silencio.
 //
 // Es aritmética entera y nada más, así que se compila y se prueba en la máquina de
 // escritorio.
@@ -54,8 +55,8 @@ class AngleLut
     // La resolución de un octavo existe porque el error puede ser de unas pocas
     // cuentas: en cuentas enteras la tabla tendría tres o cuatro valores distintos y
     // sería un escalón, no una corrección. Y el rango es de int16 y no de int8
-    // porque el banco lo pidió: con el AGC en media escala --la distancia correcta--
-    // el segundo armónico midió 105 cuentas, 9,3 grados. El AGC informa la distancia
+    // porque las mediciones lo exigen: con el AGC en media escala --la distancia
+    // correcta-- el segundo armónico midió entre 105 y 108 cuentas, 9,2 a 9,5 grados. El AGC informa la distancia
     // y no el centrado, así que un imán puede estar a la distancia justa y de todos
     // modos torcido, y ahí el error es real y grande.
     static const Eighths MAX = 4095;
@@ -90,47 +91,72 @@ class AngleLut
                               >> SPAN_BITS;
 
         // Redondeo al medio hacia arriba. Con corrimiento aritmético `(e + 4) >> 3`
-        // sirve para los dos signos; el `e < 0 ? -4 : 4` que uno escribe de reflejo
-        // redondea mal los negativos chicos: 3/8 daría -1 en lugar de 0.
+        // sirve para los dos signos; el `e < 0 ? -4 : 4`, que parece la alternativa
+        // natural, redondea mal los negativos chicos: -3/8 daría -1 en lugar de 0.
         return (Counts)((eighths + 4) >> 3);
     }
 
-    // El ángulo corregido, que es lo que el lazo quiere. Se aplica sobre la cuenta
-    // cruda y antes de desenrollar, porque la tabla se indexa con el ángulo de
-    // adentro de la vuelta y una vez desenrollado ese ángulo ya no está.
+    // El ángulo corregido, adentro de la vuelta. La tabla se indexa con la cuenta
+    // cruda, porque una vez desenrollado ese ángulo ya no está. Quien desenrolla
+    // antes de corregir, como Banco, suma al ángulo desenrollado la diferencia
+    // entre el corregido y el crudo (AngleTracker::wrapped_error()), que son unas
+    // pocas cuentas.
     //
     // Se llama corrected() y no apply() para no quedar sobrecargado contra la
     // escritura de una entrada: los dos tomarían un entero y el compilador elegiría
-    // por el ancho del tipo, que es la clase de resolución que nadie quiere leer.
+    // por el ancho del tipo, una resolución de sobrecarga difícil de seguir al leer.
     Counts corrected(Counts raw) const
     {
         return (Counts)((raw - correction(raw)) & (Counts)(PerRev - 1));
     }
 
-    // Suma de Fletcher de 16 bits sobre la tabla, para que las Size escrituras se
-    // verifiquen con una sola lectura.
+    // Suma de Fletcher sobre la tabla, para que las Size escrituras se verifiquen
+    // con una sola lectura.
     //
-    // Fletcher y no una suma pelada porque una suma no distingue una tabla de otra
+    // Fletcher y no una suma simple porque una suma no distingue una tabla de otra
     // con dos entradas intercambiadas, y una entrada en el índice equivocado es
-    // exactamente el error que se comete acá. Se recorre byte por byte, primero el
-    // bajo y después el alto de cada entrada, para que la computadora pueda
-    // reproducirla sin saber nada del orden de bytes del procesador.
+    // exactamente el error que se comete acá. El segundo acumulador pesa cada
+    // entrada por su posición, así que un intercambio lo mueve en (j-i)(x_j - x_i).
+    //
+    // Sobre palabras de 16 bits y módulo 65535, no sobre bytes y módulo 256. Con
+    // bytes módulo 256 esa diferencia se anula cada vez que (j-i)(x_j - x_i) es
+    // múltiplo de 256, o sea en el 2,3 % de los intercambios y en el 25 % de los que
+    // están a distancia 32 --justo el error que esta función existe para encontrar--.
+    // Módulo 255 lo baja sólo a 1,4 %: 255 = 3·5·17 tiene demasiados divisores. Sobre
+    // palabras módulo 65535 quedan 2 de cada 100 000, que es el piso de cualquier
+    // suma de 16 bits (1/65536) y no una debilidad del método.
+    //
+    // La suma módulo 65535 es la del complemento a uno --el acarreo vuelve al bit
+    // 0--, que en un AVR son unas pocas instrucciones y no una división.
+    //
+    // Los dos acumuladores se pliegan en un u16 porque es lo que viaja, y se pliegan
+    // sumando y no con un o-exclusivo: una entrada corrida en delta mueve `a` en
+    // delta y `b` en (Size - i)·delta, así que en la última entrada los dos se mueven
+    // igual y un o-exclusivo los cancelaría. Medido sobre 60 tablas: plegando con
+    // o-exclusivo se escapa el 0,79 % de las entradas corridas, y sumando, el
+    // 0,05 %. Para un intercambio los dos dan lo mismo, 0,0025 %, que es el piso de
+    // cualquier suma de 16 bits (1/65536 = 0,0015 %).
     uint16_t checksum(void) const
     {
-        uint8_t a = 0;
-        uint8_t b = 0;
+        uint16_t a = 0;
+        uint16_t b = 0;
 
         for (uint8_t i = 0; i < Size; i++)
         {
-            const uint16_t v = (uint16_t)entry[i];
-
-            a += (uint8_t)v;
-            b += a;
-            a += (uint8_t)(v >> 8);
-            b += a;
+            a = ones_add(a, (uint16_t)entry[i]);
+            b = ones_add(b, a);
         }
 
-        return (uint16_t)(((uint16_t)b << 8) | a);
+        return (uint16_t)(a + b);
+    }
+
+    // Suma módulo 65535: la del complemento a uno, con el acarreo de vuelta al bit
+    // 0. No puede dar la vuelta al sumar el acarreo: haría falta x + y = 131071, y
+    // con los dos en 16 bits el máximo es 131070.
+    static uint16_t ones_add(uint16_t x, uint16_t y)
+    {
+        const uint16_t s = (uint16_t)(x + y);
+        return (uint16_t)(s < x ? (uint16_t)(s + 1) : s);
     }
 
     // Una entrada por escritura, empaquetada como (índice << 16) | valor.
@@ -164,7 +190,7 @@ class AngleLut
         return true;
     }
 
-    // Lo mismo, pero sólo cuando el parámetro de verdad cambió desde la última vez.
+    // Lo mismo, pero sólo cuando el parámetro efectivamente cambió desde la última vez.
     //
     // Quien llama corre después de cada escritura de cualquier parámetro, así que sin
     // esto un barrido de ganancia reescribiría la misma entrada de la tabla una vez

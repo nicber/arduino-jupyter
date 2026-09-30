@@ -6,8 +6,8 @@
 // la máquina de escritorio.
 //
 // Lo único que sabe es dónde está el cero del sensor. No filtra --un filtro acá se
-// confunde con la planta que se mide-- ni da vuelta el signo, que se resuelve del
-// lado de la computadora igual que el del ángulo.
+// confunde con la planta que se mide-- ni invierte el signo, que lo aplica quien
+// lo usa igual que el del ángulo (Banco con `cur_inv`).
 
 #ifndef SENSE_CURRENTSENSE_H
 #define SENSE_CURRENTSENSE_H
@@ -24,7 +24,7 @@ class CurrentSense
     typedef int16_t Counts;
 
     Counts zero;        // el cero del sensor, en cuentas crudas del conversor
-    Counts i;           // la corriente medida, alrededor de `zero`
+    Counts i;           // la corriente medida, alrededor de `zero`, en la unidad de update()
 
     constexpr explicit CurrentSense(Counts initial_zero)
         : zero(initial_zero)
@@ -34,7 +34,29 @@ class CurrentSense
 
     void update(Counts raw)
     {
-        i = (Counts)(raw - zero);
+        // La resta va en 32 bits y satura, igual que update_q4(): con el cero cerca
+        // de un extremo, `raw - zero` se sale del int16 y daría la vuelta, o sea la
+        // corriente publicada con el signo cambiado.
+        i = sat((int32_t)raw - (int32_t)zero);
+    }
+
+    // Lo mismo con la cuenta en dieciseisavos (ver Sense/SupplyRatio.h). El cero se
+    // queda en cuentas enteras a propósito: es la unidad en la que la computadora lo
+    // mide y la que informa `cur_zero`, y en dieciseisavos un reposo de 2000 cuentas
+    // son 32000, que no le deja al int16 margen para la tolerancia del divisor. La
+    // resta va en 32 bits por lo mismo, y satura.
+    void update_q4(int32_t raw_q4)
+    {
+        i = sat(raw_q4 - ((int32_t)zero << 4));
+    }
+
+    private:
+
+    static Counts sat(int32_t v)
+    {
+        if (v > INT16_MAX) return INT16_MAX;
+        if (v < INT16_MIN) return INT16_MIN;
+        return (Counts)v;
     }
 };
 

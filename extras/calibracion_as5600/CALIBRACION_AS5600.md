@@ -107,8 +107,8 @@ persiguiendo. A 5 vueltas por segundo:
 Cuarenta y cinco cuentas de corrimiento contra un error que esperamos de unas
 seis. Y el corrimiento es una *fase* que rota con la velocidad, así que una tabla
 calibrada a una velocidad queda desfasada a otra. **Antes de calibrar nada hay
-que poner el filtro en 2x**, y de paso el lazo de control gana 1,9 ms de retardo
-que hoy está pagando sin saberlo. Esto es, muy probablemente, la mejora más
+que poner el filtro en 2x**, y de paso el lazo de control se ahorra 1,9 ms de
+retardo. Esto es, muy probablemente, la mejora más
 grande y más barata de todo el trabajo.
 
 ## 3. El problema difícil: qué es el sensor y qué es el motor
@@ -143,14 +143,14 @@ central de todo este plan.
 **El que no funciona para esto: invertir el sentido.** Es tentador y es lo que
 hace SimpleFOC, pero conviene entender qué cancela y qué no. En el régimen
 dominado por inercia el término `J ω² δ''` no cambia de signo al invertir `ω`,
-así que la ondulación mecánica también es invariante al sentido: dar vuelta el
-motor **no** separa la mecánica del sensor. Lo que sí cancela es el retardo: la
+así que la ondulación mecánica también es invariante al sentido: invertir el
+sentido de giro **no** separa la mecánica del sensor. Lo que sí cancela es el retardo: la
 fase `ω τ` cambia de signo, así que promediar una corrida en cada sentido a la
 misma velocidad devuelve la tabla referida a retardo cero, y la *diferencia* de
 las dos mide `τ` y cualquier histéresis. Las dos corridas hay que hacerlas; sólo
 hay que saber qué se le está pidiendo a cada una.
 
-**El regalo: la desaceleración libre.** Si el motor se lleva a velocidad y
+**La desaceleración libre.** Si el motor se lleva a velocidad y
 después se lo deja en `u = 0`, durante la desaceleración no hay corriente de
 armadura y por lo tanto no hay ondulación de par de conmutación, que es la fuente
 mecánica más grande. Queda el *cogging* y el rozamiento, que además se hacen
@@ -169,7 +169,7 @@ signifiquen algo.
    quemar nada; el sketch lo escribe al arrancar.
 2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, dentro de la vuelta y sin
    corregir. Es lo que indexa la tabla, y reconstruirla desde `y_uw` es exactamente
-   el lugar donde un signo equivocado se paga caro y no se nota. Cuesta dos bytes
+   el lugar donde un signo equivocado es fácil de cometer y difícil de detectar. Cuesta dos bytes
    por fila.
 3. **Diagnóstico de montaje**: leer una vez `AGC` (0x1A) y `MAGNITUDE` (0x1B/1C)
    además de `STATUS`, y exponerlos como parámetros de sólo lectura. `AGC` cerca
@@ -179,8 +179,7 @@ signifiquen algo.
 ## 5. Los experimentos
 
 Cada uno dice qué se corre, qué se calcula y qué decisión habilita. Las compuertas
-(**G**) son puntos donde el plan se puede terminar temprano, que es la mitad de
-para qué sirve un plan.
+(**G**) son puntos donde el plan se puede terminar temprano.
 
 ### E0 — Higiene del banco (30 min, sin datos que analizar)
 
@@ -209,7 +208,7 @@ dev.ctl_uff = 200                      # llevarlo a velocidad
 df = dev.capture(25, events=[(3.0, 'ctl_uff', 0)])   # y soltarlo
 ```
 
-Cinco repeticiones en cada sentido (con un puente, `ctl_uff` positivo y negativo; con un solo cuadrante, dando vuelta los cables). De cada captura:
+Cinco repeticiones en cada sentido (con un puente, `ctl_uff` positivo y negativo; con un solo cuadrante, invirtiendo la conexión del motor). De cada captura:
 partir la parte de desaceleración en ventanas de ~10 vueltas y ajustar en cada
 ventana los armónicos `k = 1..8` (§6). Salida: `A_k(ω)` y `φ_k(ω)`.
 
@@ -222,7 +221,7 @@ ondulación de conmutación sí existe.
 
 Restricción de muestreo: a 500 Hz de telemetría hacen falta al menos 40 muestras
 por vuelta para el octavo armónico con margen, o sea `ω ≤ 12,5 rev/s`. Si el
-motor no baja de ahí, poner `loop_div = 5` (1 kHz) y sacar canales de la tabla
+motor no baja de ahí, poner `loop_div = 5` (filas a 1 kHz) y sacar canales de la tabla
 para que la fila entre en el enlace.
 
 > **G1 — ¿hay algo que corregir?** Si la suma de los armónicos aceptados da menos
@@ -261,8 +260,8 @@ frenar el eje con la mano y soltarlo, (c) al día siguiente.
 ### E6 — Control positivo (opcional, pero convence)
 
 Correr el sensor deliberadamente ~0,5 mm del centro con una lámina y repetir E2.
-`A_1` tiene que crecer de manera clara y proporcional. Es la prueba de que el
-tubo de medición mide lo que decimos que mide, y no un artefacto del ajuste.
+`A_1` tiene que crecer de manera clara y proporcional. Es la prueba de que la
+cadena de medición mide lo que decimos que mide, y no un artefacto del ajuste.
 
 La variante fuerte, si el imán se puede desmontar: girarlo 180° respecto del eje
 y volver a medir. Lo que rote con el imán es del imán; lo que se quede quieto es
@@ -271,8 +270,8 @@ del motor.
 ### E7 — Ajuste mecánico antes de la tabla
 
 Si de E2/E3 sale un primer armónico grande, vale la pena centrar mejor el imán y
-volver a medir. Corregir por tabla lo que se puede corregir con un tornillo es
-mal negocio: la tabla es un modelo de primer orden de algo que en el fondo no es
+volver a medir. No conviene corregir por tabla lo que se puede corregir con un
+tornillo: la tabla es un modelo de primer orden de algo que en el fondo no es
 lineal, y cuanto más chico sea lo que tiene que corregir, mejor se porta.
 
 > **G4.** Se pasa a implementar la tabla cuando el error residual, ya mejorado
@@ -286,14 +285,14 @@ sesión, sin tocar nada más.
 > **G5 — criterio de éxito.** `A_1` y `A_2` medidos con `cal = 1` tienen que caer
 > a menos de un quinto de lo que valían con `cal = 0`, y el desvío estándar de la
 > velocidad instantánea tiene que bajar de manera visible. Si `A_1` no baja, la
-> tabla está mal indexada o mal signada; si baja pero la velocidad no mejora, lo
+> tabla está mal indexada o tiene el signo invertido; si baja pero la velocidad no mejora, lo
 > que quedaba era mecánico.
 
 ### E9 — El "y entonces qué"
 
 Escalón de posición y seguimiento de rampa con `ang_cal` en 0 y en 1, con las mismas
 ganancias. Es la única medición que le importa a alguien que no esté mirando el
-sensor: si el lazo no mejora, la tabla es un adorno.
+sensor: si el lazo no mejora, la tabla no aporta nada al control.
 
 ## 6. El análisis
 
@@ -330,10 +329,10 @@ Notas que hacen la diferencia entre un ajuste y una medición:
 
 - **`cuentas` sale de `y_raw`**, desenrollado en Python, no de `y_uw`: así la
   corrección que ya esté prendida no entra en juego.
-- **El grado de la tendencia** se elige por separación espectral, no a ojo: los
+- **El grado de la tendencia** se elige por separación espectral, no de forma arbitraria: los
   armónicos están a 1 ciclo por vuelta o más, o sea ≥50 ciclos en una corrida de
   50 vueltas, contra un polinomio de grado 8. No compiten. Con menos de ~20
-  vueltas por ventana esto deja de ser cierto y el ajuste empieza a mentir.
+  vueltas por ventana esto deja de ser cierto y el ajuste deja de ser válido.
 - **Los huecos se manejan con `tick`**, no con el índice de fila. Una fila
   descartada por el protocolo no es una muestra faltante en el tiempo: es un
   salto, y desenrollar sobre un salto inventa una vuelta.
@@ -344,7 +343,7 @@ Notas que hacen la diferencia entre un ajuste y una medición:
   error es grande y el modelo de primer orden está al límite.
 
 Contra datos sintéticos con la geometría exacta de este banco —500 Hz, 20 s,
-5 rev/s (85 vueltas, 100 muestras por vuelta), ruido de 0,5 cuentas RMS y una
+5 rev/s (100 vueltas, 100 muestras por vuelta), ruido de 0,5 cuentas RMS y una
 deriva de velocidad del 30 %— el ajuste devuelve `A_1 = 5,98` contra 6,00 puestas
 y las fases con menos de 0,002 rad de error. Un armónico ausente vuelve en
 0,05 cuentas, que es de dónde sale el piso de 0,3 cuentas de la compuerta G2: seis
@@ -357,22 +356,21 @@ veces lo que el propio ajuste inventa.
 En `step()`, sobre la cuenta cruda y **antes** de desenrollar:
 
 ```c
-// Banco.ino: la corrección se aplica acá y no adentro del seguimiento del
-// ángulo, así que ese módulo no sabe que existe una calibración y la decisión de
-// corregir queda donde se toma.
-static void step(void)
-{
-    const Lut::Counts raw = (Lut::Counts)Sensor::counts();
-
-    g_y_raw = (uint16_t)raw;
-    g_angle.update(g_cal ? g_lut.corrected(raw) : raw);
-}
+// Banco.ino, step(): una vez por fila. `raw` es la cuenta cruda dentro de la
+// vuelta y `raw_uw` el ángulo ya desenrollado, los dos copiados de lo que la ISR
+// dejó en el mismo tick. La corrección se suma como diferencia: unas pocas cuentas.
+g_y_raw = raw;
+const int32_t uw = raw_uw
+    + (g_cal ? Angle::wrapped_error(g_lut.corrected((Lut::Counts)raw), (Angle::Counts)raw)
+             : 0);
+g_y_uw = g_ang_inv ? -uw : uw;
 ```
 
-Antes de desenrollar porque la tabla se indexa con el ángulo dentro de la vuelta,
-y después de desenrollar ese ángulo ya no está. Y en el dominio de la cuenta
-cruda y no en el del ángulo desenrollado, que ya no sabe en qué parte de la
-vuelta está.
+La tabla se indexa con la cuenta cruda porque es la que indica en qué parte de la
+vuelta está el eje; el ángulo desenrollado ya no lo indica. Por eso la corrección
+se calcula sobre `raw` y se suma al desenrollado como diferencia envuelta. El
+seguimiento del ángulo no sabe que existe una calibración, y la decisión de
+corregir queda donde se toma.
 
 ### La tabla
 
@@ -386,16 +384,21 @@ vuelta está.
 | Rango | ±511 cuentas = ±45° |
 | Separación angular entre entradas | 5,6° |
 
-Las entradas empezaron siendo `int8`, que en octavos llega a ±15,9 cuentas o
-±1,4°: de sobra para lo que promete la hoja de datos, con el argumento de que un
-error más grande no es algo para corregir por tabla sino un imán mal puesto. El
-banco desmintió el argumento. Con el AGC en 165 de 255 --media escala, la
-distancia correcta-- el segundo armónico mide 108 cuentas, 9,5°, y el error
-completo 24° pico a pico. **El AGC informa la distancia, no el centrado**, así que
-un imán puede estar a la distancia justa y de todos modos torcido; y ahí el error
-es real, es del sensor --plano en la velocidad entre 15 y 37 vueltas por segundo,
-en los dos sentidos-- y una tabla lo corrige. Con `int8` la tabla representaba el
-diez por ciento y recortaba el resto.
+Las entradas son `int16` y no `int8` porque un error de varios grados no implica
+necesariamente un imán a la distancia equivocada. Una entrada `int8` en octavos
+llegaría a ±15,9 cuentas o ±1,4°, de sobra para lo que promete la hoja de datos;
+pero con el AGC en 165 de 255 --media escala, la distancia correcta-- el segundo
+armónico medido en este banco es de 105 a 108 cuentas (9,2° a 9,5°), y el error completo de 24°
+pico a pico. **El AGC informa la distancia, no el centrado**, así que un imán puede
+estar a la distancia justa y de todos modos torcido; y ahí el error es real, es del
+sensor --plano en la velocidad entre 15 y 37 vueltas por segundo, en los dos
+sentidos-- y una tabla lo corrige. Con `int8` la tabla representaría el diez por
+ciento y recortaría el resto.
+
+Ese rango de velocidad supera los 12,5 rev/s de §5, pero aquel límite es para el
+octavo armónico con filas a 500 Hz. Para el segundo armónico alcanza con menos: a
+37 rev/s y 500 Hz quedan casi siete muestras por ciclo. Para conservar las 40
+muestras por vuelta a esa velocidad hace falta `loop_div = 3` (filas a 1667 Hz).
 
 64 entradas representan sin problema hasta el octavo armónico (ocho puntos por
 ciclo) y la interpolación lineal se hace cargo del resto. La unidad de 1/8 de
@@ -432,14 +435,16 @@ del ruido del sensor con el filtro en 2x. Es una decisión, no un descuido: llev
 todo el camino de posición a octavos de cuenta se puede hacer después si la
 validación muestra que hace falta, y toca la aritmética del lazo entero.
 
-Costo: dos lecturas de tabla, dos multiplicaciones de 8×8 y un par de
-corrimientos, del orden de 40 ciclos. Se paga una vez por período de control
-(500 Hz), o sea 0,13 % del período. Nada.
+Costo: dos lecturas de tabla, dos multiplicaciones de 32 bits (las entradas se
+llevan a `int32` antes de multiplicar), un par de corrimientos y la diferencia
+envuelta de `wrapped_error()`. Se paga una vez por fila, en `step()` y fuera de la
+interrupción de muestreo: 500 Hz con `loop_div = 10`, 5000/`loop_div` Hz en
+general. No compite con la lectura del sensor, que corre en la ISR.
 
 ### Persistencia: la tabla no vive en la placa
 
-La primera versión de este plan la guardaba en la EEPROM, que en un ATmega328P es
-1 KB sin usar. Está implementada de otra manera, y el motivo vale la pena:
+La EEPROM, que en un ATmega328P es 1 KB sin usar, sería el lugar obvio. No se
+la usa, por lo siguiente:
 
 **La dueña de la tabla es la computadora.** El dispositivo arranca siempre sin
 calibrar y la tabla se empuja al conectarse, desde un archivo JSON que vive en el
@@ -447,51 +452,51 @@ banco. Porque:
 
 - Una calibración es una propiedad de *este banco* --este imán, en este eje, con
   este sensor-- y no del programa. En un archivo se lee, se compara, se revisa y
-  entra en el repositorio; en la EEPROM es estado invisible que sobrevive a la
+  se conserva junto al banco (no se versiona: está en `.gitignore`); en la EEPROM es estado invisible que sobrevive a la
   reprogramación y que nadie recuerda haber puesto.
-- Un dispositivo que arranca sin corregir no puede mentirle a nadie. El caso feo
-  de la EEPROM no es la tabla que falta: es la tabla vieja, de otro montaje,
-  aplicándose en silencio.
+- Un dispositivo que arranca sin corregir no puede aplicar una tabla
+  desactualizada. El caso crítico de la EEPROM no es la tabla que falta: es la
+  tabla de otro montaje aplicándose en silencio.
 - Y para el aula, que es donde esto se usa: dos bancos son dos archivos, no dos
   placas con memoria distinta.
 
 ### Protocolo: ningún comando nuevo
 
-Cargar la tabla no necesitó tocar el protocolo. Alcanzan dos parámetros:
+Cargar la tabla no requiere tocar el protocolo. Alcanzan dos parámetros:
 
 - **`ang_lutw` (u32)**: una entrada, empaquetada como `(índice << 16) | valor`. El
   índice viaja adentro del valor para que dos escrituras seguidas nunca sean
   iguales por casualidad: el sketch aplica la escritura al notar que el parámetro
   cambió, y con índice y valor separados una tabla con dos entradas iguales
-  seguidas perdería la segunda. `refresh_tuning()` del sketch --que ya corría después de
+  seguidas perdería la segunda. `refresh_tuning()` del sketch --que corre después de
   cualquier escritura-- hace el resto.
 - **`ang_lutsum` (u16)**: la suma de Fletcher de lo que la placa tiene. La
   computadora calcula la suya y compara: **64 escrituras se verifican con una
   sola lectura**.
 
-Fletcher y no una suma pelada porque una suma no distingue una tabla de otra con
+Fletcher y no una suma simple porque una suma no distingue una tabla de otra con
 dos entradas intercambiadas, y una entrada en el índice equivocado es exactamente
 el error que se comete acá. Verificar no es cortesía: el protocolo ya distingue
-entre un *comando* deformado, que se rechaza a los gritos, y un *valor* deformado,
+entre un *comando* deformado, que se rechaza con un error explícito, y un *valor* deformado,
 que se aceptaría en silencio; una tabla es toda valores.
 
-Más dos parámetros de operación:
+Y uno de operación:
 
 - **`ang_cal` (u8)**: 0 o 1. Existe para que E8 sea posible. Una corrección que no se
   puede apagar no se puede medir.
 
 ## 8. Riesgos, y qué los detecta
 
-| Riesgo | Cómo se manifiesta | Qué lo agarra |
+| Riesgo | Cómo se manifiesta | Qué lo detecta |
 |---|---|---|
 | Se calibra la mecánica del motor como si fuera el sensor | la tabla mejora una velocidad y empeora otra | G2, la pendiente de `A_k(ω)` |
-| El retardo del filtro se mete en la fase | la tabla anda a la velocidad de calibración y no a otras | E4, y el filtro del sensor en 2x desde el principio |
+| El retardo del filtro se mete en la fase | la tabla funciona a la velocidad de calibración y no a otras | E4, y el filtro del sensor en 2x desde el principio |
 | El imán está flojo en el eje | la tabla no se repite entre encendidos | G3 |
 | Aliasing: pocas muestras por vuelta | armónicos altos aparecen donde no están | ≥40 muestras/vuelta, verificado en cada captura |
 | Huecos de telemetría desenrollados como saltos | vueltas fantasma en el desenrollado | reconstruir con `tick`, no con el índice |
 | La tendencia se come el primer armónico | `A_1` chico y con barra de error grande | ≥20 vueltas por ventana de ajuste |
 | Signo invertido en la corrección | `A_1` se duplica en vez de anularse | E8 con `ang_cal` en 0 y en 1: es el chequeo, y es barato |
-| Medir con el eje todavía girando por inercia | el sentido informado es el de la medición anterior | esperar a que el eje pare de verdad y verificarlo; ver `ensayo.esperar_quieto()` |
+| Medir con el eje todavía girando por inercia | el sentido informado es el de la medición anterior | esperar a que el eje pare efectivamente y verificarlo; ver `ensayo.esperar_quieto()` |
 
 ## 9. Dónde está cada cosa
 
@@ -501,10 +506,10 @@ Este plan está implementado. El reparto:
 |---|---|
 | `Banco/Banco.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, el filtro del sensor, el canal `y_raw` |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
-| `python/calib.py` | ajuste, compuertas, tabla, archivo |
-| `python/banco_simulado.py` | un banco de mentira, para dar la clase sin la placa |
-| `python/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
-| `notebooks/calibracion.ipynb` | los experimentos en orden de clase |
+| `extras/calibracion_as5600/calib.py` | ajuste, compuertas, tabla, archivo |
+| `python/banco_simulado.py` | un banco simulado, para dar la clase sin la placa |
+| `extras/calibracion_as5600/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
+| `extras/calibracion_as5600/calibracion.ipynb` | los experimentos en orden de clase |
 
 ## 10. Orden de trabajo
 
@@ -517,9 +522,8 @@ Este plan está implementado. El reparto:
 7. E8, E9 — validación y efecto sobre el lazo. Compuerta G5.
 
 Los pasos 1 a 5 no miden con una línea de la etapa de calibración prendida. Es a
-propósito:
-la mitad de las veces que este plan se ejecuta, la respuesta correcta aparece en
-el paso 2 o en el 5, y es un tornillo.
+propósito: con frecuencia la respuesta correcta aparece en el paso 2 o en el 5, y
+es un ajuste mecánico.
 
 ## Fuentes
 

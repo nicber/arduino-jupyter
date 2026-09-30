@@ -60,10 +60,31 @@ exactas, por si el puente USB-serie de alguna placa no llega más arriba.
 sólida: medida sobre cinco segundos, cero filas perdidas y cero huecos. Los
 comandos no. Un byte entrante llega cada 10 µs, el USART del AVR guarda dos, y
 entre el muestreador de 5 kHz y el manejador de TWI de nI2C mantienen las
-interrupciones deshabilitadas durante más que eso, así que se pierde alrededor
-del 4 % de los bytes de un comando enviado de corrido. Marcar el muestreador
-como `ISR_NOBLOCK` no lo arregla, porque el manejador de TWI también bloquea y
-hacer reentrante una máquina de estados de I2C no vale el riesgo.
+interrupciones deshabilitadas durante mucho más que eso.
+
+Medido en el banco (2026-09-16), 60 comandos `get loop_div` de 13 bytes por caso:
+
+| | espaciados 0,5 ms/byte | de corrido |
+|---|---|---|
+| sin flujo | 60/60 | 14/60 |
+| con flujo | 60/60 | 8/60 |
+
+De 13 bytes, `(1-p)^13 = 14/60` da **p ≈ 11 % de los bytes sin flujo y ≈ 14 % con
+flujo**. (Una medición anterior decía 4 %; era optimista.) Que la pérdida exista
+igual sin telemetría confirma que lo que se come los bytes es el muestreador y no
+la emisión.
+
+Por eso la computadora espacia los bytes de un comando 0,5 ms (`_BYTE_GAP` en
+`ctrllink.py`), que los lleva a 60 de 60 en las dos condiciones.
+
+Marcar el muestreador como `ISR_NOBLOCK` sí lo arreglaría, y conviene decir por
+qué no se hizo con los números a la vista en lugar del argumento que estaba acá
+antes. El manejador de TWI dura ~9 µs, que entra holgado en los ~20 µs que da el
+buffer de dos bytes del USART: el que no entra es el del muestreador, de ~62 µs
+medidos. `ISR_NOBLOCK` ahí bajaría el peor apagón de 62 a ~9 µs. Lo que hace
+falta antes es proteger `m_sum[]`/`m_n[]` en `RowAdc`, que hoy se leen y se ponen
+en cero dando por sentado que la ISR del ADC no anida. Queda pendiente; el
+espaciado de bytes lo tapa por completo mientras tanto.
 
 **El enlace se limpia solo.** Una celda de notebook se interrumpe en cualquier
 parte: el botón de parar en mitad de una captura, un traceback a mitad de un
@@ -103,6 +124,12 @@ justamente la dinámica que se está midiendo. `emit()` consulta primero
 Una fila descartada deja un hueco visible en la secuencia de ticks; una escritura
 bloqueante dejaría un error de temporización invisible.
 
+Con una excepción, que conviene anotar en lugar de afirmar que no la hay:
+`cmd_set()` escribe su respuesta (~45 bytes) con `Serial.print` sin consultar
+`availableForWrite()`, así que un `set` en medio de una captura es la única
+escritura bloqueante que queda en el camino del flujo. Está acotada --decenas de
+µs con el buffer casi lleno-- y aparece medida en `loop_late`, pero existe.
+
 ## Ancho de banda
 
 El puerto serie usa 10 bits por byte, así que el enlace transporta `baud/10`
@@ -115,22 +142,44 @@ canal ocupa 4 caracteres hexadecimales si es int16 y 8 si es int32 o float.
 | 4 × float | 37 B | 311 Hz | 676 Hz | 1,4 kHz | 2,7 kHz |
 
 Eso es al 100 % de utilización. Conviene quedarse por debajo de la mitad: el
-sketch `Banco` corre cuatro canales a 500 Hz —un int32 y tres de 16 bits, 25
-bytes por fila—, que son 12,5 kB/s, o el 13 % de un enlace de 1 Mbaud.
+sketch `Banco` corre cinco canales a 500 Hz —un int32, tres de 16 bits y uno de 8,
+27 bytes por fila—, que son 13,5 kB/s, o el 14 % de un enlace de 1 Mbaud.
 
 Pero a 1 Mbaud el cable no es lo que se acaba primero, sino la CPU del
 dispositivo. Formatear un byte, copiarlo al buffer y sacarlo por la interrupción
 de la UART le cuesta a un ATmega328P a 16 MHz del orden de 10 µs, así que una fila
 ancha pesa más que un paso de control PID entero. Por eso los canales se eligen
-por captura (ver `chans` más abajo). Medido en este banco con el sketch de lazo
-cerrado que lo precedió, con el PID corriendo, la frecuencia más alta sin perder
-períodos:
+por captura (ver `chans` más abajo).
 
-| Fila | Techo |
-|---|---|
-| 45 B (siete canales) | 1 kHz |
-| 29 B (cuatro canales) | 1250 Hz |
-| 17 B (dos canales) | 1667 Hz |
+Medido en el banco con `Banco`, `loop_div = 1` y el muestreador del AS5600
+corriendo a 5 kHz (2026-09-16), filas efectivamente atendidas por segundo:
+
+| Fila | Techo | (antes de la pasada de interrupciones) |
+|---|---|---|
+| 27 B (cinco canales) | 922 filas/s | 673 |
+| 17 B (dos canales) | 1138 filas/s | 797 |
+| 9 B (un canal) | 1396 filas/s | 919 |
+
+Y el `loop_div` más chico que no pierde ni un período con los cinco canales pasó
+de 8 (625 Hz) a **6 (833 Hz)**; a 833 Hz se perdían 113 períodos por captura y
+ahora no se pierde ninguno.
+
+**En las tres, `drops = 0`**: no se descartó una sola fila por falta de buffer. A
+922 filas/s de 27 bytes son 25 kB/s, el 25 % del cable. Lo que se acaba es el
+CPU, nunca el enlace, y por eso cortar canales sube el techo.
+
+De dónde salió la diferencia, medido aislando cada cambio y alternando las
+versiones para que la deriva del banco no favorezca a ninguna: sacar de
+`WindowMean` el promedio que se calculaba en cada fila y nadie leía (dos
+divisiones de 32 bits) da 673 -> 846, y reescribir `close_tick()` sobre
+`MovingAverage` más mover el trabajo de la interrupción del ADC antes de arrancar
+la conversión siguiente, 846 -> 922.
+
+La tabla que estaba acá antes --45 B a 1 kHz, 29 B a 1250 Hz, 17 B a 1667 Hz-- es
+del sketch de lazo cerrado que precedió a éste, que no muestreaba el AS5600 a
+5 kHz. Está el doble por encima de lo que alcanza `Banco` y se la quitó para no
+inducir a error: la lectura de I2C a 5 kHz cuesta unos 21 puntos de CPU (medido
+cortándola), y la ISR del muestreador se lleva otros 31.
 
 ## Protocolo de línea
 
@@ -176,6 +225,14 @@ exacta: ningún número fijo de decimales imprime de manera útil tanto una esca
 Q22 (2,4e-7) como una Q30 (9,3e-10). Todo lo que necesite una escala que no sea
 potencia de dos —grados por cuenta, miliamperes por LSB— es un canal, y un canal
 tiene una.
+
+Con el límite que se sigue de ahí, que hay que tener presente al declarar un
+canal: la escala de un canal **sí** se imprime con un número fijo de decimales
+(siete), así que una escala por debajo de 5e-8 sale `0.0000000`, `float()` la
+acepta sin quejarse y la columna entera vuelve en cero. Las de `Banco` están
+lejos de ese piso --lo peor son 2,8e-7 de error relativo en `COUNTS_TO_DEG`--
+pero una escala Q24 ya no entra. Un canal que necesite una escala así de chica
+tiene que publicarse con otra unidad.
 
 ### Flujo
 

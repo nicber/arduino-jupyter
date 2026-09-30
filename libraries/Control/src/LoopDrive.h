@@ -50,7 +50,11 @@ class LoopDrive
     // escritura de cualquier parámetro, y el puente sólo rearranca el temporizador
     // si de verdad cambió: un barrido de ganancia no tiene por qué sacudirlo. Lo
     // que quedó puesto vuelve a `top`, así la computadora ve el piso aplicado.
-    void apply(void) { top = m_bridge.set_top(top); }
+    void apply(void)
+    {
+        top = m_bridge.set_top(top);
+        m_bridge.bidir = bidir;
+    }
 
     // `invert` reconcilia dos convenciones de signo que se fijan con cables: la
     // del motor en las salidas del puente, y la de lo que mire el sensor. Si no
@@ -58,10 +62,14 @@ class LoopDrive
     // de establecerse, y se escapa con la referencia de cualquier signo, así que no
     // hay manera de descubrirlo probando. Dar vuelta los dos cables del motor es el
     // arreglo físico y equivale exactamente a esto.
+    //
+    // Con un solo cuadrante `invert` no hace nada: el sentido está en los cables, y
+    // dar vuelta el comando lo volvería negativo, que el puente recorta a cero. Ahí
+    // el signo del lazo se arregla del lado de la medición.
     void write(Command command)
     {
         u = command;
-        m_bridge.write(invert ? (Command)-command : command);
+        m_bridge.write((invert && bidir) ? (Command)-command : command);
     }
 
     private:
