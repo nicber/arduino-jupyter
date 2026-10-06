@@ -45,7 +45,7 @@ INCLUIR = [
 # Adentro de lo incluido, lo que igual sobra. Se busca en la ruta con una / adelante,
 # así que '/.vscode/' saca la de cada sketch; la de la raíz entra por su nombre.
 EXCLUIR = ('/.vscode/', '/examples/', '.gitignore', '.gitmodules',
-           '/libraries/Control/')
+           '/libraries/Control/', '/libraries/ControlMath/test/')
 
 
 def git(*argumentos):
@@ -84,7 +84,7 @@ def main():
     sucios = [l[3:] for l in git('status', '--porcelain').splitlines()
               if any(l[3:] == i or (i.endswith('/') and l[3:].startswith(i)) for i in INCLUIR)]
     if sucios:
-        print('OJO: hay cambios sin commitear que entran en el zip:')
+        print('Atención: hay cambios sin commitear que entran en el zip:')
         for ruta in sucios:
             print(f'  {ruta}')
 

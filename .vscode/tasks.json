@@ -41,7 +41,7 @@
             // Necesita un g++ para la computadora (no el avr-g++ del IDE).
             "label": "Pruebas C++ de escritorio",
             "type": "shell",
-            "command": "g++ -std=c++11 -O2 -Wall -Wextra -I ../libraries/Calibracion/src -I ../libraries/AngleSensor/src -I ../libraries/Sense/src test_modulos.cpp -o test_modulos && ./test_modulos",
+            "command": "g++ -std=c++11 -O2 -Wall -Wextra -D_USE_MATH_DEFINES -I ../libraries/Calibracion/src -I ../libraries/AngleSensor/src -I ../libraries/Sense/src test_modulos.cpp -o test_modulos && ./test_modulos",
             "options": { "cwd": "${workspaceFolder}/test" },
             "group": "test",
             "problemMatcher": ["$gcc"]
