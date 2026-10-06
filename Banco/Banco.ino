@@ -6,7 +6,7 @@
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
 // Medición de corriente (opcional): ACS712 en A0, en serie entre +5 V y el motor con
 // el diodo abarcando sensor y motor, y en A1 los 5 V que lo alimentan por un divisor
-// resistivo (5,1 k arriba, 2 k abajo, 100 nF), si la placa no funciona a 5 V
+// resistivo (5,1 k arriba, 2 k abajo), si la placa no funciona a 5 V
 // Actuador: ENA -> 9 (PWM, 1250 Hz), IN1 -> 6, IN2 -> 7. Un puente L298N, o un
 // transistor a masa con su diodo de rueda libre gobernado desde el pin 9 (en este
 // banco un BD139, NPN, con 220 Ω en la base).
@@ -178,8 +178,7 @@ static uint16_t g_y_raw = 0;
 static int32_t g_y_uw = 0;
 
 // Los bits fraccionarios de la unidad de `i`. Es una constante del sketch y se publica
-// para que la computadora no la tenga escrita: ControlDemo publica `i` en cuentas
-// enteras con las mismas clases.
+// para que la computadora no la tenga escrita.
 static uint8_t g_cur_frac = SENSE_FRAC_BITS;
 
 // 1 si la cuenta de esta fila repite la anterior: la transferencia del AS5600 que
@@ -311,8 +310,8 @@ ISR(TIMER2_COMPA_vect)
     }
 }
 
-// El ADC corre libre, sin relación con el muestreador: cada conversión se suma a la
-// fila en curso. Ver Sense/RowAdc.h.
+// El ADC convierte de corrido, sin relación con el muestreador: cada conversión se
+// suma a la fila en curso. Ver Sense/RowAdc.h.
 ISR(ADC_vect)
 {
     g_adc.on_conversion();

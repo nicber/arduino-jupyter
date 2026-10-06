@@ -146,13 +146,13 @@ static const uint8_t SUPPLY_CHANNEL = 1;
 
 // La sensibilidad del sensor, que es lo único que convierte cuentas en amperes.
 // 185 mV/A es un ACS712-05B conectado directo, que es como está pensado el banco.
-// OJO si no cierra con lo que mide un tester en serie con el motor: un reposo muy
+// Atención si no cierra con lo que mide un tester en serie con el motor: un reposo muy
 // por debajo de los 2500 mV que da un ACS712 alimentado a 5 V delata un divisor en
 // la salida, y un divisor divide las dos cosas a la vez --el cero y la
-// sensibilidad--, así que ahí va 185 dividido por lo mismo. Ver README.
+// sensibilidad--, así que ahí va 185 dividido por lo mismo.
 static const float SENSE_MV_PER_A = 185.0f;
 
-// El ADC corre libre contra AVCC y cada período del lazo promedia todas sus
+// El ADC convierte de corrido contra AVCC y cada período del lazo promedia todas sus
 // conversiones: una conversión suelta cae siempre en la misma fase del PWM, y la
 // corriente adentro del período es un escalón de cientos de mA. Contra AVCC, porque
 // es donde un ACS712 --bipolar y ratiométrico-- reposa con margen para los dos
@@ -330,7 +330,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_offset",  CTRL_I16, &g_angle.offset,      0                 },
     { "ang_alpha",   CTRL_I32, &g_alpha_y,           Angle::Alpha::FRAC },
     { "ang_cal",     CTRL_U8,  &g_cal,               0                 },
-    { "ang_sfilt",    CTRL_U8,  &g_sfilt.want,        0                 },
+    { "ang_sfilt",   CTRL_U8,  &g_sfilt.want,        0                 },
     { "ang_lutw",    CTRL_U32, &g_lutw,              0                 },
     { "ang_lutsum",  CTRL_U16, &g_lut.sum,           0                 },
     { "ang_y",       CTRL_I16, &g_angle.track.y,     0                 },
@@ -339,8 +339,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_present", CTRL_U8,  &g_health.present,    0                 },
     { "ang_agc",     CTRL_U8,  &g_health.agc,        0                 },
     { "ang_mag",     CTRL_U16, &g_health.magnitude,  0                 },
-    { "ang_busovr",     CTRL_U16, &g_health.overruns,   0                 },
-    { "ang_buserr",     CTRL_U16, &g_health.errors,     0                 },
+    { "ang_busovr",  CTRL_U16, &g_health.overruns,   0                 },
+    { "ang_buserr",  CTRL_U16, &g_health.errors,     0                 },
 
     { "cur_zero",    CTRL_I16, &g_sense.zero,              0                 },
     { "cur_inv",     CTRL_U8,  &g_sense.invert,            0                 },
@@ -403,8 +403,8 @@ ISR(TIMER2_COMPA_vect)
     }
 }
 
-// El ADC corre libre, sin relación con el muestreador: cada conversión se suma al
-// período en curso. Ver Sense/RowAdc.h.
+// El ADC convierte de corrido, sin relación con el muestreador: cada conversión se
+// suma al período en curso. Ver Sense/RowAdc.h.
 ISR(ADC_vect)
 {
     g_adc.on_conversion();

@@ -62,11 +62,10 @@ class WindowMean
 
     // Una fila: la suma de sus conversiones y cuántas fueron.
     //
-    // No calcula el promedio. Lo calculaba en cada fila y nadie lo leía --ni Banco ni
-    // ControlDemo: los dos consumen total() y count() a través de SupplyRatio, que
-    // necesita el par y no el cociente-- y eran dos divisiones de 32 bits por fila,
-    // del orden de 550 ciclos. A 500 Hz es el 1,7 % del procesador y a 5 kHz, el 17 %.
-    // Quien quiera el promedio llama a mean().
+    // No calcula el promedio: serían dos divisiones de 32 bits por fila, del orden de
+    // 550 ciclos --a 500 Hz el 1,7 % del procesador y a 5 kHz, el 17 %--, y ni Banco ni
+    // ControlDemo lo usan: los dos consumen total() y count() a través de SupplyRatio,
+    // que necesita el par y no el cociente. Quien quiera el promedio llama a mean().
     void push(uint32_t sum, uint16_t n)
     {
         m_total += sum - m_sums[m_next];

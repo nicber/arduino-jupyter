@@ -139,6 +139,30 @@ for nombre, t in DOCS.items():
 check('toda función que nombran el README y hardware.ipynb existe', not inexistentes,
       ' | '.join(sorted(inexistentes)))
 
+# Y del lado de la placa: un `Clase::miembro` que nombren la documentación o los
+# comentarios tiene que estar en el código C++, fuera de un comentario. Un ejemplo
+# citado que quedó viejo compila igual de bien en la cabeza de quien lo lee.
+codigo_cpp = {}
+for patron in ('*/*.ino', 'libraries/*/src/*.h', 'libraries/*/src/*.cpp', 'libraries/*/*.h',
+               'libraries/*/*.cpp'):
+    for ruta in RAIZ.glob(patron):
+        codigo_cpp[str(ruta.relative_to(RAIZ)).replace('\\', '/')] = texto(ruta)
+sin_comentarios = '\n'.join(re.sub(r'//.*', '', t) for t in codigo_cpp.values())
+definidos = set(re.findall(r'\b\w+\b', sin_comentarios))
+prosa = dict(DOCS)
+for ruta in [RAIZ / 'PROTOCOL.md', *RAIZ.glob('extras/*/*.md')]:
+    if ruta.exists():
+        prosa[str(ruta.relative_to(RAIZ)).replace('\\', '/')] = texto(ruta)
+for nombre, t in codigo_cpp.items():
+    prosa[nombre] = '\n'.join(re.findall(r'//(.*)', t))
+nombrados = set()
+for nombre, t in prosa.items():
+    for m in re.finditer(r'\b([A-Z]\w*)::(\w+)', t):
+        if m.group(1) not in definidos or m.group(2) not in definidos:
+            nombrados.add(f'{nombre}: {m.group(0)}')
+check('todo Clase::miembro que nombran la documentación y los comentarios existe',
+      not nombrados, ' | '.join(sorted(nombrados)[:8]))
+
 # --------------------------------------- el protocolo: la placa contra su imitación
 cpp = texto(RAIZ / 'libraries' / 'CtrlLink' / 'src' / 'CtrlLink.cpp')
 de_la_placa = set(re.findall(r'strcmp\(line, "(\w+)"\)', cpp))

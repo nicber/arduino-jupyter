@@ -41,11 +41,9 @@ arr = np.frombuffer(raw, dtype=structured_dtype)
 El hexadecimal además es algo más barato de generar que el decimal —una consulta
 a tabla y un `swap` por byte, contra las divisiones sucesivas de `itoa`—, pero el
 `itoa` de avr-libc está escrito a mano en assembler, así que la diferencia es
-como un 20 % del costo de codificar, no un orden de magnitud. Codificar una fila
-de 4 × int16 cuesta del orden de 350 ciclos, que la escritura serie de Arduino
-aproximadamente duplica; digamos 70 µs, o el 3,5 % del período de control de
-2 ms con el que corre `Banco` por omisión. Las dos cosas son secundarias frente a
-las ventajas de encuadre de arriba.
+como un 20 % del costo de codificar, no un orden de magnitud. Lo que pesa es
+sacar cada byte por la UART, no elegir cómo se escribe (ver *Ancho de banda*), así
+que la diferencia es secundaria frente a las ventajas de encuadre de arriba.
 
 Un encuadre binario (COBS + CRC) ahorraría otro ~40 % de los bytes, pero a
 1 Mbaud el ancho de banda no es la restricción activa, y costaría la posibilidad
@@ -71,7 +69,7 @@ Medido en el banco (2026-09-16), 60 comandos `get loop_div` de 13 bytes por caso
 | con flujo | 60/60 | 8/60 |
 
 De 13 bytes, `(1-p)^13 = 14/60` da **p ≈ 11 % de los bytes sin flujo y ≈ 14 % con
-flujo**. (Una medición anterior decía 4 %; era optimista.) Que la pérdida exista
+flujo**. Que la pérdida exista
 igual sin telemetría confirma que lo que se come los bytes es el muestreador y no
 la emisión.
 
@@ -84,9 +82,8 @@ reintenta todo comando que el dispositivo declare no haber entendido, y verifica
 valor que devuelve un `set` en lugar de confiar en él: un *comando* deformado se
 rechaza a los gritos, pero un *valor* deformado se aceptaría en silencio.
 
-Marcar el muestreador como `ISR_NOBLOCK` sí lo arreglaría, y conviene decir por
-qué no se hizo con los números a la vista en lugar del argumento que estaba acá
-antes. El manejador de TWI dura ~9 µs, que entra holgado en los ~20 µs que da el
+Marcar el muestreador como `ISR_NOBLOCK` sí lo arreglaría, y por qué no se hizo
+se ve con los números. El manejador de TWI dura ~9 µs, que entra holgado en los ~20 µs que da el
 buffer de dos bytes del USART: el que no entra es el del muestreador, de ~62 µs
 medidos. `ISR_NOBLOCK` ahí bajaría el peor apagón de 62 a ~9 µs. Lo que hace
 falta antes es proteger `m_sum[]`/`m_n[]` en `RowAdc`, que hoy se leen y se ponen
@@ -156,32 +153,22 @@ por captura (ver `chans` más abajo).
 Medido en el banco con `Banco`, `loop_div = 1` y el muestreador del AS5600
 corriendo a 5 kHz (2026-09-16), filas efectivamente atendidas por segundo:
 
-| Fila | Techo | (antes de la pasada de interrupciones) |
-|---|---|---|
-| 27 B (cinco canales) | 922 filas/s | 673 |
-| 17 B (dos canales) | 1138 filas/s | 797 |
-| 9 B (un canal) | 1396 filas/s | 919 |
+| Fila | Techo |
+|---|---|
+| 27 B (cinco canales) | 922 filas/s |
+| 17 B (dos canales) | 1138 filas/s |
+| 9 B (un canal) | 1396 filas/s |
 
-Y el `loop_div` más chico que no pierde ni un período con los cinco canales pasó
-de 8 (625 Hz) a **6 (833 Hz)**; a 833 Hz se perdían 113 períodos por captura y
-ahora no se pierde ninguno.
+El `loop_div` más chico que no pierde ni un período con los cinco canales es
+**6 (833 Hz)**.
 
 **En las tres, `drops = 0`**: no se descartó una sola fila por falta de buffer. A
 922 filas/s de 27 bytes son 25 kB/s, el 25 % del cable. Lo que se acaba es el
 CPU, nunca el enlace, y por eso cortar canales sube el techo.
 
-De dónde salió la diferencia, medido aislando cada cambio y alternando las
-versiones para que la deriva del banco no favorezca a ninguna: sacar de
-`WindowMean` el promedio que se calculaba en cada fila y nadie leía (dos
-divisiones de 32 bits) da 673 -> 846, y reescribir `close_tick()` sobre
-`MovingAverage` más mover el trabajo de la interrupción del ADC antes de arrancar
-la conversión siguiente, 846 -> 922.
-
-La tabla que estaba acá antes --45 B a 1 kHz, 29 B a 1250 Hz, 17 B a 1667 Hz-- es
-del sketch de lazo cerrado que precedió a éste, que no muestreaba el AS5600 a
-5 kHz. Está el doble por encima de lo que alcanza `Banco` y se la quitó para no
-inducir a error: la lectura de I2C a 5 kHz cuesta unos 21 puntos de CPU (medido
-cortándola), y la ISR del muestreador se lleva otros 31.
+Adónde va la CPU: la lectura de I2C a 5 kHz cuesta unos 21 puntos (medido
+cortándola), y la ISR del muestreador se lleva otros 31. `ControlDemo` corre además
+la ley de control, así que sus techos son más bajos que éstos y no están medidos.
 
 ## Protocolo de línea
 
@@ -342,7 +329,7 @@ void loop() {
 
 `emit()` lee los canales a través de sus direcciones, así que hay que llamarlo
 desde el mismo contexto que los escribe: `loop()`, no una ISR. Los nombres tienen
-12 caracteres como máximo, que es lo que permite ponerles un prefijo de módulo: una
+11 caracteres como máximo (`CTRL_NAME_LEN` = 12 con el NUL), que es lo que permite ponerles un prefijo de módulo: una
 tabla de tres docenas de parámetros planos no dice quién es dueño de cuál, y
 `ctl_uff` contra `ang_cal` contra `loop_div` lo dice sin ir a leer el sketch. La
 tabla de canales admite hasta 16 entradas, una por bit de `chans`, y puede
@@ -370,13 +357,7 @@ captura y nada más, y se pueden leer después de terminada.
 
 ## Instalación
 
-```
-python3 -m venv .venv
-./.venv/bin/pip install -r python/requirements.txt jupyterlab matplotlib ipykernel
-./.venv/bin/python -m ipykernel install --user --name arduino-control \
-    --display-name "Arduino Control (.venv)"
-./.venv/bin/jupyter lab notebooks/hardware.ipynb
-```
+Ver *Puesta en marcha* en el README.
 
 ## Organización
 
@@ -386,8 +367,8 @@ python3 -m venv .venv
   del dispositivo fiel byte a byte
 - `Banco/` — el banco en lazo abierto: PWM sobre el actuador, AS5600 muestreado a
   5 kHz, corriente por el ADC, filas a 500 Hz
-- `notebooks/hardware.ipynb` — el recorrido del banco: el enlace, cada parte del
-  montaje, y un punto de partida para identificar la planta
+- `notebooks/hardware.ipynb` — cómo está armado el banco, cada parte del montaje,
+  y la API para el TP2
 
 ```
 arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
@@ -398,10 +379,5 @@ arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
 arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 ```
 
-`Banco` se apropia del Timer2 para el muestreador de 5 kHz, así que
-`analogWrite` deja de funcionar en los pines 3 y 11, y `tone()` también; del Timer1
-para el PWM de 1250 Hz del pin 9, así que tampoco hay `analogWrite` en los pines 9 y
-10 ni `Servo`; y lleva el Timer0 a 1000 Hz exactos, en fase fija con el muestreador,
-así que `millis()` y `delay()` quedan un 2,4 % rápidos y el PWM de los pines 5 y 6
-deja de servir. La lista completa, con el ADC, el USART y el TWI, está en
-`notebooks/hardware.ipynb`, sección 0.
+`Banco` se apropia de los tres timers, el ADC, el USART y el TWI: la lista y sus
+consecuencias están en `notebooks/hardware.ipynb`, sección 0.

@@ -120,8 +120,9 @@ class AngleLut
     // múltiplo de 256, o sea en el 2,3 % de los intercambios y en el 25 % de los que
     // están a distancia 32 --justo el error que esta función existe para encontrar--.
     // Módulo 255 lo baja sólo a 1,4 %: 255 = 3·5·17 tiene demasiados divisores. Sobre
-    // palabras módulo 65535 quedan 2 de cada 100 000, que es el piso de cualquier
-    // suma de 16 bits (1/65536) y no una debilidad del método.
+    // palabras módulo 65535 quedan 2 de cada 100 000 (0,0025 %), del orden del piso de
+    // cualquier suma de 16 bits (1/65536 = 0,0015 %); lo que falta para llegar al piso
+    // son los divisores de 65535 = 3·5·17·257, y no una debilidad del método.
     //
     // La suma módulo 65535 es la del complemento a uno --el acarreo vuelve al bit
     // 0--, que en un AVR son unas pocas instrucciones y no una división.
@@ -131,8 +132,7 @@ class AngleLut
     // delta y `b` en (Size - i)·delta, así que en la última entrada los dos se mueven
     // igual y un o-exclusivo los cancelaría. Medido sobre 60 tablas: plegando con
     // o-exclusivo se escapa el 0,79 % de las entradas corridas, y sumando, el
-    // 0,05 %. Para un intercambio los dos dan lo mismo, 0,0025 %, que es el piso de
-    // cualquier suma de 16 bits (1/65536 = 0,0015 %).
+    // 0,05 %. Para un intercambio los dos dan lo mismo, el 0,0025 % de arriba.
     uint16_t checksum(void) const
     {
         uint16_t a = 0;

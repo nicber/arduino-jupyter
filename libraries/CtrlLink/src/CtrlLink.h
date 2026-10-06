@@ -78,7 +78,9 @@ static const uint8_t CTRL_CMD_LEN = 40;
 // fila demasiado larga descartaría todas las muestras y no enviaría ninguna.
 // `start` rechaza una selección de canales así en lugar de fallar en silencio.
 //
-// Son 63 bytes en un UNO, o sea hasta 14 canales int16 o 7 float. Además de
+// Con el buffer de fábrica de un UNO son 63 bytes, hasta 14 canales int16 o 7 float;
+// los sketches de este proyecto se compilan con SERIAL_TX_BUFFER_SIZE=128 (ver
+// python/placa.py), y ahí son 127. Además de
 // entrar, importa quedarse bastante por debajo del límite: una fila cercana al
 // tamaño del buffer sólo sale cuando el buffer está casi vacío.
 static const uint8_t CTRL_MAX_ROW = SERIAL_TX_BUFFER_SIZE - 1;

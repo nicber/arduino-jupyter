@@ -7,8 +7,8 @@
 // compilación. Una computadora que prefiera ganancias en tiempo continuo
 // multiplica por dt de su lado.
 //
-// Lo que este módulo se lleva de su dueño, y que antes andaba suelto, es la
-// pregunta de cuándo hay que olvidar la historia. Un PID que hereda el integrador
+// Lo que este módulo se lleva de su dueño es la pregunta de cuándo hay que olvidar
+// la historia. Un PID que hereda el integrador
 // de otra configuración da un salto en su primer período, y el caso que de verdad
 // muerde no es cambiar de controlador sino cambiar *sobre qué* se cierra el lazo:
 // el integrador acumula en las unidades de la magnitud realimentada, así que pasar
@@ -75,10 +75,10 @@ class Pid
     //
     // Las dos y no sólo el modo. Un controlador que hereda el integrador del
     // anterior da un salto en su primer período, y eso vale igual cuando lo que
-    // cambió es la magnitud realimentada: el integrador quedó acumulado en cuentas
-    // de ángulo y de golpe se le aplica a una corriente. Mirar sólo el modo dejaba
-    // ese caso afuera, y era alcanzable con dos celdas seguidas de notebook que
-    // cambian el objetivo sin cambiar el controlador.
+    // cambia es la magnitud realimentada: el integrador viene acumulado en cuentas
+    // de ángulo y de golpe se le aplica a una corriente. Mirar sólo el modo deja ese
+    // caso afuera, y se alcanza con dos celdas seguidas de notebook que cambian el
+    // objetivo sin cambiar el controlador.
     //
     // Devuelve true si reinició, para que quien llame pueda decirlo si le importa.
     bool configure(uint8_t mode, uint8_t target, Error e)
@@ -199,9 +199,8 @@ class Pid
     int32_t m_e_prev;
     Filter  m_filt;
 
-    // Con qué configuración se corrió el período anterior. Eran un static adentro de
-    // control_step(), y que lo fueran es la razón por la que sólo se vigilaba una de
-    // las dos.
+    // Con qué configuración se corrió el período anterior. Viven acá, y no en quien
+    // llama, para que configure() vigile las dos juntas.
     uint8_t m_mode;
     uint8_t m_target;
 };

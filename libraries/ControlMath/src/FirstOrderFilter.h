@@ -40,7 +40,7 @@
 // otro entre dos muestras: la diferencia x - estado se forma en un int32_t, y dos
 // valores en extremos opuestos están a 2^32 de distancia. Vale la pena anotar por qué
 // se deja así en lugar de pasar la diferencia a 64 bits: cuesta 638 bytes de flash
-// medidos en ControlDemo, que ya va por el 91 %, y lo que evita no se alcanza —un
+// medidos en ControlDemo, que usa el 94 % de la flash, y lo que evita no se alcanza —un
 // contador de posición es continuo y no salta, y las entradas que no lo son (un
 // error de control, una corriente) están acotadas por el int16 del canal, cuatro
 // órdenes de magnitud por debajo de la cota—. Quien alimente este filtro con algo que

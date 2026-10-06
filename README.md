@@ -68,7 +68,7 @@ muestra en clase.
 | AS5600 SCL | A5 | |
 | AS5600 VDD / GND | 5V / GND | |
 | Salida del ACS712, con el sensor del lado de +5 V del motor | A0 | opcional |
-| Divisor de 5V a A1: 5,1 kΩ de 5V a A1, 2 kΩ de A1 a GND, y 100 nF de A1 a GND | A1 | con el ACS712, si la placa funciona a 3,3 V |
+| Divisor de 5V a A1: 5,1 kΩ de 5V a A1 y 2 kΩ de A1 a GND (conviene 100 nF de A1 a GND; ver `hardware.ipynb`, sección 4) | A1 | con el ACS712, si la placa funciona a 3,3 V |
 | `ENA` del puente, o la base del transistor por 220 Ω (PWM, 1250 Hz) | 9 | |
 | L298N `IN1` | 6 | sólo con un puente |
 | L298N `IN2` | 7 | sólo con un puente |
@@ -295,7 +295,7 @@ Los parámetros son atributos, siempre en unidades reales, y son pocos:
 | `mot_bidir` | 1 con puente en H, 0 con un solo cuadrante; lo fija `sync_board(bidir=...)` |
 | `ang_inv`, `cur_inv` | los signos del banco; los mide `bringup()` y los carga `sync_board()` |
 | `cur_filas` | filas sobre las que se promedia la corriente: 10 → 20 ms (por omisión), 1 → sólo la fila |
-| `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 000 rad/s |
+| `loop_div` | divisor del muestreador de 5 kHz: 10 → 500 Hz (por omisión), 5 → 1 kHz, 50 → 100 Hz. El ángulo se desenrolla a 5 kHz, así que cualquier valor sirve hasta ~15 700 rad/s |
 | `cur_zero` | cuenta del ADC que se lee como corriente cero; `zero_current()` la mide |
 | `cur_frac` | bits fraccionarios de la unidad del canal `i`: 4, o sea dieciseisavos de cuenta del ADC |
 | `cur_div`, `cur_a1` | la relación del divisor de A1 en diezmilésimas (0 = sin divisor, contra AVCC), que mide `medir_divisor()` o declara `declarar_divisor()`, y lo que lee A1 |
@@ -347,9 +347,8 @@ La tabla no vive en la placa: la placa arranca siempre sin calibrar, y
 `calib.sync_board_cal()` es `sync_board()` más la calibración de este banco. Si la
 calibración existe, la primera celda de `hardware.ipynb` la aplica sola.
 
-El filtro lento del AS5600 va en 2x, 0,286 ms de retardo en lugar de los 2,2 ms
-de fábrica, y el sketch lo escribe al arrancar. No es una perilla: ese retardo se
-identificaría después como un tiempo muerto del motor.
+El filtro lento del AS5600 va fijo en 2x, y el sketch lo escribe al arrancar; por
+qué: `hardware.ipynb`, sección 1.
 
 ---
 
@@ -383,13 +382,8 @@ Toda captura verifica su propia salud y avisa por `stderr` si se perdieron
 períodos o filas: una serie temporal a la que le faltan muestras se ve igual que
 una sana en un gráfico.
 
-**Periféricos de los que se apropia `Banco`:** el Timer2, así que `analogWrite()` en
-los pines 3 y 11 y `tone()` dejan de funcionar; el Timer1, que modula el actuador
-con su propio TOP, así que `analogWrite()` en los pines 9 y 10 y `Servo` dejan
-de servir; y el ADC, que se maneja directamente, así que no hay que llamar a
-`analogRead()`. El Timer0 sigue llevando `millis()`, pero a 1000 Hz en lugar de
-976,6 Hz, en fase fija con el muestreo: `millis()` y `delay()` quedan un 2,4 % rápidos y
-el PWM de los pines 5 y 6 deja de servir.
+**Periféricos de los que se apropia `Banco`** (los tres timers, el ADC, el USART y el
+TWI, y qué deja de funcionar con cada uno): `hardware.ipynb`, sección 0.
 
 **El PWM va a 1250 Hz** (`PWM_TOP` en el sketch). Por qué no más rápido, por qué
 1250 y cómo convendría accionar un L298N: `hardware.ipynb`, sección 2.1.
@@ -438,7 +432,7 @@ libraries/Calibracion/   la corrección del error de ángulo
 libraries/AS5600Async/   lectura asincrónica del AS5600
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 libraries/BoardStart/    el reloj, el ADC y el destrabe del bus, antes de todo lo demás
-test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio
+test/test_modulos.cpp    los módulos que son aritmética pura, en la máquina de escritorio
 python/ctrllink.py       el protocolo, lado computadora
 python/bench.py          el banco: conexión, bringup() y lo que significan sus números
 python/placa.py          compilar y grabar el sketch, encontrar el puerto

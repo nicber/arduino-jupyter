@@ -8,10 +8,9 @@ fija del ángulo, que se repite vuelta tras vuelta y que a un lazo de control se
 le presenta como una ondulación de velocidad y un error de posición que ninguna
 ganancia arregla.
 
-Este documento es el plan para (1) medir esa función con el banco que ya
-tenemos, sin sensor de referencia, (2) decidir con datos cuánto de lo que se mide
-es realmente el sensor, y (3) meter la corrección adentro del Arduino como una
-tabla.
+Este documento describe cómo (1) medir esa función con el banco, sin sensor de
+referencia, (2) decidir con datos cuánto de lo que se mide es realmente el sensor,
+y (3) corregirla adentro del Arduino con una tabla.
 
 ## 1. Qué dice la literatura
 
@@ -159,22 +158,26 @@ baja, **una sola captura de desaceleración da `A_k(ω)` en todo un rango**: se 
 parte en ventanas de unas diez vueltas y se ajusta en cada ventana. Es el
 experimento con mejor relación entre lo que cuesta y lo que dice.
 
-## 4. Lo que hay que agregarle al firmware *antes* de medir
+## 4. Lo que el firmware ya hace para que los datos signifiquen algo
 
-Nada de esto es la etapa de calibración todavía. Es lo mínimo para que los datos
-signifiquen algo.
+Nada de esto es la etapa de calibración: es lo mínimo para que los datos de §5
+signifiquen algo, y `Banco` lo hace sin que haya que pedírselo.
 
-1. **El filtro del AS5600 en 2x.** Sin esto se mide con 2,2 ms de retardo y la
-   fase de la tabla depende de la velocidad. Es un registro volátil, no hay que
-   quemar nada; el sketch lo escribe al arrancar.
+1. **El filtro del AS5600 en 2x.** En 16x, el valor de fábrica, se mide con 2,2 ms
+   de retardo y la fase de la tabla depende de la velocidad; en 2x son 0,286 ms. Es
+   un registro volátil, no hay que quemar nada: el sketch lo escribe al arrancar
+   (`SENSOR_FILTER`, con `AS5600::write_slow_filter()`).
 2. **Canal `y_raw` (u16)**: la cuenta cruda del sensor, dentro de la vuelta y sin
    corregir. Es lo que indexa la tabla, y reconstruirla desde `y_uw` es exactamente
-   el lugar donde un signo equivocado es fácil de cometer y difícil de detectar. Cuesta dos bytes
-   por fila.
-3. **Diagnóstico de montaje**: leer una vez `AGC` (0x1A) y `MAGNITUDE` (0x1B/1C)
-   además de `STATUS`, y exponerlos como parámetros de sólo lectura. `AGC` cerca
-   del medio de su rango es la única evidencia barata de que el imán está a la
-   distancia correcta. Es el mismo mecanismo perezoso que ya usa `read_status()`.
+   el lugar donde un signo equivocado es fácil de cometer y difícil de detectar.
+   Cuesta dos bytes por fila.
+3. **Diagnóstico de montaje**: además de `STATUS`, la placa lee `AGC` (0x1A) y
+   `MAGNITUDE` (0x1B/1C) y los publica como parámetros: `ang_status`, `ang_agc` y
+   `ang_mag`, con `ang_present` diciendo si el sensor contesta en el bus. Los lee de
+   a un registro por turno, sólo entre capturas, con las mismas lecturas de
+   mantenimiento que usa todo lo demás (`read_registers()`; ver
+   `libraries/AngleSensor/src/SensorHealth.h`). `AGC` cerca del medio de su rango es
+   la única evidencia barata de que el imán está a la distancia correcta.
 
 ## 5. Los experimentos
 
@@ -279,11 +282,11 @@ lineal, y cuanto más chico sea lo que tiene que corregir, mejor se porta.
 
 ### E8 — Validación de la corrección
 
-Con la tabla ya en la placa, repetir E2 y E3 con `cal = 0` y `cal = 1` en la misma
-sesión, sin tocar nada más.
+Con la tabla ya en la placa, repetir E2 y E3 con `ang_cal = 0` y `ang_cal = 1` en la
+misma sesión, sin tocar nada más.
 
-> **G5 — criterio de éxito.** `A_1` y `A_2` medidos con `cal = 1` tienen que caer
-> a menos de un quinto de lo que valían con `cal = 0`, y el desvío estándar de la
+> **G5 — criterio de éxito.** `A_1` y `A_2` medidos con `ang_cal = 1` tienen que caer
+> a menos de un quinto de lo que valen con `ang_cal = 0`, y el desvío estándar de la
 > velocidad instantánea tiene que bajar de manera visible. Si `A_1` no baja, la
 > tabla está mal indexada o tiene el signo invertido; si baja pero la velocidad no mejora, lo
 > que quedaba era mecánico.
@@ -353,24 +356,23 @@ veces lo que el propio ajuste inventa.
 
 ### Dónde se aplica
 
-En `step()`, sobre la cuenta cruda y **antes** de desenrollar:
+En `step()`, una vez por fila, sobre lo ya desenrollado; la tabla se indexa con la
+cuenta cruda:
 
 ```c
-// Banco.ino, step(): una vez por fila. `raw` es la cuenta cruda dentro de la
-// vuelta y `raw_uw` el ángulo ya desenrollado, los dos copiados de lo que la ISR
-// dejó en el mismo tick. La corrección se suma como diferencia: unas pocas cuentas.
+// Banco.ino, step(). `raw` es la cuenta cruda dentro de la vuelta y `raw_uw` el
+// ángulo ya desenrollado, los dos copiados de lo que la ISR dejó en el mismo tick.
 g_y_raw = raw;
-const int32_t uw = raw_uw
-    + (g_cal ? Angle::wrapped_error(g_lut.corrected((Lut::Counts)raw), (Angle::Counts)raw)
-             : 0);
+const int32_t uw = raw_uw - (g_cal ? g_lut.correction((Lut::Counts)raw) : 0);
 g_y_uw = g_ang_inv ? -uw : uw;
 ```
 
 La tabla se indexa con la cuenta cruda porque es la que indica en qué parte de la
 vuelta está el eje; el ángulo desenrollado ya no lo indica. Por eso la corrección
-se calcula sobre `raw` y se suma al desenrollado como diferencia envuelta. El
-seguimiento del ángulo no sabe que existe una calibración, y la decisión de
-corregir queda donde se toma.
+se calcula sobre `raw` y se resta de lo desenrollado: son a lo sumo 512 cuentas,
+menos de media vuelta, así que da lo mismo que corregir adentro de la vuelta y
+desenrollar después. El seguimiento del ángulo no sabe que existe una calibración,
+y la decisión de corregir queda donde se toma.
 
 ### La tabla
 
@@ -421,12 +423,13 @@ Counts correction(Counts raw) const
 
     // int32 en el medio: con entradas de hasta 4095 octavos la suma llega a
     // 262080, que no entra en 16 bits.
-    int32_t eighths = (a * (int32_t)(64 - frac) + b * (int32_t)frac) >> 6;
+    const int32_t eighths = (a * (int32_t)(SPAN - frac) + b * (int32_t)frac)
+                          >> SPAN_BITS;
 
     // Redondeo al medio hacia arriba. Con corrimiento aritmético `(e + 4) >> 3`
-    // sirve para los dos signos; el `e < 0 ? -4 : 4` que uno escribe de reflejo
-    // redondea mal los negativos chicos (-3/8 daría -1 en lugar de 0).
-    return (int16_t)((eighths + 4) >> 3);
+    // sirve para los dos signos; el `e < 0 ? -4 : 4` redondea mal los negativos
+    // chicos (-3/8 daría -1 en lugar de 0).
+    return (Counts)((eighths + 4) >> 3);
 }
 ```
 
@@ -436,8 +439,7 @@ todo el camino de posición a octavos de cuenta se puede hacer después si la
 validación muestra que hace falta, y toca la aritmética del lazo entero.
 
 Costo: dos lecturas de tabla, dos multiplicaciones de 32 bits (las entradas se
-llevan a `int32` antes de multiplicar), un par de corrimientos y la diferencia
-envuelta de `wrapped_error()`. Se paga una vez por fila, en `step()` y fuera de la
+llevan a `int32` antes de multiplicar), un par de corrimientos y una resta. Se paga una vez por fila, en `step()` y fuera de la
 interrupción de muestreo: 500 Hz con `loop_div = 10`, 5000/`loop_div` Hz en
 general. No compite con la lectura del sensor, que corre en la ISR.
 
@@ -500,29 +502,29 @@ Y uno de operación:
 
 ## 9. Dónde está cada cosa
 
-Este plan está implementado. El reparto:
-
 | | |
 |---|---|
-| `Banco/Banco.ino` | arma los módulos; la tabla y su interpolación viven en `libraries/Calibracion`, `ang_cal`, el filtro del sensor, el canal `y_raw` |
+| `Banco/Banco.ino` | arma los módulos: `ang_cal`, el filtro del sensor, el canal `y_raw` y los parámetros de montaje |
+| `libraries/Calibracion/src/AngleLut.h` | la tabla, su interpolación y su suma de Fletcher |
+| `libraries/AngleSensor/src/SensorHealth.h` | `STATUS`, `AGC` y `MAGNITUDE`, leídos entre capturas |
 | `libraries/AS5600Async/src/AS5600.h` | lectura de bloque de mantenimiento y escritura del CONF |
 | `extras/calibracion_as5600/calib.py` | ajuste, compuertas, tabla, archivo |
 | `python/banco_simulado.py` | un banco simulado, para dar la clase sin la placa |
 | `extras/calibracion_as5600/test_calib.py` | las dos mitades contra datos con la respuesta conocida |
 | `extras/calibracion_as5600/calibracion.ipynb` | los experimentos en orden de clase |
 
-## 10. Orden de trabajo
+## 10. Orden de las mediciones
 
-1. Firmware de medición: el filtro del sensor, `y_raw`, diagnóstico de AGC/MAGNITUDE (§4).
-2. E0, E1 — higiene y piso de ruido. Compuerta G0.
-3. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
-4. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.
-5. E7 — ajuste mecánico y remedición. Compuerta G4.
-6. Firmware de corrección: tabla, `ang_lutw`, `ang_lutsum`, `ang_cal` (§7).
-7. E8, E9 — validación y efecto sobre el lazo. Compuerta G5.
+1. E0, E1 — higiene y piso de ruido. Compuerta G0.
+2. E2, E3 — desaceleración y régimen. Compuertas G1 y G2.
+3. E4, E5 — retardo, sentido, repetibilidad. Compuerta G3.
+4. E7 — ajuste mecánico y remedición. Compuerta G4.
+5. Cargar la tabla con `ang_lutw`, verificarla contra `ang_lutsum` y prenderla con
+   `ang_cal` (§7).
+6. E8, E9 — validación y efecto sobre el lazo. Compuerta G5.
 
-Los pasos 1 a 5 no miden con una línea de la etapa de calibración prendida. Es a
-propósito: con frecuencia la respuesta correcta aparece en el paso 2 o en el 5, y
+Los pasos 1 a 4 miden con la etapa de calibración apagada (`ang_cal = 0`). Es a
+propósito: con frecuencia la respuesta correcta aparece en el paso 1 o en el 4, y
 es un ajuste mecánico.
 
 ## Fuentes

@@ -30,7 +30,7 @@
 // la división por 2^12 no guarda se arrastra a la muestra siguiente, así que la
 // salida no se queda trabada a unas cuentas del valor. Los polos cerca de la
 // circunferencia amplifican el redondeo de cada sección: en cuartos de cuenta eso le
-// sumaba a la corriente unos 3,5 mA RMS de ruido, medido en el banco con la ventana de
+// suma a la corriente unos 3,5 mA RMS de ruido, medido en el banco con la ventana de
 // 10 filas. El precio es el rango: la entrada va de -2047 a 2047 cuentas, que es la
 // corriente alrededor de su cero (el fondo del ACS712 de 5 A son ~740). Los
 // coeficientes se calculan con punto flotante en apply(), que corre sólo cuando la
@@ -42,10 +42,10 @@
 //
 // Adentro del lazo, en cambio, la señal lleva `GUARD_BITS` más: lo que se realimenta se
 // redondea a esa unidad más fina y no al dieciseisavo. Sin eso, publicando en
-// dieciseisavos, el redondeo del lazo quedaba a la vista: medido en el banco con
-// `cur_filas = 10` y sólo la sección del Nyquist, le ponía 0,5 mA RMS a la corriente
-// --con el bit de guarda y el relleno de RowAdc puestos quedó en 0,25--,
-// que era el término más grande que quedaba en toda la cadena.
+// dieciseisavos, el redondeo del lazo queda a la vista: medido en el banco con
+// `cur_filas = 10` y sólo la sección del Nyquist, le pone 0,5 mA RMS a la corriente,
+// el término más grande de toda la cadena; con el bit de guarda y el relleno de
+// RowAdc puestos, 0,25.
 //
 // Aritmética pura, salvo apply(), así que se prueba en la máquina de escritorio.
 
@@ -92,7 +92,7 @@ class MainsNotch
     // baja de 1 a 2 mA a 0,1 a 0,2 mA. No es un notch como los de la red: con los polos
     // en 250 Hz y r = 0,95 el redondeo arrastrado a la muestra siguiente queda debajo de
     // los polos y se amplifica unas 4000 veces, y en el banco la banda de 235 a 250 Hz
-    // subía siete veces. Acá los ceros son dobles en z = -1 y los polos van en 0,9 del
+    // sube siete veces. Acá los ceros son dobles en z = -1 y los polos van en 0,9 del
     // Nyquist (225 Hz a 500 Hz) con radio NYQ_POLE: sin pico, 0,98 en 150 Hz, 0,83 en
     // 200 Hz, -3 dB en 210 Hz, 0,36 ms de retardo en continua y el redondeo amplificado
     // unas 12 veces. Con otro `loop_div` sigue en el Nyquist, aunque el PWM ya no caiga

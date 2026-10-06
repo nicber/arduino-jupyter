@@ -101,8 +101,8 @@ class SupplyRatio
         {
             // Una fila sin conversiones de A0 es la cadena del ADC parada, y tiene
             // que verse desde la computadora: dejando `supply` con la lectura vieja,
-            // `cur_a1` seguía informando 1760 con el ADC muerto y nada en el
-            // diagnóstico lo delataba.
+            // `cur_a1` sigue informando 1760 con el ADC muerto y nada en el
+            // diagnóstico lo delata.
             supply = 0;
             return 0;
         }

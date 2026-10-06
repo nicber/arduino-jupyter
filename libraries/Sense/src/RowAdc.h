@@ -32,10 +32,10 @@
 //
 // Lo que la media no puede sacar: son una conversión y media de A0 por tick --tres en
 // total, alternando-- y no un promedio continuo, así que los armónicos del PWM también se
-// pliegan contra ese peine. Medido con el motor en régimen: la corriente media dependía de
-// cómo quedaban las conversiones contra el PWM, que cambia al arrancar una captura, y
-// saltaba entre dos niveles. Lo resuelve el relleno del bloque siguiente, que es el mismo
-// problema visto en reposo.
+// pliegan contra ese peine. Medido con el motor en régimen y sin el relleno del bloque
+// siguiente: la corriente media depende de cómo quedan las conversiones contra el PWM,
+// que cambia al arrancar una captura, y salta entre dos niveles. El relleno lo resuelve:
+// es el mismo problema visto en reposo.
 //
 // **La paridad de las conversiones, y por qué hay un relleno.** Alternando dos
 // canales, la secuencia de conversiones tiene período 2, y la interrupción del
@@ -61,18 +61,18 @@
 //
 // De ahí el relleno de `SETTLE_US`: no deja entrar una cuarta conversión, así que el
 // conteo se queda en 3 y nunca cae en un par. Medido en reposo y con un solo canal
-// emitiendo, que es el caso sensible, con el relleno que correspondía a la versión
-// anterior de la interrupción (3 us; cómo se eligió el de ahora está en SETTLE_US): el
-// rango entre veinte capturas pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los
-// cinco canales de 3,6 a 1,4 mA. El ruido entre filas no cambia (0,53 mA) y no se
-// pierde ningún período.
+// emitiendo, que es el caso sensible, con la interrupción arrancando la conversión
+// siguiente antes de hacer su trabajo y un relleno de 3 us (el valor que corresponde a
+// la interrupción tal como está se elige en SETTLE_US): el rango entre veinte capturas
+// pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los cinco canales de 3,6 a 1,4 mA.
+// El ruido entre filas no cambia (0,53 mA) y no se pierde ningún período.
 //
 // **Esto vale para el clon a /32, no para un UNO.** `SETTLE_US` está elegido para que
 // a /32 el tick cierre con 3 y no con 4. En un UNO el preescalador es /128 y la
 // conversión son 104 us: entran 1,92 conversiones por tick, y el relleno las lleva a
-// 1,90. Eso no impide que un tick cierre con 2, que es par, o sea
-// que alternando canales en un UNO el salto de dos niveles volvería. Un UNO funciona a
-// 5 V y no necesita el divisor (`cur_div = 0` y sin alternancia), así que hoy no se
+// 1,90. Eso no impide que un tick cierre con 2, que es par, o sea que alternando
+// canales en un UNO el salto de dos niveles volvería. Un UNO funciona a 5 V y no
+// necesita el divisor (`cur_div = 0` y sin alternancia), así que en este banco no se
 // alcanza; quien ponga el divisor en un UNO tiene que volver a elegir `SETTLE_US` con
 // las perillas de SENSE_DIAG, y el valor será otro.
 //
@@ -89,11 +89,8 @@
 //   y -6 mA; la dispersión entre repeticiones sube de 0,5..3,8 mA a 1,7..17 mA. La ráfaga
 //   no llega a llenar el tick, así que queda sin mirar siempre la misma fracción del
 //   período del PWM. El relleno, en cambio, no toca la fase: la cadena sigue corriendo
-//   continua entre ticks, sólo que más lenta, y el sesgo medido contra el modo de antes
-//   es de +3,1, -0,8 y +2,7 mA, sin tendencia con el ciclo de trabajo.
-//
-// Un capacitor de 100 nF de A0 a masa baja el salto de 62 a 26 mA por su cuenta, y está
-// puesto en este banco, pero no lo elimina: lo que lo elimina es el relleno.
+//   continua entre ticks, sólo que más lenta, y el sesgo medido contra el modo libre
+//   sin relleno es de +3,1, -0,8 y +2,7 mA, sin tendencia con el ciclo de trabajo.
 //
 // Alternando canales hay que saber de cuál es cada conversión, y corriendo libre no se
 // sabe: la conversión siguiente arranca apenas termina una, y en el LGT8F328P un
@@ -107,13 +104,10 @@
 // El preescalador depende de la placa. La hoja de datos del LGT8F328P pide un reloj
 // de 300 kHz a 3 MHz: /32 son 500 kHz, y una conversión de 22 relojes son 44 us más
 // lo que tarde la interrupción en arrancar la siguiente. El ATmega328P quiere 50 a
-// 200 kHz para sus 10 bits: /128, 104 us. Medido en el clon con el divisor de A1
-// sin capacitor, a /32 y en reposo, con la media de 4 ticks y el notch de 250 Hz
-// apagados para ver la ventana sola: el ruido de la corriente es de 3,1 mA por fila y
-// 0,39 mA con 10 filas midiendo A0/A1. Los dos son el desvío de la diferencia entre
-// filas consecutivas sobre raíz de dos, que es el ruido de banda: el desvío a secas
-// trae además la deriva del cero, que no se promedia, y que con el relleno de SETTLE_US
-// puesto es de 0,11 mA por minuto.
+// 200 kHz para sus 10 bits: /128, 104 us. Los números de ruido por fila, medidos en
+// el clon a /32, están en notebooks/hardware.ipynb, sección 4: son el desvío de la
+// diferencia entre filas consecutivas sobre raíz de dos, que es el ruido de banda; el
+// desvío a secas trae además la deriva del cero, que no se promedia.
 //
 // Siempre contra AVCC. Las alternativas para la referencia se descartan por lo
 // siguiente:
@@ -131,7 +125,7 @@
 // la placa de 12 bits, y nada más: cuánto vale AVCC no se sabe acá y no hace falta.
 // Llevarlas a la escala publicada --1,25 mV por cuenta-- es de SupplyRatio, que es
 // quien sabe si hay divisor. Con divisor, cualquier factor común a los dos canales se
-// cancela en el cociente, así que aplicarlo acá era un no-op que sólo truncaba.
+// cancela en el cociente, así que aplicarlo acá no cambiaría nada salvo truncar.
 
 #ifndef SENSE_ROWADC_H
 #define SENSE_ROWADC_H
@@ -198,8 +192,8 @@ class RowAdc
     //
     // El trabajo que on_conversion() hace antes del ADSC ya cubre unos 2 us de hueco
     // entre conversiones, y por eso el relleno es 1 y no más. La tabla depende de
-    // cuánto tarden las dos interrupciones, así que no se compara fila a fila con una
-    // medida sobre otra versión de ellas: lo que se elige es la columna, no el número.
+    // cuánto tarden las dos interrupciones, así que sólo vale para ellas tal como
+    // están: lo que se elige es la columna, no el número.
     //
     // Y no elegirlo bien se paga en el acto: con 3 us sobre esta interrupción el
     // conteo vuelve a clavarse en un par y el salto de dos niveles reaparece --medido,
@@ -230,9 +224,11 @@ class RowAdc
     // menos de tres ticks normales. Cuesta una comparación por conversión sobre un
     // valor que ya se estaba incrementando.
     //
-    // Ocho: a /32 y en el tick más lento que el reloj RC de esta placa puede dar
-    // entran 7, así que nunca se alcanza en operación normal, y 8 x 4095 = 32 760
-    // todavía entra en el int16.
+    // Ocho: a /32 una conversión son 44 us y un tick 200, así que aun con un canal
+    // solo y sin relleno entran menos de cinco, y alternando cada canal se lleva la
+    // mitad (la tabla de SETTLE_US no pasa de 3,95 entre los dos, ni con el tick a
+    // 4,35 kHz). Ocho no se alcanza en operación normal, y 8 x 4095 = 32 760 entra en
+    // el int16.
 #if SENSE_DIAG
     static const uint16_t MAX_TICK_CONV = 255;    // con la suma en 32 bits no aprieta
 #else
@@ -416,8 +412,8 @@ class RowAdc
 
         // El trabajo de ESTA conversión, entre escribir el canal y arrancar la
         // siguiente. Lo que separa una conversión de la otra es lo que importa, y no
-        // que ese rato sea tiempo muerto: haciendo acá lo que antes se hacía después
-        // del ADSC, el mismo hueco sale con menos relleno y la interrupción termina
+        // que ese rato sea tiempo muerto: haciendo acá este trabajo, y no después del
+        // ADSC, el mismo hueco sale con menos relleno y la interrupción termina
         // antes. Son ~15 000 conversiones por segundo, así que cada microsegundo que
         // se le saca es un 1,5 % del procesador.
         //

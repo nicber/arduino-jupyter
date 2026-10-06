@@ -402,9 +402,9 @@ class AS5600
     // haría que un STATUS a destiempo apareciera como un ángulo.
     static uint8_t m_rx[2];
     static uint8_t m_aux[AUX_MAX];
-    // volatile: se escriben en loop() y la ISR del muestreador los lee, así que el
-    // orden contra la escritura de m_aux_request --que sí era volatile-- no estaba
-    // garantizado por el lenguaje. No cuesta nada.
+    // volatile: se escriben en loop() y la ISR del muestreador los lee. Sin calificar,
+    // el lenguaje no garantiza su orden contra la escritura de m_aux_request, que es
+    // volatile, y el compilador puede moverlos después. No cuesta nada.
     static volatile uint8_t m_aux_reg;
     static volatile uint8_t m_aux_len;
 
