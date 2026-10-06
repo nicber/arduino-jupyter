@@ -1,4 +1,4 @@
-"""Ejercita el módulo del lado computadora contra una simulación del sketch fiel byte a byte.
+"""Ejercita el módulo del lado computadora contra un dispositivo CtrlLink simulado byte a byte.
 
 El simulacro reproduce lo que CtrlLink.cpp realmente pone en el cable —CRLF en las
 líneas de println() y sólo LF en las filas de telemetría incluidos—, así que el
@@ -37,7 +37,7 @@ def check(label, condition, detail=''):
 
 # ------------------------------------------------------------ descubrimiento
 dev = connect(FakeUno())
-check('se interpreta id', dev.info.startswith('CtrlLink 1 Banco'), dev.info)
+check('se interpreta id', dev.info.startswith('CtrlLink 1 FakeUno'), dev.info)
 check('se descubren los parámetros', set(dev._params) == set(PARAMS), str(dev._params))
 check('se descubren los canales', [c.name for c in dev.channels] == ['ref', 'y', 'e', 'u'])
 check('parámetro float tipado', dev._params['kp'].type == 'f32')
@@ -613,8 +613,10 @@ class _MutePort:
         self.is_open = False
 
 
+import serial
+
 _opened = []
-_real_serial, _real_sync = _cl.serial.Serial, _cl.CtrlLink.sync
+_real_serial, _real_sync = serial.Serial, _cl.CtrlLink.sync
 
 
 def _mute_serial(*args, **kwargs):
@@ -626,13 +628,13 @@ def _mute_sync(self, timeout=4.0):
     raise _cl.CtrlLinkError('no hubo respuesta a "id"')
 
 
-_cl.serial.Serial, _cl.CtrlLink.sync = _mute_serial, _mute_sync
+serial.Serial, _cl.CtrlLink.sync = _mute_serial, _mute_sync
 try:
     check('un descubrimiento fallido se explica',
           _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0.02), _cl.CtrlLinkError))
     _raises(lambda: _cl.CtrlLink('COM9', reset_wait=0), _cl.CtrlLinkError)
 finally:
-    _cl.serial.Serial, _cl.CtrlLink.sync = _real_serial, _real_sync
+    serial.Serial, _cl.CtrlLink.sync = _real_serial, _real_sync
 
 check('un descubrimiento fallido no se queda con el puerto',
       bool(_opened) and not _opened[0].is_open)
@@ -686,6 +688,33 @@ class _MienteEnFloat(FakeUno):
 dev_f = connect(_MienteEnFloat())
 salto, msg = _levanta(lambda: dev_f.set('kp', 2.0))
 check('un f32 informado con 0,4 de error no se acepta', salto, msg)
+
+# Un entero no tiene más holgura que medio paso. Una relativa, sobre un valor del
+# tamaño de una entrada empaquetada de la tabla (`ang_lutw`, unos 4e6), dejaría
+# pasar un eco corrido en unas pocas cuentas.
+class _MienteEnEntero(FakeUno):
+    def __init__(self, veces, **kw):
+        super().__init__(**kw)
+        self.params['lutw'] = ('u32', 0, 0)
+        self.veces = veces
+
+    def command(self, cmd):
+        if cmd.startswith('set lutw ') and self.veces:
+            self.veces -= 1
+            pedido = int(cmd.split()[2])
+            self.params['lutw'] = ('u32', 0, pedido)
+            self.println(f'# v lutw {pedido + 3}')
+            self.println('# ok')
+            return
+        super().command(cmd)
+
+
+salto, msg = _levanta(lambda: connect(_MienteEnEntero(veces=99)).set('lutw', 0x003F0123))
+check('un entero grande informado con 3 cuentas de error no se acepta', salto, msg)
+uno_e = _MienteEnEntero(veces=1)
+dev_e = connect(uno_e)
+check('y un eco deformado una vez se reintenta',
+      dev_e.set('lutw', 0x003F0123) == 0x003F0123 and uno_e.veces == 0, str(dev_e.lutw))
 
 # Un nombre mal escrito no puede quedarse en el objeto y leerse de vuelta: con un
 # motor del otro lado eso es creer que se bajó una ganancia y que el lazo siga con

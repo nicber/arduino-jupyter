@@ -52,10 +52,9 @@ def main():
     print()
 
     # ------------------------------------------------------------ las tablas
-    from test_tablas import leer_tablas
-    from ctrllink import LINK_PARAMS
+    from test_tablas import nombres_de_parametros
 
-    esperados = {e['nombre'] for e in leer_tablas()['params']} | set(LINK_PARAMS)
+    esperados = nombres_de_parametros()
     check('la placa declara los parámetros que el sketch define',
           set(dev.params) == esperados,
           f'sobran {sorted(set(dev.params) - esperados)}, '

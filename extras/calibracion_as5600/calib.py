@@ -29,22 +29,18 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-# Cuentas por vuelta del AS5600: 12 bits.
-CUENTAS = 4096
-GRADOS_POR_CUENTA = 360.0 / CUENTAS
+# Esta carpeta es un extra del TP2: el banco vive en python/. Se lo agrega al path
+# para que `import bench` y la aritmética de la tabla funcionen igual desde el
+# notebook de acá y desde las pruebas.
+_EXTRAS = Path(__file__).resolve().parent
+_PYTHON = _EXTRAS.parent.parent / 'python'
+if str(_PYTHON) not in sys.path:
+    sys.path.insert(0, str(_PYTHON))
 
-# Entradas de la tabla en el dispositivo, y la unidad en la que se guardan.
-# Tienen que coincidir con AngleLut en libraries/Calibracion, que es lo que corre Banco.
-LUT_SIZE = 64
-OCTAVOS = 8
-
-# Techo de una entrada, en octavos de cuenta: ±511 cuentas, ±45 grados. Las
-# entradas son int16 porque un error de varios grados no implica necesariamente
-# un imán a la distancia equivocada: con el AGC en media escala --la distancia
-# correcta-- el segundo armónico midió entre 105 y 108 cuentas, 9,2 a 9,5 grados. El AGC informa la
-# distancia y no el centrado, así que un imán puede estar a la distancia justa y
-# de todos modos torcido.
-LUT_MAX = 4095
+# Las cuentas del sensor y el formato de la tabla son los de la placa, y viven en
+# python/tabla_angulo.py junto con su aritmética: la usa también el banco simulado.
+import tabla_angulo  # noqa: E402
+from tabla_angulo import CUENTAS, GRADOS_POR_CUENTA, LUT_SIZE, OCTAVOS, LUT_MAX  # noqa: E402,F401
 
 # Compuerta G2 del plan: qué armónico se acepta como error del sensor.
 #
@@ -500,43 +496,18 @@ class Calibracion:
     # que hace el dispositivo, para poder validarlo de forma independiente.
 
     def checksum(self):
-        """Suma de Fletcher de 16 bits, igual que checksum() en el sketch.
-
-        Fletcher y no una suma simple porque una suma no distingue una tabla de
-        otra con dos entradas intercambiadas, y una entrada en el índice
-        equivocado es justo el error que se comete acá.
-
-        Sobre palabras de 16 bits y módulo 65535, con la suma del complemento a
-        uno escrita igual que en AngleLut.h para que las dos mitades den
-        exactamente lo mismo y no sólo valores congruentes. Por qué no sobre
-        bytes módulo 256, en el comentario de allá.
-        """
-        def ones_add(x, y):
-            s = (x + y) & 0xFFFF
-            return (s + 1) & 0xFFFF if s < x else s
-
-        a = b = 0
-        for v in self.lut:
-            a = ones_add(a, v & 0xFFFF)
-            b = ones_add(b, a)
-        return (a + b) & 0xFFFF
+        """Suma de Fletcher de 16 bits, igual que la que declara el dispositivo
+        en `ang_lutsum`. Ver tabla_angulo.checksum()."""
+        return tabla_angulo.checksum(self.lut)
 
     def corregir(self, cuentas):
         """La corrección que aplicaría el dispositivo, en cuentas.
 
-        Reproduce lut_lookup() incluida la interpolación y el redondeo, así que
+        Reproduce la de la placa incluida la interpolación y el redondeo, así que
         el notebook puede dibujar lo que la placa va a hacer efectivamente y no lo que
         el modelo continuo diría.
         """
-        cuentas = np.asarray(cuentas, dtype=np.int64) & (CUENTAS - 1)
-        i = (cuentas >> 6) & (LUT_SIZE - 1)
-        frac = cuentas & 0x3F
-
-        tabla = np.array(self.lut, dtype=np.int64)
-        octavos = (tabla[i] * (64 - frac) + tabla[(i + 1) & (LUT_SIZE - 1)] * frac) >> 6
-
-        # (e + 4) >> 3 con corrimiento aritmético, que es lo que hace el AVR.
-        return (octavos + 4) >> 3
+        return tabla_angulo.correccion(self.lut, cuentas)
 
     # ------------------------------------------------------------ persistencia
 
@@ -597,15 +568,6 @@ class Calibracion:
         dev.ang_cal = 1
         return self
 
-    @classmethod
-    def leer_de(cls, dev):
-        """La suma que declara el dispositivo, para saber qué tiene puesto.
-
-        No devuelve la tabla: el dispositivo no la sabe leer de vuelta a propósito.
-        Sirve para preguntar "¿es ésta la que está?" contra una que ya se tiene.
-        """
-        return int(dev.get('ang_lutsum'))
-
 
 def esta_puesta(dev, cal):
     """Si el dispositivo tiene puesta esta tabla exacta y la corrección prendida."""
@@ -628,13 +590,6 @@ def asegurar(dev, ruta='calibracion.json'):
 
 
 # ------------------------------------------------------------------ conectar
-
-# Esta carpeta es un extra del TP2: el banco vive en python/. Se lo agrega al path
-# para que `import bench` funcione igual desde el notebook de acá y desde las pruebas.
-_EXTRAS = Path(__file__).resolve().parent
-_PYTHON = _EXTRAS.parent.parent / 'python'
-if str(_PYTHON) not in sys.path:
-    sys.path.insert(0, str(_PYTHON))
 
 # La calibración de este banco. No entra en el repositorio (está en .gitignore):
 # es un dato del banco --este imán, en este eje-- y no del programa.

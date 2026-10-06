@@ -1,6 +1,10 @@
-"""Simulación del dispositivo, fiel byte a byte a lo que Banco pone en el cable.
+"""Un dispositivo CtrlLink genérico, fiel byte a byte al encuadre de CtrlLink.cpp.
 
-Vive aparte de las pruebas que la usan porque ya son dos --el enlace y la
+No imita ningún sketch en particular: sus parámetros y canales son los de un lazo
+de ejemplo, más los contadores de salud con los nombres de Banco, que es lo que
+alcanza para ejercitar el enlace.
+
+Vive aparte de las pruebas que lo usan porque ya son dos --el enlace y la
 calibración-- y un archivo de pruebas que importa a otro corre al otro entero.
 """
 import sys, time
@@ -65,7 +69,7 @@ class FakeUno:
         if head == '':
             return                 # línea vacía: un empujón para resincronizar
         if head == 'id':
-            self.println('# id CtrlLink 1 Banco chans=4 row=21 dt_us=1000')
+            self.println('# id CtrlLink 1 FakeUno chans=4 row=21 dt_us=1000')
             self.println('# ok')
         elif head == 'params':
             for name, (type_, frac, value) in self.params.items():

@@ -30,8 +30,6 @@ import json
 import time
 from pathlib import Path
 
-import serial
-
 import catalogo
 import ensayo
 import placa
@@ -246,8 +244,8 @@ class Bench:
 
         # Un nombre que no es un parámetro de la placa ni un atributo que este
         # objeto ya tenga es, casi siempre, un parámetro mal escrito. Guardarlo acá
-        # lo deja leerse de vuelta --__getattr__ ni se entera-- así que
-        # `dev.cur_zeroo = 5` confirmaba un valor que la placa nunca recibió. Es el
+        # lo dejaría leerse de vuelta --__getattr__ ni se enteraría-- así que
+        # `dev.cur_zeroo = 5` confirmaría un valor que la placa nunca recibió. Es el
         # mismo razonamiento que CtrlLink.__setattr__, y hace falta en las dos capas
         # porque los notebooks usan ésta.
         if (link is not None and not name.startswith('_')
@@ -361,15 +359,21 @@ class Bench:
     def _reposo_de_corriente(self, seconds=0.6, canales=None):
         """La cuenta del ADC con el actuador abierto, promediada.
 
-        `i` se publica como `s * (adc - cur_zero)`, con `s` el signo de `cur_inv`,
-        así que la cuenta cruda se reconstruye deshaciendo las dos cosas. No
-        importa si el eje sigue girando por inercia: con el actuador abierto la
+        No importa si el eje sigue girando por inercia: con el actuador abierto la
         fuerza contraelectromotriz no encuentra camino y no circula corriente.
         """
         self.rest()
         df = self.capture(seconds, warn=False, canales=canales)
-        return self.cur_zero + self._signo_corriente() * _sin_arranque(df)['i'].mean() \
-            / self._ma_por_cuenta()
+        return self._cuentas_de_corriente(_sin_arranque(df)['i'].mean())
+
+    def _cuentas_de_corriente(self, i):
+        """De `i` publicado, en mA, a la cuenta cruda del conversor.
+
+        `i` se publica como `s * (adc - cur_zero)`, con `s` el signo de `cur_inv`,
+        así que la cuenta cruda se reconstruye deshaciendo las dos cosas. Vale
+        para un valor o para un arreglo.
+        """
+        return self.cur_zero + self._signo_corriente() * i / self._ma_por_cuenta()
 
     def _signo_corriente(self):
         """-1 si la placa publica la corriente con el signo invertido (`cur_inv`)."""
@@ -577,11 +581,9 @@ class Bench:
         # A1 no se puede mirar antes de declarar el divisor: la placa sólo alterna
         # canales cuando `cur_div` no es cero, así que sin divisor declarado `cur_a1`
         # vale 0 por definición. Lo que sí se puede es NO recalibrar el cero hasta
-        # haberlo mirado, que es donde estaba el defecto: el orden viejo re-cero
-        # primero y verificaba después, y al fallar restituía `cur_div` pero dejaba
-        # `cur_zero` calibrado contra un divisor que ya no está. Medido sobre el
-        # simulador, eso movía el cero de 3233 a 4095 y el reposo de +2,3 mA a
-        # -5823 mA. Es el mismo defecto que tenía medir_divisor().
+        # haberlo mirado, y si algo falla, restituir los dos: un `cur_zero`
+        # calibrado contra un divisor que ya no está mueve el reposo de unos mA a
+        # miles (medido sobre el simulador, de +2,3 mA a -5823 mA).
         try:
             self.cur_div = int(round(relacion * 10000))
 
@@ -621,10 +623,8 @@ class Bench:
 
         if guardar:
             # `cur_div_medido` en falso: esta relación sale de las resistencias
-            # declaradas, no del reposo del sensor. Sin esto, un divisor declarado
-            # después de uno medido seguía anunciándose como medido.
+            # declaradas, no del reposo del sensor, aunque antes hubiera uno medido.
             _actualizar_cableado(cur_div=self.cur_div, cur_div_medido=False)
-            _borrar_del_cableado('cur_sag', 'cur_sagc', 'cur_sagd', 'cur_red')
         return self.cur_div
 
     # ------------------------------------------------------- puesta en marcha
@@ -736,12 +736,7 @@ class Bench:
         #    deja lugar para medir, aunque no llegue al riel.
         lsb = self.channel('i').scale       # mA por unidad publicada de `i`
         cuenta = self._ma_por_cuenta()      # mA por cuenta del conversor
-        # Con el signo, igual que _reposo_de_corriente(): `i` se publica como
-        # s * (adc - cur_zero), así que sin deshacer `cur_inv` esto daba
-        # 2*cur_zero - adc. Los márgenes salían al revés y un riel podía quedar
-        # mapeado adentro del rango, o sea que bringup() daba por bueno el cero de
-        # una entrada al aire.
-        adc = self.cur_zero + self._signo_corriente() * df['i'].mean() / cuenta
+        adc = self._cuentas_de_corriente(df['i'].mean())
         sensed = _lejos_de_los_rieles(adc)
         rest_ma = noise = 0.0
 
@@ -915,7 +910,6 @@ class Bench:
             medidos['cur_inv'] = int(i_pos < 0) if mide_i else antes['cur_inv']
 
         poner(medidos)
-        invierte = (v_pos > 0) != (v_neg > 0) if abs(v_neg) > _GIRO_MINIMO else None
 
         v_pos, df_pos = self._tiron(u)
         v_neg, df_neg = self._tiron(-u)
@@ -925,11 +919,10 @@ class Bench:
         sube = v_pos > _GIRO_MINIMO if 'ang_inv' in medidos else abs(v_pos) > _GIRO_MINIMO
         ok = sube and (not mide_i or 'cur_inv' not in medidos or i_pos > 0)
         # Se guardan recién acá, con los signos ya verificados por el tirón de
-        # arriba: escribir el archivo antes dejaba persistido un juego de signos que
-        # la comprobación siguiente podía desmentir, y el archivo es lo que se carga
-        # en la sesión siguiente.
+        # arriba: el archivo es lo que se carga en la sesión siguiente, y no puede
+        # tener un juego de signos que la comprobación desmintió.
         if ok:
-            self._guardar_cableado(medidos, mide_i, invierte)
+            _actualizar_cableado(**{n: int(v) for n, v in medidos.items()})
 
         report('signos', ok,
                ', '.join(f'{n} = {v}' for n, v in medidos.items())
@@ -950,14 +943,6 @@ class Bench:
             report('-u', abs(v_neg) <= _GIRO_MINIMO and u_neg == 0,
                    f'sale u = {u_neg:+.0f} (recortado a cero) y el eje da '
                    f'{v_neg:+.2f} vueltas')
-
-    def _guardar_cableado(self, signos, cur_medido, invierte):
-        """Guarda los signos medidos en `CABLEADO`, sin tocar lo demás que haya."""
-        _actualizar_cableado(
-            **{n: int(v) for n, v in signos.items()},
-            cur_inv_medido=bool(cur_medido),
-            invierte_con_u_negativo=None if invierte is None else bool(invierte),
-            placa=self.info)
 
 
 def _arranque_menos_final(df):
@@ -983,16 +968,6 @@ def _actualizar_cableado(**campos):
     datos = leer_cableado() or {}
     datos.update(campos)
     datos['medido'] = datetime.now().isoformat(timespec='seconds')
-    CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
-
-
-def _borrar_del_cableado(*claves):
-    """Saca `claves` de `CABLEADO`, si están."""
-    datos = leer_cableado()
-    if datos is None or not any(c in datos for c in claves):
-        return
-    for c in claves:
-        datos.pop(c, None)
     CABLEADO.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding='utf-8')
 
 
@@ -1029,6 +1004,8 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
     port, notes = placa.poner_al_dia(port, force_compile, force_upload, sketch, say,
                                      antes_de_cargar=soltar_puerto)
     soltar_puerto()
+
+    import serial
 
     try:
         _link = Bench(port)

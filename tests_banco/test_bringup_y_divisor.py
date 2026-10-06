@@ -94,7 +94,7 @@ for div in (0, DIV_E4):
 # ------------------------------------------------------------ declarar_divisor
 banco = BancoConFallas(semilla=4)
 cab = tmp / 'cableado_div.json'
-cab.write_text(json.dumps({'ang_inv': 1, 'cur_sag': [0] * 17, 'cur_red': 4968}), encoding='utf-8')
+cab.write_text(json.dumps({'ang_inv': 1}), encoding='utf-8')
 rig = bench_sobre(banco, cab)
 rig.mot_bidir = 0
 rel, texto = callado(rig.declarar_divisor, *DIVISOR_DEL_BANCO)
@@ -103,9 +103,8 @@ check('declarar_divisor fija la relación del divisor en la placa', rel == DIV_E
       f'{rel} contra {DIV_E4}')
 check('mide el cero contra la alimentación del sensor, cerca de 2000 cuentas equivalentes',
       abs(rig.cur_zero / 2000 - 1) < 0.08 and 'Atención' not in texto, texto.strip().replace('\n', ' | '))
-check('lo guarda en cableado.json, sin tocar los signos, y borra la calibración vieja',
-      guardado.get('cur_div') == DIV_E4 and guardado.get('ang_inv') == 1
-      and 'cur_sag' not in guardado and 'cur_red' not in guardado, str(guardado))
+check('lo guarda en cableado.json, sin tocar los signos',
+      guardado.get('cur_div') == DIV_E4 and guardado.get('ang_inv') == 1, str(guardado))
 
 # Con el divisor, el PWM sin corriente en el motor ya no se lee como corriente.
 banco = BancoConFallas(fuente_prendida=False, semilla=5)

@@ -50,8 +50,7 @@ def _inc(*libs):
 incluir = {
     'extra': ['-I', str(AQUI / 'cpp')] + _inc('Actuator', 'Sampler', 'AngleSensor', 'Sense'),
     'proyecto': _inc('Calibracion', 'AngleSensor', 'Sense'),
-    # Las dos suites que viven con su biblioteca. No las corría nadie: ni esto ni
-    # verificar.py, así que cubrían el PID, la rampa y el filtro sólo en teoría.
+    # Las dos suites que viven con su biblioteca: el PID, la rampa y el filtro.
     'controlmath': _inc('ControlMath'),
     'control': _inc('Control', 'ControlMath', 'AngleSensor', 'Sense'),
 }

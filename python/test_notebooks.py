@@ -38,7 +38,7 @@ NOTEBOOKS = sorted((_AQUI.parent / 'notebooks').glob('*.ipynb')) + \
 
 sys.path.insert(0, str(_AQUI))
 
-from test_tablas import leer_tablas
+from test_tablas import nombres_de_parametros
 
 # Los nombres que recibe un parámetro por cadena.
 _TOMAN_NOMBRE = ('step', 'set', 'get')
@@ -141,8 +141,7 @@ def main():
     import bench
 
     # Los parámetros que la placa declara, más los que administra el enlace.
-    from ctrllink import LINK_PARAMS
-    parametros = {e['nombre'] for e in leer_tablas()['params']} | set(LINK_PARAMS)
+    parametros = nombres_de_parametros()
 
     # Y lo que un banco sabe hacer, de las dos clases: el simulado es el que corre
     # sin cable, y Bench el que corre con él. Un nombre que exista en una sola

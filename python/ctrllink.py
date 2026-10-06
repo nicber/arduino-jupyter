@@ -42,7 +42,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
-import serial
 
 # Tipo del cable -> dtype big-endian de numpy. El ancho hexadecimal de un campo es
 # el doble de su itemsize, y todos los anchos son pares, así que una tanda de
@@ -143,9 +142,10 @@ _LATE_WARN = 0.5
 # La telemetría corre a 1 Mbaud sin problemas, pero el camino de vuelta es frágil:
 # llega un byte cada 10 us, el USART del AVR guarda dos, y entre el muestreador de
 # 5 kHz y la interrupción de TWI de nI2C mantienen las interrupciones
-# deshabilitadas durante más que eso. Enviados de corrido, unos pocos por ciento
-# de los bytes de comando se pierden sin más. Espaciarlos lo soluciona por
-# completo, y los comandos son demasiado raros y cortos como para que el retardo
+# deshabilitadas durante más que eso. Enviados de corrido se pierde, medido, un
+# 11 % de los bytes de comando sin flujo y un 14 % con flujo (ver PROTOCOL.md).
+# Espaciarlos lo soluciona por completo --llegaron enteros 120 comandos de 120--,
+# y los comandos son demasiado raros y cortos como para que el retardo
 # importe: a medio milisegundo por byte, un `set` tarda del orden de 10 ms en
 # enviarse.
 _BYTE_GAP = 0.0005
@@ -161,8 +161,9 @@ def _pause(seconds):
     Antes de Python 3.11, time.sleep() en Windows redondea hacia arriba hasta el
     tic del temporizador del sistema —15,6 ms por omisión, treinta veces la
     separación entre bytes de comando—. Dormir _BYTE_GAP ahí haría que un `set`
-    tardara unas treinta veces más, y capture(), que envía ocho comandos
-    alrededor de cada corrida, sumaría segundos de espera.
+    tardara unas treinta veces más, y capture(), que alrededor de cada corrida
+    envía un comando por contador y por perilla registrada --con Banco, unos
+    treinta--, sumaría segundos de espera.
 
     Así que cualquier cosa por debajo de un par de milisegundos se espera en vacío
     sobre perf_counter(), que tiene alta resolución en todas partes. Cuesta tener
@@ -320,6 +321,10 @@ class CtrlLink:
         if port is None:
             port = find_port()
 
+        # pyserial se importa recién acá: el resto del módulo --y el banco simulado,
+        # que lo importa-- corre sin él.
+        import serial
+
         self._diag = diagnostico
         self.ser = serial.Serial(port, baud, timeout=timeout)
 
@@ -350,7 +355,7 @@ class CtrlLink:
         que reabrir el puerto no genera ningún flanco y la placa no se entera.
 
         Sin el flanco, reconectar parecería resetear la placa sin hacerlo: una
-        segunda corrida del notebook heredaría `tickdiv`, las ganancias y el modo
+        segunda corrida del notebook heredaría `loop_div`, las ganancias y el modo
         de la primera, y la puesta en marcha no lo detectaría, porque el
         dispositivo contesta el período en el que efectivamente está corriendo.
 
@@ -579,7 +584,7 @@ class CtrlLink:
         si el nombre que se mandó SÍ está en la tabla: entonces lo que no existe es
         lo que llegó, no lo que se pidió, y reintentar es lo correcto. Sin esto, un
         byte perdido adentro del nombre --la deformación más probable que hay-- se
-        trataba como una objeción legítima y el `set` no se reintentaba.
+        trataría como una objeción legítima y el `set` no se reintentaría.
         """
         if any(g in reason for g in _GARBLED):
             return True
@@ -650,8 +655,8 @@ class CtrlLink:
 
         El índice de cada línea y el total que informa `id` se comparan en lugar de
         descartarse. La máscara de _select_channels() se arma con la posición en
-        ESTA lista, así que una línea perdida corría la tabla entera: se pedía el
-        canal `e` y volvía `y` rotulado `e`, sin un solo aviso.
+        ESTA lista, así que una línea perdida correría la tabla entera: se pediría
+        el canal `e` y volvería `y` rotulado `e`, sin un solo aviso.
         """
         chans = []
         for text in self.cmd('chans'):
@@ -686,7 +691,7 @@ class CtrlLink:
     def dt(self) -> float:
         """Período de control en segundos, preguntado al dispositivo y no supuesto.
 
-        Se mueve cuando se mueve `tickdiv`, y cualquier conversión entre
+        Se mueve cuando se mueve `loop_div`, y cualquier conversión entre
         magnitudes de tiempo continuo y por muestra necesita el valor vigente.
         """
         for field in self.cmd('id')[0].split():
@@ -786,7 +791,7 @@ class CtrlLink:
         Se verifica que entre en el tipo del dispositivo ANTES de mandarlo: allá hay
         un strtol y un cast, así que un valor que no entra queda guardado deformado
         y nadie lo restituye. Con punto fijo se llega mucho antes de lo que parece,
-        y el mensaje que salía hablaba del almacenamiento y no de la causa.
+        y el mensaje habla del pedido y no del almacenamiento.
         """
         param = self._params[name]
 
@@ -823,18 +828,17 @@ class CtrlLink:
 
         param = self._params[name]
 
-        # Medio paso de lo que el dispositivo realmente puede representar, más
-        # lugar para los seis decimales con los que imprime los float.
-        #
-        # El término de cuantización vale para un parámetro ENTERO y sólo para ése.
-        # Un `f32` declara `frac` 0 por convención, así que su `scale` es 1.0 y ese
-        # término valía 0,5 sobre un valor que no tiene ninguna cuantización: toda
-        # la verificación quedaba desarmada justo para el único tipo que guarda
-        # exactamente lo que se le pide. Un dispositivo que informara kp + 0,4 pasaba.
-        slack = max(5e-7, abs(wanted) * 1e-6)
+        # Un parámetro entero guarda el representable más cercano a lo pedido, así
+        # que el eco puede apartarse medio paso y nada más. Sin holgura relativa: en
+        # un entero grande como `ang_lutw` (unos 4e6) el 1e-6 de abajo dejaría pasar
+        # un eco deformado en ±4.
         if param.integral:
-            slack = max(slack, abs(param.scale) / 2)
-        return abs(float(stored) - wanted) <= slack
+            return abs(float(stored) - wanted) <= param.scale / 2
+
+        # Un `f32` guarda exactamente lo que se le pide; la holgura es para los seis
+        # decimales con los que lo imprime. Su `frac` es 0 por convención, así que
+        # el medio paso de un entero sería 0,5 y desarmaría la verificación.
+        return abs(float(stored) - wanted) <= max(5e-7, abs(wanted) * 1e-6)
 
     # Los parámetros como atributos, para que en un notebook se lea
     # `dev.kp = 2.5`. Todo lo que no esté en la tabla del dispositivo cae en el
@@ -853,8 +857,8 @@ class CtrlLink:
 
         # Un nombre que no está en la tabla y que tampoco es un atributo que este
         # objeto ya tenga es, casi siempre, un parámetro mal escrito. Dejarlo caer
-        # en el manejo normal de atributos lo guardaba en el objeto, __getattr__ ni
-        # se enteraba, y `dev.reff = 1000` se leía de vuelta como 1000 con la placa
+        # en el manejo normal de atributos lo guardaría en el objeto, __getattr__ ni
+        # se enteraría, y `dev.reff = 1000` se leería de vuelta como 1000 con la placa
         # sin enterarse. Con un motor del otro lado eso es creer que se bajó una
         # ganancia y que el lazo siga con la vieja.
         if params and not name.startswith('_') and name not in self.__dict__:
@@ -1097,8 +1101,8 @@ class CtrlLink:
         late = df.attrs.get('maxlate')
         if late is not None and dt_us and late > dt_us * _LATE_WARN:
             # El retardo se mide desde el primer tick sin atender, así que puede
-            # valer muchos períodos: decir «llegó, pero por poco» con el 7530 % era
-            # exactamente al revés.
+            # valer muchos períodos: con un 7530 %, decir «llegó, pero por poco»
+            # sería exactamente al revés.
             veces = late / dt_us
             cola = ('el lazo llegó, pero por poco.' if veces < 2 else
                     'o sea que el lazo se atrasó ' + f'{veces:.1f} períodos enteros.')
@@ -1222,7 +1226,7 @@ class CtrlLink:
         `fila` es en qué fila de la captura llegó la marca, que es lo que desempata
         cuando hay más de un tick del cuadro cuyos 16 bits bajos coinciden --una
         captura de más de 65536 ticks, o sea 65 s a 1 kHz--. Sin desempatar se
-        tomaba el primer candidato y el origen quedaba 65,5 s corrido.
+        tomaría el primer candidato y el origen quedaría 65,5 s corrido.
         """
         tick = df.attrs['tick']
 
@@ -1240,7 +1244,7 @@ class CtrlLink:
         # captura. La diferencia va CON SIGNO: la marca puede preceder al primer
         # tick del cuadro --las filas que más se descartan son justo las primeras,
         # porque el encabezado de `start` deja el buffer cargado-- y sin signo eso
-        # daba 65536 - 1 y corría el origen 65,5 s.
+        # daría 65536 - 1 y correría el origen 65,5 s.
         delta = ((raw_tick - (tick[0] & 0xFFFF) + 0x8000) & 0xFFFF) - 0x8000
         return int(tick[0] + delta)
 
@@ -1256,7 +1260,7 @@ class CtrlLink:
                 if type_ not in _TYPES:
                     # Acá todavía se está a tiempo: esto corre inmediatamente
                     # después de `start` y antes de que salga una sola fila. Sin
-                    # esta comprobación el tipo se tocaba recién en _decode(), o
+                    # esta comprobación el tipo se tocaría recién en _decode(), o
                     # sea un KeyError pelado después de toda la captura.
                     raise CtrlLinkError(
                         f'el encabezado declara el canal {name!r} con un tipo que '
@@ -1313,11 +1317,11 @@ class CtrlLink:
             elif len(line) == width and not line.translate(None, _HEXDIG):
                 rows.append(line)
             elif line:
-                # Una línea que no es ni comentario ni fila. Antes bastaba con que
-                # midiera lo mismo que una fila para que entrara, y entonces
-                # bytes.fromhex() tiraba la captura entera con un ValueError que no
-                # decía qué línea había sido. Se cuentan y las informa
-                # _health_notes(), que es la maquinaria que ya existe para esto.
+                # Una línea que no es ni comentario ni fila: medir lo mismo que una
+                # fila no alcanza para entrar, porque bytes.fromhex() tiraría la
+                # captura entera con un ValueError que no dice qué línea fue. Se
+                # cuentan y las informa _health_notes(), que es la maquinaria que
+                # ya existe para esto.
                 basura += 1
 
         raw = bytes.fromhex(b''.join(rows).decode('ascii')) if rows else b''
@@ -1343,8 +1347,8 @@ class CtrlLink:
         # serie temporal, no una pausa.
         # `dec` sale del encabezado, que se imprime en `start`, pero el protocolo
         # permite moverlo durante el flujo: si se movió, el paso entre ticks deja de
-        # ser uno solo y contar diferencias distintas de `dec` informa huecos que no
-        # existen. Medido: 140 filas enviadas, 140 recibidas, y 63 «huecos».
+        # ser uno solo y contar diferencias distintas de `dec` informaría huecos que
+        # no existen: 63 en una captura de 140 filas enviadas y 140 recibidas.
         dec_movido = any(m[1] == 'dec' for m in marks)
         gaps = (0 if dec_movido or len(tick) <= 1
                 else int(np.count_nonzero(np.diff(tick) != dec)))

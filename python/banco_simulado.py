@@ -26,11 +26,11 @@ from collections import namedtuple
 import numpy as np
 import pandas as pd
 
+import bench
 import catalogo
+import tabla_angulo
 from ctrllink import CtrlLinkError
-
-CUENTAS = 4096
-GRADOS_POR_CUENTA = 360.0 / CUENTAS
+from tabla_angulo import CUENTAS, GRADOS_POR_CUENTA
 
 # El error de ángulo que este banco imaginario tiene adentro, en cuentas. El
 # primero es el imán descentrado, el segundo la inclinación. Son los órdenes que
@@ -48,7 +48,7 @@ RIPPLE_MOTOR = (3, 4.0, -1.0)   # (orden, cuentas a 5 rev/s, fase)
 # resuelto período a período con la solución exacta del circuito RL: mientras el
 # transistor conduce la armadura ve Vs, cuando se abre la corriente se descarga
 # por el diodo contra Vd, y en ninguno de los dos tramos puede invertirse. Con
-# L/R = 0,2 ms contra un período de 1 ms la corriente se extingue antes del final
+# L/R = 0,2 ms contra un período de 0,8 ms la corriente se extingue antes del final
 # del período casi siempre --conducción discontinua--, y eso es lo que dobla la
 # curva estática, acorta la constante de tiempo con la velocidad y deja un salto
 # al 100 %, donde el transistor no se abre nunca.
@@ -97,15 +97,12 @@ MA_POR_CUENTA = 1000.0 * MV_POR_CUENTA / 185.0
 CUR_FRAC      = 4
 SUBCUENTAS    = 1 << CUR_FRAC
 MA_POR_UNIDAD = MA_POR_CUENTA / SUBCUENTAS
-# El reposo del sensor, en cuentas crudas de A0.
-#
-# Divergencia conocida contra el banco real: con el divisor puesto, esto publica
-# 2105 cuentas equivalentes y la placa del banco mide 2000-2001 (2026-09-16), o sea
-# un 5,2 % de diferencia. 2000 es la mitad de la alimentación del sensor, que es
-# donde debería reposar; este simulador reposa como un sensor con +105 cuentas de
-# offset, que no es el que está puesto. Se deja como está porque mover esto corre
-# los números de todas las pruebas simuladas a la vez, y porque no produce ningún
-# aviso falso: se comprobó que bringup() no se queja en 12 de 12 semillas sanas.
+# El reposo del sensor, en cuentas crudas de A0: 57 por encima de la media escala,
+# como un sensor con ese offset. No es el reposo de la placa del banco, que con el
+# divisor puesto mide 2000-2001 cuentas equivalentes, la mitad de la alimentación
+# del sensor: el simulado no tiene divisor (`cur_div` = 0), y un offset es lo que el
+# cero de la corriente tiene que absorber. bringup() no se queja con él en 12 de
+# 12 semillas sanas.
 REPOSO_I = 2048 + 57         # cuentas
 
 _Canal = namedtuple('_Canal', 'name scale unit')
@@ -123,23 +120,6 @@ CANALES = {
 _PONERSE_AL_DIA_S = 20.0
 
 
-def _fletcher(valores):
-    """La suma de Fletcher de AngleLut: palabras de 16 bits, módulo 65535.
-
-    La suma del complemento a uno está escrita igual que en AngleLut.h para que
-    las dos mitades den exactamente lo mismo y no sólo valores congruentes.
-    """
-    def ones_add(x, y):
-        s = (x + y) & 0xFFFF
-        return (s + 1) & 0xFFFF if s < x else s
-
-    a = b = 0
-    for v in valores:
-        a = ones_add(a, v & 0xFFFF)
-        b = ones_add(b, a)
-    return (a + b) & 0xFFFF
-
-
 class BancoSimulado:
     """Todo lo que los notebooks le piden a un banco."""
 
@@ -155,7 +135,7 @@ class BancoSimulado:
         self.mot_bidir = 0
         self.ang_inv = 0                # el cableado imaginario ya tiene los signos bien
         self.cur_inv = 0
-        self.cur_filas = 10
+        self._filas = 10
         self.cur_div = 0                # sin divisor: el banco simulado no tiene caída
         self.cur_a1 = 0
         self.cur_notch = 0              # apagado, como en la placa; el simulado no tiene red
@@ -172,10 +152,10 @@ class BancoSimulado:
         self.ang_agc = 128              # media escala: la distancia correcta
         self.ang_mag = 1800
         self.ang_busovr = self.ang_buserr = 0
-        self.loop_late = 600
+        self.loop_late = 0              # como en la placa, hasta la primera captura
         self.loop_missed = 0
 
-        self.lut = [0] * 64
+        self.lut = [0] * tabla_angulo.LUT_SIZE
         self.ang_lutw = 0xFFFFFFFF
         self._lutw_aplicado = 0xFFFFFFFF
 
@@ -205,6 +185,15 @@ class BancoSimulado:
         self._ponerse_al_dia()
         self._uff = self._recortar(valor)
 
+    @property
+    def cur_filas(self):
+        return self._filas
+
+    @cur_filas.setter
+    def cur_filas(self, valor):
+        # Como WindowMean::apply(): de 1 a MAX_ROWS = 32 filas.
+        self._filas = min(32, max(1, int(valor)))
+
     def _recortar(self, valor):
         """Lo que hace HBridge::write(): -255..255, o 0..255 en un solo cuadrante."""
         return int(round(min(255, max(-255 if self.mot_bidir else 0, float(valor)))))
@@ -216,10 +205,7 @@ class BancoSimulado:
 
             if value != self._lutw_aplicado:
                 self._lutw_aplicado = value
-                i = value >> 16
-                if i < 64:
-                    v = value & 0xFFFF
-                    self.lut[i] = v - 65536 if v > 32767 else v
+                tabla_angulo.escribir(self.lut, value)
             return value
 
         setattr(self, name, value)
@@ -227,7 +213,7 @@ class BancoSimulado:
 
     def get(self, name):
         if name == 'ang_lutsum':
-            return _fletcher(self.lut)
+            return tabla_angulo.checksum(self.lut)
         return getattr(self, name)
 
     @property
@@ -251,13 +237,17 @@ class BancoSimulado:
     def rest(self):
         self.ctl_uff = 0
 
-    def zero_current(self, seconds=0.3, canales=None):
-        """Lo mismo que en el banco real: el reposo de ahora pasa a ser el cero."""
-        self.rest()
-        df = self.capture(seconds, warn=False, canales=canales)
-        signo = -1 if self.cur_inv else 1
-        self.cur_zero = round(self.cur_zero + signo * df['i'].mean() / MA_POR_CUENTA)
-        return self.cur_zero
+    # El cero de la corriente es el de `Bench`, el mismo código: sólo cambia de
+    # dónde salen el signo y la escala, que acá son fijos.
+    zero_current = bench.Bench.zero_current
+    _reposo_de_corriente = bench.Bench._reposo_de_corriente
+    _cuentas_de_corriente = bench.Bench._cuentas_de_corriente
+
+    def _signo_corriente(self):
+        return -1 if self.cur_inv else 1
+
+    def _ma_por_cuenta(self):
+        return MA_POR_CUENTA
 
     def configurar(self, bidir=None, cero=True, say=print, **_):
         """Lo mismo que `Bench.configurar()`. El motor simulado es de un cuadrante
@@ -281,19 +271,11 @@ class BancoSimulado:
                    f'telemetría  -- Datos simulados: no provienen de una medición.')
         return self.info, resumen, self._nombres(filtro), self._valor_legible, canales
 
-    def _valor_legible(self, nombre):
-        valor = self.get(nombre)
-        return f'{valor:.6g}' if isinstance(valor, float) else str(valor)
-
-    def describe(self, filtro=''):
-        """Las perillas y las lecturas, agrupadas, como texto. Ver Bench.describe()."""
-        return catalogo.texto(*self._para_describir(filtro))
-
-    def __repr__(self):
-        return self.describe()
-
-    def _repr_html_(self):
-        return catalogo.html(*self._para_describir())
+    # Lo demás es lo de `Bench`, que arma las dos vistas con _para_describir().
+    describe = bench.Bench.describe
+    _valor_legible = bench.Bench._valor_legible
+    __repr__ = bench.Bench.__repr__
+    _repr_html_ = bench.Bench._repr_html_
 
     # ------------------------------------------------------------ el motor
 
@@ -391,22 +373,17 @@ class BancoSimulado:
 
         return e
 
-    def _lut_lookup(self, crudo):
-        """Igual que AngleLut::correction() en la placa, redondeo incluido."""
-        crudo = np.asarray(crudo, dtype=np.int64) & (CUENTAS - 1)
-        i = (crudo >> 6) & 63
-        frac = crudo & 0x3F
-        tabla = np.array(self.lut, dtype=np.int64)
-        octavos = (tabla[i] * (64 - frac) + tabla[(i + 1) & 63] * frac) >> 6
-        return (octavos + 4) >> 3
-
     # ---------------------------------------------------------- la captura
 
     def capture(self, duration, events=(), poll=0.005, warn=True, canales=None):
         self._ponerse_al_dia()
 
-        filas = int(round(float(duration) / self.dt))
-        t = np.arange(filas) * self.dt
+        # Como en la placa, `tick` avanza una vez por período de control y `dec`
+        # emite una fila cada tantos: las filas van separadas `dec` ticks.
+        dec = max(1, int(self.dec))
+        filas = int(round(float(duration) / (self.dt * dec)))
+        tick = np.arange(filas, dtype=np.int64) * dec
+        t = tick * self.dt
         n = max(1, int(math.ceil(filas * self.dt / PWM_T)) + 1)
 
         # El comando período a período, y el que queda puesto al terminar.
@@ -423,6 +400,7 @@ class BancoSimulado:
         theta0, w0 = self._theta, self._w
         ws, thetas, muestras = self._integrar(comandos)
         self._reloj = time.monotonic()
+        self.loop_late = 600            # us, el peor retardo de un lazo sano
 
         # Cada fila lee lo que el sensor ve en su instante, que es el eje de hace
         # RETARDO_S. Para la primera, eso es antes de que empiece la captura: el eje
@@ -440,17 +418,17 @@ class BancoSimulado:
         cuentas = np.rint(medido).astype(np.int64)
 
         crudo = np.mod(cuentas, CUENTAS)
-        corregido = cuentas - (self._lut_lookup(crudo) if self.ang_cal else 0)
+        corregido = cuentas - (tabla_angulo.correccion(self.lut, crudo) if self.ang_cal else 0)
 
         # La corriente, como la publica la placa: la media de los períodos de la
         # ventana de `cur_filas` filas que termina en cada fila, con el ruido que
         # queda de promediar sus conversiones.
-        ventana = max(1, int(round(max(1, int(self.cur_filas)) * self.dt / PWM_T)))
+        ventana = max(1, int(round(self.cur_filas * self.dt / PWM_T)))
         acumulada = np.concatenate([[0.0], np.cumsum(muestras)])
         hasta = np.minimum(idx + 1, n)
         desde = np.maximum(hasta - ventana, 0)
         media = (acumulada[hasta] - acumulada[desde]) / np.maximum(hasta - desde, 1)
-        conversiones = CONVERSIONES_POR_S * self.dt * max(1, int(self.cur_filas))
+        conversiones = CONVERSIONES_POR_S * self.dt * self.cur_filas
         adc = (REPOSO_I + media * 185.0 / MV_POR_CUENTA
                + self._rng.normal(0, RUIDO_CONVERSION_MA / np.sqrt(conversiones) / MA_POR_CUENTA,
                                   filas))
@@ -480,9 +458,8 @@ class BancoSimulado:
             # En el orden de la tabla, como los entrega la placa.
             df = df[['t'] + [c for c in CANALES if c in canales]]
 
-        df.attrs.update(tick=np.arange(filas, dtype=np.int64) * self.loop_div,
-                        dec=self.dec, dt_us=self.dt*1e6, marks=[], notes=[],
-                        gaps=0, missed=0, maxlate=600, sovr=0, serr=0,
+        df.attrs.update(tick=tick, dec=dec, dt_us=self.dt*1e6, marks=[], notes=[],
+                        gaps=0, missed=0, maxlate=self.loop_late, sovr=0, serr=0,
                         spres=1, mstat=0x20, agc=128, mag=1800,
                         wall=float(duration), rows=filas, drops=0,
                         config=dict({'dispositivo': self.info},
@@ -504,8 +481,9 @@ class BancoSimulado:
 
     def bringup(self, motor=True, u=120):
         print(f'puesta en marcha: {self.info}')
+        f = 1 / self.dt
         for etiqueta, detalle in [
-                ('muestreo', '500 Hz reales contra 500 nominales, 0 perdidos'),
+                ('muestreo', f'{f:.0f} Hz reales contra {f:.0f} nominales, 0 perdidos'),
                 ('sensor', 'contesta en el bus'),
                 ('imán', 'detectado, AGC 128/255, campo 1800'),
                 ('bus i2c', '0 errores de transferencia, 0 desbordes'),

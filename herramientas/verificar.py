@@ -90,17 +90,11 @@ def verificar_compilacion():
         return
     informar('arduino-cli', True, cli)
 
-    banderas = []
-    for prop in placa.BUILD_PROPERTIES:
-        banderas += ['--build-property', prop]
-
     with tempfile.TemporaryDirectory(prefix='verificar-build-') as tmp:
         for sketch in sketches():
             inicio = time.monotonic()
             corrida = subprocess.run(
-                [cli, 'compile', '--fqbn', placa.FQBN,
-                 '--libraries', str(RAIZ / 'libraries'),
-                 '--build-path', str(Path(tmp) / sketch.name)] + banderas + [str(sketch)],
+                placa.comando_de_compilacion(sketch, Path(tmp) / sketch.name, cli),
                 capture_output=True, encoding='utf-8', errors='replace')
             salida = corrida.stdout + corrida.stderr
             ok = corrida.returncode == 0

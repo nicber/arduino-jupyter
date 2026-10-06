@@ -112,6 +112,13 @@ def leer_tablas(ruta=SKETCH):
     return {'params': params, 'chans': chans}
 
 
+def nombres_de_parametros(ruta=SKETCH):
+    """Los parámetros que se ven desde Python: los de la tabla del sketch, más los
+    que administra el enlace por su cuenta (`LINK_PARAMS` en ctrllink.py)."""
+    from ctrllink import LINK_PARAMS
+    return {e['nombre'] for e in leer_tablas(ruta)['params']} | set(LINK_PARAMS)
+
+
 # ------------------------------------------------------------------ el test
 
 def _contar(fallas, ok, etiqueta, detalle=''):

@@ -86,18 +86,13 @@ check('el notch lleva la señal en la misma unidad que el cociente',
       f'MainsNotch contra SupplyRatio = {frac}')
 
 # ----------------------------------------------------- los parámetros de la placa
+# Que el catálogo explique exactamente los de la tabla lo verifica
+# python/test_catalogo.py; acá, que el README los nombre.
 import test_tablas  # noqa: E402
-import catalogo  # noqa: E402
 
-tablas = test_tablas.leer_tablas()
-nombres = [p['nombre'] for p in tablas['params']]
-sin_catalogo = [n for n in nombres if n not in catalogo.nombres_conocidos()]
-check('cada parámetro de Banco.ino tiene su explicación en catalogo.py', not sin_catalogo, str(sin_catalogo))
+nombres = [p['nombre'] for p in test_tablas.leer_tablas()['params']]
 sin_readme = [n for n in nombres if f'`{n}`' not in README and n not in README]
-check('y cada uno aparece en el README', not sin_readme, str(sin_readme))
-sobran = [n for n in catalogo.nombres_conocidos()
-          if n not in nombres and n not in ('chans', 'dec')]
-check('el catálogo no explica parámetros que la placa ya no tiene', not sobran, str(sobran))
+check('cada parámetro de Banco.ino aparece en el README', not sin_readme, str(sin_readme))
 
 # ------------------------------------------------ archivos mencionados que existan
 patron_ruta = re.compile(

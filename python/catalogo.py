@@ -5,9 +5,9 @@ al conectarse --nombre, tipo y escala, que es lo que la aritmética necesita-- y
 está lo que hace falta para entenderla. Unidad, si se puede mover o sólo mirar, y una
 línea de qué es.
 
-Vive en un módulo propio y sin una sola dependencia, y eso importa por dos razones.
-Lo usan las dos puntas, el banco real y el simulado, y el simulado tiene que
-poder correr sin pyserial para que la clase se pueda dar con el cable desenchufado.
+Vive en un módulo propio y sin una sola dependencia. Lo usan las dos puntas, el
+banco real y el simulado, y el simulado tiene que poder correr sin pyserial para que
+la clase se pueda dar con el cable desenchufado.
 
 Que no se desactualice no depende de la buena voluntad: `test_catalogo.py` compara
 esta tabla contra la del sketch y falla si sobra o falta una entrada. Es la misma

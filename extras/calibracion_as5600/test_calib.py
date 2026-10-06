@@ -318,20 +318,23 @@ check('asegurar() no reescribe una tabla que ya está puesta',
       and uno.escrituras_lutw == escrituras_antes,
       f'{uno.escrituras_lutw - escrituras_antes} escrituras de ang_lutw')
 
-# El banco simulado (python/banco_simulado.py) tiene su propia copia de las dos
-# cuentas de la placa, para que los notebooks corran sin ella. Una copia se
-# desactualiza sin avisar, así que tiene que dar lo mismo que ésta.
+# El banco simulado (python/banco_simulado.py) hace las cuentas de la placa con
+# la misma aritmética que calib.py, la de python/tabla_angulo.py. Lo que queda por
+# verificar es que reciba la tabla como la placa: entera, y declarando la suma.
 import banco_simulado
 
 sim = banco_simulado.BancoSimulado()
 cal.aplicar(sim)
-check('el banco simulado declara la misma suma que la computadora',
+check('el banco simulado recibe la tabla entera', sim.lut == cal.lut,
+      f'{sim.lut[:4]} vs {cal.lut[:4]}')
+check('y declara la misma suma que la computadora',
       int(sim.get('ang_lutsum')) == cal.checksum(),
       f'{int(sim.get("ang_lutsum")):#06x} vs {cal.checksum():#06x}')
-suyas = sim._lut_lookup(np.arange(calib.CUENTAS))
-check('y corrige igual, ángulo por ángulo',
-      np.array_equal(mias, suyas),
-      f'difieren en {int((mias != suyas).sum())} de {calib.CUENTAS} ángulos')
+
+# Como en la placa, una entrada fuera de rango se acota a ±LUT_MAX.
+sim.set('ang_lutw', (5 << 16) | (-6000 & 0xFFFF))
+check('el banco simulado acota una entrada fuera de rango igual que la placa',
+      sim.lut[5] == -calib.LUT_MAX, str(sim.lut[5]))
 
 
 print()

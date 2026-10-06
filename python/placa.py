@@ -68,6 +68,17 @@ BUILD_PROPERTIES = [
 
 # ------------------------------------------------------- compilación y carga
 
+def comando_de_compilacion(sketch, build, cli=None):
+    """La línea de arduino-cli que compila `sketch` en `build`, con FQBN,
+    `LIBRARIES` y `BUILD_PROPERTIES`. La usan esto y herramientas/verificar.py, para
+    que lo que se verifica sea exactamente lo que se graba."""
+    argv = [cli or _arduino_cli(), 'compile', '--fqbn', FQBN,
+            '--libraries', str(LIBRARIES), '--build-path', str(build)]
+    for prop in BUILD_PROPERTIES:
+        argv += ['--build-property', prop]
+    return argv + [str(sketch)]
+
+
 def _sketch_dir(sketch=None):
     """La carpeta del sketch: `SKETCH` si no se pide otro, una carpeta del
     repositorio si se da un nombre, o la ruta tal cual si se da una ruta.
@@ -254,15 +265,7 @@ def poner_al_dia(port=None, force_compile=False, force_upload=False, sketch=None
 
     if (force_compile or not hex_file.exists()
             or state['sources'].get(sketch.name) != sources):
-        build_flags = []
-        for prop in BUILD_PROPERTIES:
-            build_flags += ['--build-property', prop]
-
-        _run([_arduino_cli(), 'compile', '--fqbn', FQBN,
-              '--libraries', str(LIBRARIES),
-              '--build-path', str(build)] +
-             build_flags +
-             [str(sketch)], 'compilar')
+        _run(comando_de_compilacion(sketch, build), 'compilar')
         notes.append('compilado')
         state['sources'][sketch.name] = sources
         _save_state(state)

@@ -444,9 +444,10 @@ python/bench.py          el banco: conexión, bringup() y lo que significan sus 
 python/placa.py          compilar y grabar el sketch, encontrar el puerto
 python/ensayo.py         esperar al eje, la velocidad, las unidades y el archivo
 python/catalogo.py       qué significa cada parámetro, y cómo mostrarlo
+python/tabla_angulo.py   la tabla de calibración: la suma de control y la corrección, como en la placa
 python/entorno.py        que el notebook corra en el entorno dyc, y qué hacer si no
 python/banco_simulado.py un banco simulado que reproduce al real, para dar la clase sin la placa
-python/fakeuno.py        simulación del dispositivo, fiel byte a byte
+python/fakeuno.py        un dispositivo CtrlLink simulado, fiel byte a byte al protocolo
 python/test_*.py         pruebas, no necesitan hardware ni compilar
                          (test_notebooks.py además corre los notebooks simulados)
 python/test_hardware.py  la única que sí necesita la placa: --motor mueve el eje

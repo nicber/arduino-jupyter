@@ -97,8 +97,8 @@ class BancoConFallas(bs.BancoSimulado):
 
         # --- la corriente: de lo publicado a la salida del sensor, a los pines, y de vuelta
         lsb = bs.MA_POR_CUENTA
-        s_pub = -1 if self.cur_inv else 1
-        equivalentes = s_pub * df['i'].to_numpy() / lsb + self.cur_zero   # lo que "midió" el simulado
+        s_pub = self._signo_corriente()
+        equivalentes = self._cuentas_de_corriente(df['i'].to_numpy())   # lo que "midió" el simulado
         senal = equivalentes - bs.REPOSO_I
         if self.sensor_invertido:
             senal = -senal

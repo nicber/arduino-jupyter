@@ -22,7 +22,7 @@ _AQUI = Path(__file__).resolve().parent
 sys.path.insert(0, str(_AQUI))
 
 import catalogo
-from test_tablas import leer_tablas
+from test_tablas import nombres_de_parametros
 
 
 def main():
@@ -34,12 +34,9 @@ def main():
               + ('' if ok or not detalle else f'  -- {detalle}'))
         fallas += 0 if ok else 1
 
-    tablas = leer_tablas()
-
     # El enlace administra `dec` y `chans` por su cuenta, así que no están en la
     # tabla del sketch pero sí son parámetros que se ven desde Python.
-    from ctrllink import LINK_PARAMS
-    de_la_placa = {e['nombre'] for e in tablas['params']} | set(LINK_PARAMS)
+    de_la_placa = nombres_de_parametros()
     del_catalogo = catalogo.nombres_conocidos()
 
     faltan = sorted(de_la_placa - del_catalogo)
