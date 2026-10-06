@@ -36,9 +36,9 @@
 // coeficientes se calculan con punto flotante en apply(), que corre sólo cuando la
 // computadora mueve algo.
 //
-// `step_q4()` entra y sale en esa misma unidad, y es lo que usa un canal que publique
-// dieciseisavos: el redondeo a cuentas de `step()` es, medido sobre capturas del banco,
-// uno de los dos que más ruido ponen en toda la cadena (1,75 a 1,93 mA RMS).
+// `step_q4()` entra y sale en esa misma unidad: redondear a cuentas a la salida sería,
+// medido sobre capturas del banco, uno de los dos redondeos que más ruido ponen en
+// toda la cadena (1,75 a 1,93 mA RMS).
 //
 // Adentro del lazo, en cambio, la señal lleva `GUARD_BITS` más: lo que se realimenta se
 // redondea a esa unidad más fina y no al dieciseisavo. Sin eso, publicando en
@@ -169,20 +169,6 @@ class MainsNotch
     // Cuántos notch quedaron activos: dos por armónico, menos los que no entran.
     uint8_t active(void) const { return m_active; }
 
-    // Una fila, en cuentas alrededor del cero, redondeada a cuentas a la salida. Para
-    // quien no lleve la señal en fracciones; adentro es step_q4().
-    int16_t step(int16_t counts)
-    {
-        if (!m_active)
-        {
-            return counts;      // sin secciones no hay por qué pasar por el rango de step_q4()
-        }
-
-        const int16_t y = step_q4(sat((int32_t)counts * (1L << FRAC_BITS)));
-        // En 32 bits: `y` puede valer INT16_MAX y el redondeo lo haría dar la vuelta.
-        return (int16_t)(((int32_t)y + (1 << (FRAC_BITS - 1))) >> FRAC_BITS);
-    }
-
     // Una fila, en dieciseisavos de cuenta a la entrada y a la salida: la unidad en la
     // que el filtro trabaja. Sin secciones activas devuelve la entrada tal cual. El
     // rango es el de int16 en esa unidad, o sea -2047 a 2047 cuentas alrededor del cero
@@ -301,13 +287,6 @@ class MainsNotch
     static int16_t q12(float v)
     {
         return (int16_t)lround(v * 4096.0f);
-    }
-
-    static int16_t sat(int32_t v)
-    {
-        if (v > INT16_MAX) return INT16_MAX;
-        if (v < INT16_MIN) return INT16_MIN;
-        return (int16_t)v;
     }
 
     // Lo mismo en la unidad del lazo: el rango del canal, con los bits de guarda.

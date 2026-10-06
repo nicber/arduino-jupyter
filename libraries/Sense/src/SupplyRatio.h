@@ -31,12 +31,11 @@
 // con las dos medias y la escala en la misma unidad fraccionaria, que se cancela
 // sola. No hace falta ningún cociente intermedio, y lo que sale son dieciseisavos de
 // cuenta, la misma unidad que MainsNotch lleva adentro. Por qué importa: medido sobre
-// capturas del banco, el redondeo a cuenta entera de la salida ponía 1,7 a 2,1 mA RMS
-// --el que más pone de toda la cadena, muy por encima de los 0,5 mA de un cociente en
-// Q12-- y con la salida en dieciseisavos la cadena entera baja de 1,9..2,9 a
-// 0,24..0,65 mA RMS. Un cociente en Q16 no arregla nada y roza el desborde; en Q18
-// desborda. `counts()` devuelve lo mismo redondeado a cuentas, para quien no necesite
-// la resolución.
+// capturas del banco, redondear la salida a cuenta entera pone 1,7 a 2,1 mA RMS --el
+// que más pone de toda la cadena, muy por encima de los 0,5 mA de un cociente en
+// Q12--, y con la salida en dieciseisavos la cadena entera queda en 0,24..0,65 mA RMS
+// en lugar de 1,9..2,9. Un cociente en Q16 no arregla nada y roza el desborde; en Q18
+// desborda.
 //
 // Con `div_e4 = 0` no hay divisor y sale A0 contra AVCC, que es lo correcto en una
 // placa a 5 V como el UNO. Ése es el único camino en el que hay que saber cuánto vale
@@ -126,12 +125,6 @@ class SupplyRatio
         }
 
         return cap((mean0_q4 * (uint32_t)m_scale_q4 + mean1_q4 / 2) / mean1_q4);
-    }
-
-    // Lo mismo redondeado a cuentas enteras, para quien no necesite la resolución.
-    int16_t counts(uint32_t sum0, uint32_t n0, uint32_t sum1, uint32_t n1)
-    {
-        return (int16_t)((counts_q4(sum0, n0, sum1, n1) + 8) >> FRAC_BITS);
     }
 
     private:

@@ -4,15 +4,16 @@
 //
 // Poder probarlos acá es una de las razones para tenerlos separados. Ninguno
 // accede a un registro ni espera respuesta de otro componente: reciben números por update(), por
-// corrected() o por step() y devuelven números, así que un error de signo o de
+// correction() o por step() y devuelven números, así que un error de signo o de
 // redondeo se encuentra en un segundo en lugar de en un banco con un motor girando.
 //
-//   g++ -std=c++11 -O2 -Wall -Wextra \
+//   g++ -std=c++11 -O2 -Wall -Wextra -D_USE_MATH_DEFINES \
 //       -I ../libraries/Calibracion/src \
 //       -I ../libraries/AngleSensor/src -I ../libraries/Sense/src \
 //       test_modulos.cpp -o test_modulos && ./test_modulos
 //
 // Se mantiene compilando bajo C++11, que es con lo que compila el core del AVR.
+// _USE_MATH_DEFINES hace falta con mingw: con -std=c++11 esconde M_PI.
 
 #include <cstdio>
 #include <cstdint>
@@ -50,6 +51,19 @@ typedef AngleTracker<4096>     Tracker;
 // La misma interpolación que hace el notebook, escrita de nuevo a partir de la
 // definición y no copiada del módulo: si las dos coinciden en todo el rango, la
 // que está en la placa es la que la computadora cree que está.
+// SupplyRatio y MainsNotch trabajan en dieciseisavos de cuenta. Estas dos los
+// llevan a cuentas enteras, redondeando, para comparar con números medidos en cuentas.
+static int16_t cuentas(SupplyRatio& r, unsigned long s0, unsigned long n0,
+                       unsigned long s1, unsigned long n1)
+{
+    return (int16_t)((r.counts_q4(s0, n0, s1, n1) + 8) >> 4);
+}
+
+static int16_t paso(MainsNotch& f, int16_t c)
+{
+    return (int16_t)(((int32_t)f.step_q4((int16_t)(c * 16)) + 8) >> 4);
+}
+
 static int reference_correction(const Lut& lut, int raw)
 {
     const int span  = 4096 / 64;
@@ -131,8 +145,8 @@ int main()
 
     // El checksum distingue dos entradas intercambiadas, que es el error que se
     // comete cargando una tabla y que una suma simple no detecta. Se prueban todos
-    // los pares y no uno solo: el par (3,4) lo detectaba igual la versión de bytes
-    // módulo 256, y los que se le escapaban eran los que están a distancia 32.
+    // los pares y no uno solo: una suma de bytes módulo 256 detecta el par (3,4), y
+    // se le escapan los que están a distancia 32.
     const uint16_t before = lut.checksum();
     unsigned swaps = 0;
     unsigned blind = 0;
@@ -201,20 +215,18 @@ int main()
 
     // --------------------------------------------------------------- corriente
 
-    CurrentSense cur(2048);
+    // El cero se resta en dieciseisavos, con el cero en cuentas enteras.
+    CurrentSense cur(2048, 1);
+    cur.apply(500.0f);
 
-    cur.update(2048);
+    cur.update_q4(2048L * 16);
     check_eq(cur.i, 0, "la cuenta del cero da corriente cero");
 
-    cur.update(2148);
-    check_eq(cur.i, 100, "cien cuentas por encima del cero dan cien");
+    cur.update_q4(2148L * 16);
+    check_eq(cur.i, 100 * 16, "cien cuentas por encima del cero dan cien, en dieciseisavos");
 
-    cur.update(1948);
-    check_eq(cur.i, -100, "y cien por debajo, menos cien");
-
-    // La misma resta con la cuenta en dieciseisavos: el cero sigue en cuentas.
-    cur.update_q4(2048L * 16);
-    check_eq(cur.i, 0, "en dieciseisavos, la cuenta del cero da cero");
+    cur.update_q4(1948L * 16);
+    check_eq(cur.i, -100 * 16, "y cien por debajo, menos cien");
 
     cur.update_q4(2048L * 16 + 7);
     check_eq(cur.i, 7, "y siete dieciseisavos por encima dan siete");
@@ -222,13 +234,29 @@ int main()
     cur.update_q4(0);
     check_eq(cur.i, -32767 - 1, "una cuenta en cero satura en lugar de dar la vuelta");
 
+    // El signo del banco va al final, en 32 bits: -INT16_MIN no entra en un int16, y
+    // una fila sin conversiones de A0 con el cero en 2048 da exactamente INT16_MIN.
+    cur.invert = 1;
+    cur.update_q4(2148L * 16);
+    check_eq(cur.i, -100 * 16, "con el sensor invertido, menos cien");
+    cur.update_q4(0);
+    check_eq(cur.i, 32767, "e invertir en el tope negativo no deja el signo sin aplicar");
+
+    // La cadena entera, desde las sumas de una fila: A0/A1 medidos en el banco son
+    // 31670 dieciseisavos (ver SupplyRatio abajo), y el cero en 2000 son 32000.
+    CurrentSense cadena(2000, 1);
+    cadena.ratio.div_e4 = 2817;
+    cadena.apply(500.0f);
+    cadena.push(314820UL, 100, 179220UL, 100);
+    check_eq(cadena.i, 31670 - 32000, "push() promedia, divide por A1 y resta el cero");
+    check_eq(cadena.ratio.supply, 1792, "y deja A1 como lectura");
+
     // ------------------------------------------------- el promedio de la corriente
 
     WindowMean win(3);
 
-    // Una fila sola: el promedio de sus conversiones, redondeado. push() ya no lo
-    // devuelve --lo calculaba en cada fila y nadie lo leía, y eran dos divisiones de
-    // 32 bits-- así que se pide con mean().
+    // Una fila sola: el promedio de sus conversiones, redondeado, que se pide con
+    // mean().
     win.push(3 * 100 + 2, 3);
     check_eq(win.mean(), 101, "una fila da el promedio de sus conversiones");
 
@@ -247,10 +275,8 @@ int main()
     check_eq(win.mean(), 400, "después de rows filas la más antigua ya no cuenta");
 
     // Una ventana sin ninguna conversión --el ADC no corrió-- no tiene promedio, y
-    // devuelve cero en lugar del último. Antes `mean` era un campo pegajoso que
-    // guardaba el valor viejo; ahora se calcula cuando se pide, así que decir «no
-    // hay» es más honesto que devolver algo de hace rato. Quien necesite distinguir
-    // las dos cosas mira count(), que es lo que hace SupplyRatio.
+    // devuelve cero en lugar del último. Quien necesite distinguir las dos cosas
+    // mira count(), que es lo que hace SupplyRatio.
     WindowMean vacia(1);
     vacia.push(4 * 250, 4);
     check_eq(vacia.mean(), 250, "una fila da su promedio");
@@ -287,30 +313,26 @@ int main()
     ratio.apply();
     // Sin divisor la escala la fija AVCC, que es el único camino en el que no se
     // cancela: 3150 cuentas contra AVCC son 3150 * 5006/5120 cuentas equivalentes.
-    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3080,
+    check_eq(cuentas(ratio, 315000UL, 100UL, 0UL, 0UL), 3080,
              "sin divisor, la media de A0 llevada a la escala de AVCC");
-    check_eq(ratio.counts(0UL, 0UL, 0UL, 0UL), 0, "sin conversiones, cero");
+    check_eq(cuentas(ratio, 0UL, 0UL, 0UL, 0UL), 0, "sin conversiones, cero");
 
     ratio.div_e4 = 2817;        // 2 k / (5,1 k + 2 k)
     ratio.apply();
     check(ratio.active(), "con divisor, activo");
-    check_eq(ratio.counts(314820UL, 100UL, 179220UL, 100UL), 1979,
+    check_eq(cuentas(ratio, 314820UL, 100UL, 179220UL, 100UL), 1979,
              "A0/A1 medidos en el banco: 1979 cuentas equivalentes");
     check_eq(ratio.supply, 1792, "y A1 queda como lectura");
-    check_eq(ratio.counts(200000UL, 100UL, 112700UL, 100UL), 2000,
+    check_eq(cuentas(ratio, 200000UL, 100UL, 112700UL, 100UL), 2000,
              "el sensor en la mitad de su alimentación da 2000 cualquiera sea el divisor");
-    check_eq(ratio.counts(200000UL, 100UL, 0UL, 100UL), 4095,
+    check_eq(cuentas(ratio, 200000UL, 100UL, 0UL, 100UL), 4095,
              "A1 en cero (divisor suelto) satura contra el fondo de escala");
-    check_eq(ratio.counts(315000UL, 100UL, 0UL, 0UL), 3080,
+    check_eq(cuentas(ratio, 315000UL, 100UL, 0UL, 0UL), 3080,
              "sin conversiones de A1, la media de A0 contra AVCC");
 
-    // Lo mismo en dieciseisavos, que es lo que publica el canal: la resolución que
-    // counts() pierde al redondear.
+    // En dieciseisavos, que es lo que publica el canal.
     check_eq((long)ratio.counts_q4(314820UL, 100UL, 179220UL, 100UL), 31670L,
              "counts_q4 da los mismos 1979 con cuatro bits más abajo");
-    check_eq(ratio.counts(314820UL, 100UL, 179220UL, 100UL),
-             (int16_t)((ratio.counts_q4(314820UL, 100UL, 179220UL, 100UL) + 8) >> 4),
-             "y counts() es counts_q4() redondeado");
 
     ratio.div_e4 = 20000;
     ratio.apply();
@@ -341,7 +363,7 @@ int main()
     notch.harmonics = 1;
     notch.apply(500.0f);
     int16_t dc = 0;
-    for (int k = 0; k < 2000; k++) { dc = notch.step(1000); }
+    for (int k = 0; k < 2000; k++) { dc = paso(notch, 1000); }
     check(dc >= 999 && dc <= 1001, "la continua pasa entera");
 
     // La red vista desde el clon, 49,68 Hz, con 400 cuentas de amplitud alrededor del
@@ -351,7 +373,7 @@ int main()
     int16_t pico = 0;
     for (int k = 0; k < 4000; k++)
     {
-        const int16_t y = notch.step((int16_t)lround(400.0 * sin(2.0 * M_PI * 49.68 * k / 500.0)));
+        const int16_t y = paso(notch, (int16_t)lround(400.0 * sin(2.0 * M_PI * 49.68 * k / 500.0)));
         if (k > 2000 && abs(y) > pico) { pico = (int16_t)abs(y); }
     }
     check(pico < 20, "49,68 Hz baja a menos de 20 cuentas de 400");
@@ -360,8 +382,8 @@ int main()
     // 5 A, sale entero sin saturar adentro.
     notch.harmonics = 7;
     notch.apply(500.0f);
-    for (int k = 0; k < 1000; k++) { dc = notch.step(-1500); }
-    for (int k = 0; k < 2000; k++) { dc = notch.step(1500); }
+    for (int k = 0; k < 1000; k++) { dc = paso(notch, -1500); }
+    for (int k = 0; k < 2000; k++) { dc = paso(notch, 1500); }
     check_eq(dc, 1500, "un escalón de 3000 cuentas llega entero, con la continua exacta");
 
     // Lo que agrega el redondeo adentro del filtro, sobre ruido blanco de ±2 cuentas.
@@ -374,7 +396,7 @@ int main()
     for (int k = 0; k < 20000; k++)
     {
         const int16_t x = (int16_t)(rand() % 5 - 2);
-        const int16_t y = notch.step(x);
+        const int16_t y = paso(notch, x);
         if (k >= 2000) { var_in += (double)x * x; var_out += (double)y * y; }
     }
     check(var_out < 0.9 * var_in, "sobre ruido blanco, el redondeo interno no devuelve lo que el notch saca");
@@ -387,11 +409,11 @@ int main()
     int16_t alterna = 0;
     for (int k = 0; k < 400; k++)
     {
-        const int16_t y = nyq.step((k & 1) ? 300 : -300);
+        const int16_t y = paso(nyq, (k & 1) ? 300 : -300);
         if (k > 100 && abs(y) > alterna) { alterna = (int16_t)abs(y); }
     }
     check(alterna <= 1, "el notch del Nyquist saca una fila sí y otra no");
-    for (int k = 0; k < 200; k++) { dc = nyq.step(1500); }
+    for (int k = 0; k < 200; k++) { dc = paso(nyq, 1500); }
     check_eq(dc, 1500, "y deja pasar la continua exacta");
 
     // En dieciseisavos, que es la unidad del canal: el lazo resuelve por debajo de la

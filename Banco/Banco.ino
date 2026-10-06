@@ -33,11 +33,9 @@
 // parámetros. Cada cosa que se puede medir o accionar tiene un dueño:
 //
 //   g_clock    el reloj del muestreo          Sampler/SampleClock.h
-//   g_adc      el conversor corriendo libre   Sense/RowAdc.h
-//   g_ratio    contra la alimentación del sensor  Sense/SupplyRatio.h
-//   g_window   el promedio de la corriente    Sense/WindowMean.h
-//   g_notch    el notch de la red             Sense/MainsNotch.h
-//   g_current  la corriente                   Sense/CurrentSense.h
+//   g_adc      el conversor, encadenado       Sense/RowAdc.h
+//   g_current  la corriente: la ventana, el divisor, el cero, el notch y el signo
+//                                             Sense/CurrentSense.h
 //   g_lut      la corrección del ángulo       Calibracion/AngleLut.h
 //   g_turns    el ángulo desenrollado         AngleSensor/AngleTracker.h
 //   g_health   la confiabilidad del sensor    AngleSensor/SensorHealth.h
@@ -92,9 +90,6 @@
 #include <SensorHealth.h>
 #include <CurrentSense.h>
 #include <RowAdc.h>
-#include <MainsNotch.h>
-#include <SupplyRatio.h>
-#include <WindowMean.h>
 #include <HBridge.h>
 #include <SampleClock.h>
 
@@ -139,8 +134,8 @@ static const uint8_t  SUPPLY_CHANNEL   = 1;
 static const float    SENSE_MV_PER_A   = 185.0f;
 static const uint16_t ADC_FULL         = 4096;
 static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
-static const uint8_t  SENSE_FRAC_BITS   = SupplyRatio::FRAC_BITS;
-static const float    SENSE_MA_PER_LSB   =
+static const uint8_t  SENSE_FRAC_BITS  = CurrentSense::FRAC_BITS;
+static const float    SENSE_MA_PER_LSB =
     (float)SupplyRatio::UV_PER_COUNT / SENSE_MV_PER_A / (float)(1 << SENSE_FRAC_BITS);
 
 // ------------------------------------------------------------------ los módulos
@@ -158,9 +153,7 @@ static const uint8_t CURRENT_ROWS = 10;
 // 10 muestras de 5 kHz por fila son 500 Hz.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
-static WindowMean   g_window(CURRENT_ROWS);
-static WindowMean   g_supply_window(CURRENT_ROWS);   // A1, con la misma ventana
-static CurrentSense g_current(SENSE_ZERO);
+static CurrentSense g_current(SENSE_ZERO, CURRENT_ROWS);
 static Lut          g_lut;
 static Angle        g_turns;      // la cuenta cruda, desenrollada en la ISR
 static SensorHealth g_health;
@@ -182,20 +175,14 @@ static const uint8_t SENSOR_FILTER = Sensor::SF_2X;
 // calcularla.
 static uint16_t g_y_raw = 0;
 
-// Lo que se publica: el ángulo desenrollado y la corriente, con el signo del banco.
+// Lo que se publica del ángulo: desenrollado, con el signo del banco. La corriente
+// se publica desde g_current.
 static int32_t g_y_uw = 0;
-static int16_t g_i    = 0;
 
 // Los bits fraccionarios de la unidad de `i`. Es una constante del sketch y se publica
 // para que la computadora no la tenga escrita: ControlDemo publica `i` en cuentas
 // enteras con las mismas clases.
 static uint8_t g_cur_frac = SENSE_FRAC_BITS;
-
-// La unidad del canal la fija SupplyRatio y la tiene que compartir el notch, que lleva la
-// señal adentro sin volver a escalarla. Separarlas cambiaría la escala publicada sin que
-// nada se queje, así que no se pueden separar.
-static_assert((int)MainsNotch::FRAC_BITS == (int)SupplyRatio::FRAC_BITS,
-              "el notch y el cociente tienen que llevar la senal en la misma unidad");
 
 // 1 si la cuenta de esta fila repite la anterior: la transferencia del AS5600 que
 // tenía que traerla no terminó a tiempo (un desborde). Derivada, esa fila da una
@@ -212,23 +199,19 @@ static uint16_t g_a1 = 0;
 static uint16_t g_conv = 0;      // cuántas conversiones entraron en la fila
 #endif
 
-// Los signos del banco: 1 si un comando positivo, sin corregir, hace bajar el
-// ángulo o sale como corriente negativa. Los mide bringup().
+// El signo del ángulo: 1 si un comando positivo, sin corregir, lo hace bajar. Lo
+// mide bringup(), igual que el de la corriente (`cur_inv`).
 static uint8_t g_ang_inv = 0;
-static uint8_t g_cur_inv = 0;
 
-// La corriente contra la alimentación del sensor. Arranca sin divisor, contra AVCC: la
-// relación es del cableado de cada banco y la carga la computadora.
-static SupplyRatio g_ratio;
-
+// La corriente arranca sin divisor, contra AVCC: la relación es del cableado de cada
+// banco y la carga la computadora (`cur_div`).
+//
 // Los notch sobre la corriente, fila por fila. El de 250 Hz (`cur_nyq`) arranca
 // prendido. El de la red arranca apagado: medido con 1 fila, deja una oscilación en el
 // arranque de un escalón de hasta 90 mA con r = 0,95 y de ~50 mA con r = 0,98 o 0,99,
 // y con el divisor en A1 la red ya es de ~1 mA. `cur_notch` lo prende, cada armónico
 // por separado (máscara: 1 = 50, 2 = 100, 4 = 150 Hz). Ver Sense/MainsNotch.h.
 static const uint8_t MAINS_HARMONICS = 0;
-static MainsNotch g_notch;
-
 // Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
 // AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
 static volatile uint16_t g_tick_raw     = 0;
@@ -283,13 +266,13 @@ static const CtrlParam PROGMEM g_params[] =
     { "dbg_pre",     CTRL_U8,  &g_adc.pre,           0 },
     { "dbg_mix",     CTRL_U8,  &g_adc.mix,           0 },
 #endif
-    { "cur_inv",     CTRL_U8,  &g_cur_inv,           0 },
-    { "cur_filas",   CTRL_U8,  &g_window.rows,       0 },
-    { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0 },
-    { "cur_a1",      CTRL_U16, &g_ratio.supply,      0 },
-    { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0 },
-    { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0 },
-    { "cur_nyq",     CTRL_U8,  &g_notch.nyquist,     0 },
+    { "cur_inv",     CTRL_U8,  &g_current.invert,            0 },
+    { "cur_filas",   CTRL_U8,  &g_current.window.rows,       0 },
+    { "cur_div",     CTRL_U16, &g_current.ratio.div_e4,      0 },
+    { "cur_a1",      CTRL_U16, &g_current.ratio.supply,      0 },
+    { "cur_notch",   CTRL_U8,  &g_current.notch.harmonics,   0 },
+    { "cur_notchr",  CTRL_U16, &g_current.notch.pole_milli,  0 },
+    { "cur_nyq",     CTRL_U8,  &g_current.notch.nyquist,     0 },
     { "cur_ma",      CTRL_U8,  &g_adc.ma,            0 },
 
     { "loop_div",    CTRL_U8,  &g_clock.divide,      0 },
@@ -307,7 +290,7 @@ static const CtrlChannel PROGMEM g_channels[] =
     { "y_uw",  CTRL_I32, &g_y_uw,         COUNTS_TO_DEG,    "deg" },
     { "y_rep", CTRL_U8,  &g_y_rep,        1.0f,             ""    },
     { "u",     CTRL_I16, &g_motor.u,      1.0f,             "pwm" },
-    { "i",     CTRL_I16, &g_i,            SENSE_MA_PER_LSB, "mA"  },
+    { "i",     CTRL_I16, &g_current.i,    SENSE_MA_PER_LSB, "mA"  },
 #if SENSE_DIAG
     { "a0",    CTRL_U16, &g_a0,           0.0625f,          ""    },
     { "a1",    CTRL_U16, &g_a1,           0.0625f,          ""    },
@@ -370,7 +353,7 @@ ISR(ADC_vect)
 // La corriente es el promedio de todas las conversiones de las últimas `cur_filas`
 // filas, de A0 y, con divisor, de A1, llevado a cuentas equivalentes; el cero se
 // resta después, sobre el promedio. De ahí hasta el canal todo va en dieciseisavos de
-// cuenta, sin volver a redondear.
+// cuenta, sin volver a redondear. Ver Sense/CurrentSense.h.
 static void step(void)
 {
     uint16_t raw;
@@ -392,15 +375,7 @@ static void step(void)
     g_adc.raw_means(g_a0, g_a1, g_conv);
 #endif
 
-    g_window.push(sum, n);
-    g_supply_window.push(supply_sum, supply_n);
-    g_current.update_q4(g_ratio.counts_q4(g_window.total(), g_window.count(),
-                                          g_supply_window.total(), g_supply_window.count()));
-
-    const int16_t i = g_notch.step_q4(g_current.i);
-    // En 32 bits y saturando: -INT16_MIN no entra en un int16 y dejaría el signo sin
-    // aplicar (ver LoopCurrent::update()).
-    g_i = g_cur_inv ? (int16_t)(i == INT16_MIN ? INT16_MAX : -i) : i;
+    g_current.push(sum, n, supply_sum, supply_n);
 
     g_y_raw = raw;
     g_y_rep = !fresh;
@@ -418,8 +393,9 @@ static void refresh_tuning(void)
 
     g_lut.apply(g_lutw);
 
-    g_ratio.apply();
-    g_adc.alternate(g_ratio.active());
+    // Con la frecuencia de las filas de ahora: `loop_div` también mueve los notch.
+    g_current.apply((float)SAMPLE_HZ / (float)g_clock.divide);
+    g_adc.alternate(g_current.ratio.active());
 
     // Siempre: si la cadena del ADC quedó parada, esto es lo único que la levanta.
     g_adc.reconfigure();
@@ -430,14 +406,6 @@ static void refresh_tuning(void)
         OCR2A = g_dbg_ocr;
     }
 #endif
-
-    g_window.apply();
-    g_supply_window.rows = g_window.rows;
-    g_supply_window.apply();
-
-    // Con la frecuencia de las filas de ahora: `loop_div` también la mueve.
-    g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
-
 }
 
 // ------------------------------------------------------------------- Arduino
@@ -467,9 +435,9 @@ void setup()
                     g_channels, sizeof(g_channels) / sizeof(g_channels[0]),
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
-    g_notch.harmonics = MAINS_HARMONICS;
-    g_notch.nyquist   = 1;
-    g_adc.ma          = 1;
+    g_current.notch.harmonics = MAINS_HARMONICS;
+    g_current.notch.nyquist   = 1;
+    g_adc.ma                  = 1;
     refresh_tuning();
 
     g_adc.begin(adc_full);

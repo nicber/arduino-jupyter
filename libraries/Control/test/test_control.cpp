@@ -1,8 +1,7 @@
-// Comprobaciones de escritorio para los lazos y el PID de Control. Estaban en
-// test/test_modulos.cpp; viven acá porque Control no va en el zip del TP2, y
-// test_modulos.cpp sí.
+// Comprobaciones de escritorio para los lazos y el PID de Control. Viven con la
+// biblioteca y no en test/test_modulos.cpp porque Control no va en el zip del TP2.
 //
-//   g++ -std=c++11 -O2 -Wall -Wextra \
+//   g++ -std=c++11 -O2 -Wall -Wextra -D_USE_MATH_DEFINES \
 //       -I ../../ControlMath/src -I ../../AngleSensor/src -I ../../Sense/src \
 //       -I ../src \
 //       test_control.cpp -o test && ./test
@@ -69,14 +68,22 @@ int main()
 
     // --------------------------------------------------------------- corriente
 
-    // Lo que lee un lazo: el cero primero y el signo despues.
-    LoopCurrent lcur(2048);
-    lcur.update(2148);
-    check_eq(lcur.i, 100, "el lazo lee la misma corriente sin invert");
-    lcur.invert = 1;
-    lcur.update(2148);
-    check_eq(lcur.i, -100, "y con el sensor invertido, menos cien");
-    check_eq(lcur.sense.i, 100, "sin tocar lo que mide el sensor");
+    // Lo que lee un lazo: CurrentSense::i, en dieciseisavos, redondeado una vez a
+    // cuentas enteras.
+    LoopCurrent lcur;
+    lcur.set_alpha(LoopCurrent::Alpha::from_int(1));   // sin filtrar
+    lcur.update(100 * 16);
+    check_eq(lcur.i, 100, "cien cuentas en dieciseisavos son cien cuentas");
+    lcur.update(-100 * 16);
+    check_eq(lcur.i, -100, "y para el otro lado");
+    lcur.update(7);
+    check_eq(lcur.i, 0, "siete dieciseisavos redondean a cero");
+    lcur.update(8);
+    check_eq(lcur.i, 1, "y ocho, a una cuenta");
+    lcur.update(INT16_MAX);
+    check_eq(lcur.i, 2048, "el tope de arriba no da la vuelta al redondear");
+    lcur.update(INT16_MIN);
+    check_eq(lcur.i, -2048, "ni el de abajo");
 
     // ------------------------------------------------------------------- el PID
 
@@ -180,19 +187,6 @@ int main()
         solo_p.configure(1, 0, 0);
         check(solo_p.step(6000000L, -255, 255, 0) == 255,
               "un proporcional que no entra en 32 bits satura arriba y no da la vuelta");
-    }
-
-    // ------------------------------------------- el signo de la corriente medida
-    {
-        LoopCurrent lazo(2048);
-        lazo.invert = 1;
-        lazo.set_alpha(LoopCurrent::Alpha::from_int(1));   // sin filtrar
-
-        // Una fila sin conversiones de A0 publica 0 cuentas equivalentes, que con el
-        // cero en 2048 da exactamente INT16_MIN: -INT16_MIN no entra en un int16 y
-        // el signo no se aplicaria.
-        lazo.update(INT16_MIN);
-        check(lazo.i > 0, "invertir la corriente en el tope negativo no deja el signo sin aplicar");
     }
 
     printf("\n%d falla(s)\n", fails);

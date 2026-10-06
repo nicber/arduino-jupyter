@@ -74,6 +74,13 @@ struct SensorFalso
 bool    SensorFalso::contesta = true;
 uint8_t SensorFalso::pedido   = 0;
 
+// SupplyRatio da dieciseisavos; esto los redondea a cuentas enteras.
+static int16_t cuentas(SupplyRatio& r, unsigned long s0, unsigned long n0,
+                       unsigned long s1, unsigned long n1)
+{
+    return (int16_t)((r.counts_q4(s0, n0, s1, n1) + 8) >> 4);
+}
+
 static bool pwm_conectado(void) { return (TCCR1A & _BV(COM1A1)) != 0; }
 
 static int nivel(uint8_t pin)
@@ -271,25 +278,25 @@ int main()
         {
             const unsigned long n = 91;
             const double esperada = (double)a0 / a1 * 4000.0 * k;
-            const int16_t c = ratio.counts(a0 * n, n, a1 * n, n);
+            const int16_t c = cuentas(ratio, a0 * n, n, a1 * n, n);
             if (esperada < 4090 && fabs(c - esperada) > 1.0) exacta = false;
             // Y en dieciseisavos, que es lo que publica el canal: la misma cuenta
             // con cuatro bits más abajo.
             const uint16_t cq = ratio.counts_q4(a0 * n, n, a1 * n, n);
             // Dos dieciseisavos: uno del redondeo de la división y el resto del de
             // las medias y del m_scale_q4 truncado (11 ppm). Medido, el peor del
-            // barrido es 1,18 dieciseisavos, contra 0,56 cuentas de counts().
+            // barrido es 1,18 dieciseisavos, contra 0,56 cuentas redondeando a cuentas.
             if (esperada < 4090 && fabs(cq / 16.0 - esperada) > 2.0 / 16) exacta = false;
             // La referencia cae un 2 %: A0 y A1 suben juntos.
-            const int16_t c2 = ratio.counts((unsigned long)(a0 * n * 1.02), n,
+            const int16_t c2 = cuentas(ratio, (unsigned long)(a0 * n * 1.02), n,
                                             (unsigned long)(a1 * n * 1.02), n);
             if (esperada < 4090 && abs(c2 - c) > 1) cancela = false;
         }
     }
     // La ventana más grande: 32 filas de 91 conversiones a fondo, en los dos canales.
     const unsigned long nmax = 32UL * 91UL;
-    if (ratio.counts(4095UL * nmax, nmax, 4095UL * nmax, nmax) != (int16_t)lround(4000.0 * k)) sin_desborde = false;
-    if (ratio.counts(4095UL * nmax, nmax, 1UL * nmax, nmax) != 4095) sin_desborde = false;
+    if (cuentas(ratio, 4095UL * nmax, nmax, 4095UL * nmax, nmax) != (int16_t)lround(4000.0 * k)) sin_desborde = false;
+    if (cuentas(ratio, 4095UL * nmax, nmax, 1UL * nmax, nmax) != 4095) sin_desborde = false;
     // El peor producto de counts_q4(): la media a fondo por la escala más grande.
     ratio.div_e4 = 10000;
     ratio.apply();

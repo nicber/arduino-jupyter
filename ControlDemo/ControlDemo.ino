@@ -94,10 +94,8 @@
 #include <AngleLut.h>
 #include <AngleTracker.h>
 #include <SensorHealth.h>
-#include <MainsNotch.h>
+#include <CurrentSense.h>
 #include <RowAdc.h>
-#include <SupplyRatio.h>
-#include <WindowMean.h>
 #include <HBridge.h>
 #include <LoopAngle.h>
 #include <LoopCurrent.h>
@@ -179,6 +177,9 @@ static const int16_t  SENSE_ZERO       = ADC_FULL / 2;
 static const float    SENSE_MA_PER_LSB =
     (float)SupplyRatio::UV_PER_COUNT / SENSE_MV_PER_A;
 
+// Un período: una ventana larga atrasa el lazo.
+static const uint8_t CURRENT_ROWS = 1;
+
 // Son dos elecciones independientes, y vale la pena mantenerlas separadas.
 //
 // `ctl_mode` elige el controlador: la ley que convierte un error en un comando.
@@ -212,11 +213,8 @@ typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 // 500 Hz de lazo.
 static SampleClock  g_clock(10);
 static Adc          g_adc;
-static SupplyRatio  g_ratio;
-static WindowMean   g_window(1);      // un período: una ventana larga atrasa el lazo
-static WindowMean   g_supply_window(1);
-static MainsNotch   g_notch;
-static LoopCurrent  g_current(SENSE_ZERO);
+static CurrentSense g_sense(SENSE_ZERO, CURRENT_ROWS);
+static LoopCurrent  g_current;
 static Lut          g_lut;
 static Angle        g_angle;
 static AngleTracker<COUNTS_PER_REV> g_turns;    // la cuenta cruda, desenrollada en la ISR
@@ -357,23 +355,23 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_busovr",     CTRL_U16, &g_health.overruns,   0                 },
     { "ang_buserr",     CTRL_U16, &g_health.errors,     0                 },
 
-    { "cur_zero",    CTRL_I16, &g_current.sense.zero, 0                },
-    { "cur_inv",     CTRL_U8,  &g_current.invert,    0                 },
+    { "cur_zero",    CTRL_I16, &g_sense.zero,              0                 },
+    { "cur_inv",     CTRL_U8,  &g_sense.invert,            0                 },
     { "cur_alpha",   CTRL_I32, &g_alpha_i,           LoopCurrent::Alpha::FRAC },
-    { "cur_filas",   CTRL_U8,  &g_window.rows,       0                 },
-    { "cur_div",     CTRL_U16, &g_ratio.div_e4,      0                 },
-    { "cur_a1",      CTRL_U16, &g_ratio.supply,      0                 },
-    { "cur_notch",   CTRL_U8,  &g_notch.harmonics,   0                 },
-    { "cur_notchr",  CTRL_U16, &g_notch.pole_milli,  0                 },
-    { "cur_ma_lsb",   CTRL_U16, &g_board.malsb,       8                 },
+    { "cur_filas",   CTRL_U8,  &g_sense.window.rows,       0                 },
+    { "cur_div",     CTRL_U16, &g_sense.ratio.div_e4,      0                 },
+    { "cur_a1",      CTRL_U16, &g_sense.ratio.supply,      0                 },
+    { "cur_notch",   CTRL_U8,  &g_sense.notch.harmonics,   0                 },
+    { "cur_notchr",  CTRL_U16, &g_sense.notch.pole_milli,  0                 },
+    { "cur_ma_lsb",  CTRL_U16, &g_board.malsb,       8                 },
 
-    { "board_adcfs",   CTRL_U16, &g_board.adcfs,       0                 },
-    { "board_bgadc",   CTRL_U16, &g_board.bgadc,       0                 },
-    { "board_bus",     CTRL_U8,  &g_board.bus,         0                 },
+    { "board_adcfs", CTRL_U16, &g_board.adcfs,       0                 },
+    { "board_bgadc", CTRL_U16, &g_board.bgadc,       0                 },
+    { "board_bus",   CTRL_U8,  &g_board.bus,         0                 },
 
-    { "loop_div",     CTRL_U8,  &g_clock.divide,      0                 },
-    { "loop_late",    CTRL_U16, &g_clock.late,        0                 },
-    { "loop_missed",  CTRL_U16, &g_clock.missed,      0                 },
+    { "loop_div",    CTRL_U8,  &g_clock.divide,      0                 },
+    { "loop_late",   CTRL_U16, &g_clock.late,        0                 },
+    { "loop_missed", CTRL_U16, &g_clock.missed,      0                 },
 };
 
 static const float COUNTS_TO_DEG = 360.0f / COUNTS_PER_REV;
@@ -447,9 +445,8 @@ ISR(ADC_vect)
 // o no queda donde se toma. La tabla se indexa con la cuenta cruda, que es la
 // única que conserva el ángulo de adentro de la vuelta.
 //
-// La corriente se promedia sobre `cur_filas` períodos, contra la alimentación del
-// sensor si hay divisor, y pasa por el notch de la red, si está prendido. Después LoopCurrent le
-// resta el cero, le da el signo y la filtra para el lazo.
+// La corriente pasa por la misma cadena que en Banco (ver Sense/CurrentSense.h), y
+// LoopCurrent la redondea a cuentas y la filtra para el lazo.
 static void measure(void)
 {
     uint16_t raw16;
@@ -467,14 +464,8 @@ static void measure(void)
     uint16_t n, supply_n;
     g_adc.row(sum, n, supply_sum, supply_n);
 
-    // El notch va alrededor del cero y no sobre la cuenta cruda: así su estado no
-    // arrastra los miles de cuentas del reposo del sensor.
-    const int16_t zero = g_current.sense.zero;
-    g_window.push(sum, n);
-    g_supply_window.push(supply_sum, supply_n);
-    const int16_t mean = g_ratio.counts(g_window.total(), g_window.count(),
-                                        g_supply_window.total(), g_supply_window.count());
-    g_current.update((int16_t)(g_notch.step((int16_t)(mean - zero)) + zero));
+    g_sense.push(sum, n, supply_sum, supply_n);
+    g_current.update(g_sense.i);
 
     const Lut::Counts raw = (Lut::Counts)raw16;
 
@@ -564,16 +555,12 @@ static void refresh_tuning(void)
     g_current.set_alpha(LoopCurrent::Alpha::from_raw(g_alpha_i));
 
     g_lut.apply(g_lutw);
-    g_ratio.apply();
-    g_adc.alternate(g_ratio.active());
+
+    g_sense.apply((float)SAMPLE_HZ / (float)g_clock.divide);
+    g_adc.alternate(g_sense.ratio.active());
 
     // Siempre: si la cadena del ADC quedó parada, esto es lo único que la levanta.
     g_adc.reconfigure();
-
-    g_window.apply();
-    g_supply_window.rows = g_window.rows;
-    g_supply_window.apply();
-    g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
     // El filtro del sensor, sólo cuando cambió: escribirlo en cada `set pid_kp`
     // pararía el muestreador sin motivo. Sólo con el muestreador corriendo, porque
