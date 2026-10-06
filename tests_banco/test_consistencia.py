@@ -162,8 +162,10 @@ if m:
           abs(rev - fs / 2) < 1, f'dice {rev:.0f} rev/s a {fs:.0f} Hz; son {fs / 2:.0f}')
 else:
     check('AngleTracker.h dice su límite de desenrollado', False)
+SAMPLER = texto(RAIZ / 'libraries' / 'AngleSensor' / 'src' / 'AngleSampler.h')
 check('y Banco desenrolla en la ISR, no en la fila',
-      re.search(r'ISR\(TIMER2_COMPA_vect\)[\s\S]{0,1000}g_turns\.update', BANCO) is not None)
+      re.search(r'ISR\(TIMER2_COMPA_vect\)[\s\S]{0,600}g_angle\.on_tick\(', BANCO) is not None
+      and re.search(r'void on_tick\([\s\S]{0,1200}turns\.update\(', SAMPLER) is not None)
 
 # ------------------------------------------------------------- lo que no va en el zip
 # La biblioteca del lazo sigue en el repositorio, para ControlDemo, pero Banco no la usa

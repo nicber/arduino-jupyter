@@ -12,11 +12,12 @@
 // tiene un dueño, y el dueño se lleva su estado adentro:
 //
 //   g_clock    el reloj del lazo          Sampler/SampleClock.h
-//   g_adc      el conversor corriendo libre  Sense/RowAdc.h
-//   g_ratio    contra la alimentación del sensor  Sense/SupplyRatio.h
-//   g_window   el promedio de la corriente Sense/WindowMean.h
-//   g_notch    el notch de la red          Sense/MainsNotch.h
-//   g_current  la corriente con sentido    Control/LoopCurrent.h
+//   g_adc      el conversor, encadenado    Sense/RowAdc.h
+//   g_sense    la corriente con sentido: la ventana, el divisor, el cero, el notch
+//                                          Sense/CurrentSense.h
+//   g_current  la corriente que lee el lazo Control/LoopCurrent.h
+//   g_sampler  el ángulo, muestreado y desenrollado en la ISR
+//                                          AngleSensor/AngleSampler.h
 //   g_lut      la corrección del ángulo    Calibracion/AngleLut.h
 //   g_angle    la posición del lazo        Control/LoopAngle.h
 //   g_health   qué se le puede creer al sensor  AngleSensor/SensorHealth.h
@@ -92,7 +93,7 @@
 #include <FirstOrderFilter.h>
 
 #include <AngleLut.h>
-#include <AngleTracker.h>
+#include <AngleSampler.h>
 #include <SensorHealth.h>
 #include <CurrentSense.h>
 #include <RowAdc.h>
@@ -217,7 +218,7 @@ static CurrentSense g_sense(SENSE_ZERO, CURRENT_ROWS);
 static LoopCurrent  g_current;
 static Lut          g_lut;
 static Angle        g_angle;
-static AngleTracker<COUNTS_PER_REV> g_turns;    // la cuenta cruda, desenrollada en la ISR
+static AngleSampler<Sensor, COUNTS_PER_REV> g_sampler;
 static SensorHealth g_health;
 static Pid          g_pid;
 static Setpoint     g_set(MODE_OPEN, TARGET_POSITION);
@@ -259,13 +260,6 @@ struct BoardFacts
 };
 
 static BoardFacts g_board = { ADC_FULL, 0, 0, 0 };
-
-// Lo que la ISR congela en el tick de cada período, y el contador de muestras del
-// AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
-static volatile uint16_t g_tick_raw    = 0;
-static volatile int32_t  g_tick_raw_uw = 0;
-static volatile uint8_t  g_tick_fresh  = 0;
-static uint16_t          g_isr_samples = 0;
 
 // 1 si la cuenta de este período repite la anterior: la transferencia del AS5600
 // que tenía que traerla no terminó a tiempo. El mismo canal que en Banco.
@@ -405,24 +399,11 @@ ISR(TIMER2_COMPA_vect)
     // Lo que el ADC sumó en este tick, antes que nada: el ADC no interrumpe esta ISR.
     g_adc.close_tick();
 
-    // Antes de lanzar la transferencia de este tick: si el contador no avanzó desde
-    // el tick anterior, la que se lanzó entonces no terminó.
-    const uint16_t samples = Sensor::samples();
-    const uint8_t  fresh   = (samples != g_isr_samples);
-    g_isr_samples = samples;
-
-    Sensor::do_transfer();
-
-    // Desenrollar sobre cada muestra y no una vez por período: con `loop_div` alto,
-    // media vuelta por período es poco. Ver Banco.ino.
-    const uint16_t counts = Sensor::counts();
-    g_turns.update((int16_t)counts);
+    g_sampler.on_tick();
 
     if (g_clock.on_isr())
     {
-        g_tick_raw    = counts;
-        g_tick_raw_uw = g_turns.y_uw;
-        g_tick_fresh  = fresh;
+        g_sampler.freeze();
         g_adc.close_row();
     }
 }
@@ -451,13 +432,8 @@ static void measure(void)
 {
     uint16_t raw16;
     int32_t  raw_uw;
-    uint8_t  fresh;
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        raw16  = g_tick_raw;
-        raw_uw = g_tick_raw_uw;
-        fresh  = g_tick_fresh;
-    }
+    bool     fresh;
+    g_sampler.take(raw16, raw_uw, fresh);
     g_y_rep = !fresh;
 
     uint32_t sum, supply_sum;

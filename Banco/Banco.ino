@@ -37,7 +37,8 @@
 //   g_current  la corriente: la ventana, el divisor, el cero, el notch y el signo
 //                                             Sense/CurrentSense.h
 //   g_lut      la corrección del ángulo       Calibracion/AngleLut.h
-//   g_turns    el ángulo desenrollado         AngleSensor/AngleTracker.h
+//   g_angle    el ángulo, muestreado y desenrollado en la ISR
+//                                             AngleSensor/AngleSampler.h
 //   g_health   la confiabilidad del sensor    AngleSensor/SensorHealth.h
 //   g_motor    el actuador                    Actuator/HBridge.h
 //
@@ -76,8 +77,6 @@
 // de 976,6 Hz, así que millis() queda un 2,4 % rápido y el PWM de los pines 5 y 6 deja
 // de servir (ver BoardStart/BoardClock.h).
 
-#include <util/atomic.h>
-
 #include <nI2C.h>
 
 #include <AS5600.h>
@@ -86,7 +85,7 @@
 #include <CtrlLink.h>
 
 #include <AngleLut.h>
-#include <AngleTracker.h>
+#include <AngleSampler.h>
 #include <SensorHealth.h>
 #include <CurrentSense.h>
 #include <RowAdc.h>
@@ -142,7 +141,6 @@ static const float    SENSE_MA_PER_LSB =
 
 typedef AS5600<NI2CBus>                                        Sensor;
 typedef AngleLut<COUNTS_PER_REV, 64>                           Lut;
-typedef AngleTracker<COUNTS_PER_REV>                           Angle;
 typedef HBridge<MOTOR_PWM_PIN, MOTOR_IN1_PIN, MOTOR_IN2_PIN>   Motor;
 typedef RowAdc<SENSE_CHANNEL, SUPPLY_CHANNEL>                  Adc;
 
@@ -155,7 +153,7 @@ static SampleClock  g_clock(10);
 static Adc          g_adc;
 static CurrentSense g_current(SENSE_ZERO, CURRENT_ROWS);
 static Lut          g_lut;
-static Angle        g_turns;      // la cuenta cruda, desenrollada en la ISR
+static AngleSampler<Sensor, COUNTS_PER_REV> g_angle;
 static SensorHealth g_health;
 static Motor        g_motor(PWM_TOP);
 
@@ -212,12 +210,6 @@ static uint8_t g_ang_inv = 0;
 // y con el divisor en A1 la red ya es de ~1 mA. `cur_notch` lo prende, cada armónico
 // por separado (máscara: 1 = 50, 2 = 100, 4 = 150 Hz). Ver Sense/MainsNotch.h.
 static const uint8_t MAINS_HARMONICS = 0;
-// Lo que la ISR congela en el tick de cada fila, y el contador de muestras del
-// AS5600 en el tick anterior, que es lo que dice si la cuenta es nueva.
-static volatile uint16_t g_tick_raw     = 0;
-static volatile int32_t  g_tick_raw_uw  = 0;
-static volatile uint8_t  g_tick_fresh   = 0;
-static uint16_t          g_isr_samples  = 0;
 
 // Prende y apaga la corrección en caliente, que es lo que permite medir cuánto
 // sirve en lugar de suponerlo.
@@ -302,33 +294,19 @@ static const CtrlChannel PROGMEM g_channels[] =
 
 ISR(TIMER2_COMPA_vect)
 {
-    // Antes de lanzar la transferencia de este tick: si el contador no avanzó
-    // desde el tick anterior, la que se lanzó entonces no terminó, y la cuenta que
-    // hay es la de antes.
-    const uint16_t samples = Sensor::samples();
-    const uint8_t  fresh   = (samples != g_isr_samples);
-    g_isr_samples = samples;
-
     // Lo que el ADC sumó en este tick, con la media de 4 ticks si está prendida. El ADC
     // no interrumpe esta ISR, así que el borde del tick es éste.
     g_adc.close_tick();
 
 #if SENSE_DIAG
-    if (g_dbg_i2c)
+    g_angle.on_tick(g_dbg_i2c);
+#else
+    g_angle.on_tick();
 #endif
-    {
-        Sensor::do_transfer();
-    }
-
-    // Una vuelta de desenrollado por muestra. Una muestra repetida no avanza nada.
-    const uint16_t counts = Sensor::counts();
-    g_turns.update((Angle::Counts)counts);
 
     if (g_clock.on_isr())
     {
-        g_tick_raw    = counts;
-        g_tick_raw_uw = g_turns.y_uw;
-        g_tick_fresh  = fresh;
+        g_angle.freeze();
         g_adc.close_row();
     }
 }
@@ -358,14 +336,8 @@ static void step(void)
 {
     uint16_t raw;
     int32_t  raw_uw;
-    uint8_t  fresh;
-
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-    {
-        raw    = g_tick_raw;
-        raw_uw = g_tick_raw_uw;
-        fresh  = g_tick_fresh;
-    }
+    bool     fresh;
+    g_angle.take(raw, raw_uw, fresh);
 
     uint32_t sum, supply_sum;
     uint16_t n, supply_n;

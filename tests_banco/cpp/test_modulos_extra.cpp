@@ -19,6 +19,7 @@
 #include "SampleClock.h"
 #include "SensorHealth.h"
 #include "AngleTracker.h"
+#include "AngleSampler.h"
 #include "WindowMean.h"
 #include "SupplyRatio.h"
 
@@ -73,6 +74,19 @@ struct SensorFalso
 };
 bool    SensorFalso::contesta = true;
 uint8_t SensorFalso::pedido   = 0;
+
+// Lo que AngleSampler le pide al driver en la ISR.
+struct MuestreoFalso
+{
+    static uint16_t muestras, cuenta;
+    static int      lanzadas;
+    static uint16_t samples(void) { return muestras; }
+    static uint16_t counts(void)  { return cuenta; }
+    static void do_transfer(void) { lanzadas++; }
+};
+uint16_t MuestreoFalso::muestras = 0;
+uint16_t MuestreoFalso::cuenta   = 0;
+int      MuestreoFalso::lanzadas = 0;
 
 // SupplyRatio da dieciseisavos; esto los redondea a cuentas enteras.
 static int16_t cuentas(SupplyRatio& r, unsigned long s0, unsigned long n0,
@@ -228,6 +242,37 @@ int main()
     montaje.refresh_mounting<SensorFalso>(2200);
     check(montaje.status == 0 && montaje.agc == 0 && montaje.magnitude == 0,
           "sin sensor en el bus olvida el montaje");
+
+    // ------------------------------------------- AngleSampler: el tick de la ISR
+    {
+        AngleSampler<MuestreoFalso> ang;
+        uint16_t raw;
+        int32_t  uw;
+        bool     nueva;
+
+        MuestreoFalso::muestras = 1;
+        MuestreoFalso::cuenta   = 4000;
+        ang.on_tick();
+        MuestreoFalso::muestras = 2;
+        MuestreoFalso::cuenta   = 100;
+        ang.on_tick();
+        ang.freeze();
+        ang.take(raw, uw, nueva);
+        check(raw == 100 && uw == 100 && nueva,
+              "AngleSampler desenrolla cada tick: 0 -> 4000 -> 100 cruza el cero hacia arriba");
+        check_eq(MuestreoFalso::lanzadas, 2, "y lanza una transferencia por tick");
+
+        ang.on_tick();          // el contador no avanzó: la transferencia no terminó
+        ang.freeze();
+        ang.take(raw, uw, nueva);
+        check(!nueva, "una cuenta que no se renovó se marca repetida");
+
+        MuestreoFalso::muestras = 3;
+        ang.on_tick(false);
+        check_eq(MuestreoFalso::lanzadas, 3, "on_tick(false) no lanza la transferencia");
+        ang.take(raw, uw, nueva);
+        check(!nueva, "y lo que lee loop() no cambia hasta el próximo freeze()");
+    }
 
     // ------------------------------------------------- AngleTracker: el límite
     // Un eje a 700 rad/s (111 rev/s): desenrollado a 5 kHz sigue la vuelta; una vez por
