@@ -17,14 +17,23 @@ DECISIONES (cátedra, oct. 2026):
   - El único cambio físico del motor es frenar el disco con un dedo: es una
     perturbación de carga, no repetible, así que se la pide cualitativa (1.5, 2.5).
     Los cambios de parámetros salen del punto de trabajo (3.1), de diseñar con un
-    modelo equivocado a propósito (3.2) y del banco simulado (3.7).
+    modelo equivocado a propósito (3.2) y del banco simulado (3.12).
   - Bancos con actuadores mezclados (B puente, B′ transistor): los requisitos son
-    relativos al modelo de cada banco, y la bajada (3.5) se contesta según el actuador.
+    relativos al modelo de cada banco, y la bajada (3.10) se contesta según el actuador.
   - Controladores: un proporcional primero, y después el alumno elige cómo cumplir
     requisitos en el dominio del tiempo. El enunciado no nombra un PI.
   - D(s) en la placa es una ganancia por una cadena de bloques de un cero y un polo,
     (s + z)/(s + p), configurables. Los alumnos configuran, no editan el sketch.
-  - Recorrido esencial marcado (●) de 4 a 5 h; el resto es profundización (○).
+  - Un PI sobre la POSICIÓN se inestabiliza si no se lo diseña con cuidado, y lo
+    tienen que descubrir ellos (parte B del ejercicio 3). Se plantea como seguimiento
+    de un ángulo que avanza a w_e, y no como un servo alrededor de cero: así el eje
+    gira siempre para el mismo lado --sirve en un banco B′--, la planta es la del TP2
+    con un integrador más, K/(s (tau s + 1)), donde el modelo vale, y no hay zona
+    muerta. El 3.6 les hace cargar el bloque (1/tau, 0), el mejor PI de velocidad, sin
+    avisar: L queda con dos integradores y MF = 0. El 3.7 pide el porqué: por Routh,
+    estable si y sólo si z < 1/tau, sin que importe Kc.
+  - Recorrido esencial marcado (●) de 5 a 6 h; el resto es profundización (○). Al
+    entrar la parte B, el escalón grande y la bajada pasaron a profundización (3.10).
   - Registro impersonal, como CONVENCIONES.md y hardware.ipynb (el TP1 vosea).
 
 LO QUE TODAVÍA NO EXISTE (y este enunciado supone). El firmware no tiene lazo de
@@ -33,13 +42,16 @@ velocidad ni cadena de bloques. Nombres PROVISIONALES, a confirmar al implementa
   - `vel_win`: períodos de 2 ms sobre los que se diferencia el ángulo;
   - `dev.compensador(Kc, [(z, p), ...])`, hasta tres bloques, z y p en rad/s, p = 0
     para un integrador; cada bloque discretizado por Tustin;
-  - un interruptor del anti-windup del integrador (ítem 3.5);
+  - un interruptor del anti-windup del integrador (ítem 3.10);
+  - el seguimiento de un ángulo (parte B): el lazo sobre el ángulo con una referencia
+    que avanza a w_e --`ctl_rate` de MODE_RAMP ya hace eso en ControlDemo--, un salto
+    de esa referencia (`ctl_fase`) y el error en un canal, en radianes;
   - canales de telemetría con la referencia, la velocidad que usa el lazo y u.
 Preguntas abiertas del firmware: si hace falta un bloque sin cero (pasabajos) o sin
 polo; dónde se calculan los coeficientes (del lado de la computadora, como el resto);
 la velocidad en punto fijo; el flash que queda en ControlDemo. La referencia de lo
 que tiene que hacer está en `lazo_simulado.py`, que es además lo que hoy necesita el
-ítem 3.7: el banco simulado todavía no cierra el lazo.
+ítem 3.12: el banco simulado todavía no cierra el lazo.
 
 REQUISITOS, y por qué estos. Escalón de ensayo: de w0 a la mitad del escalón del
 TP2, para dejarle recorrido al actuador. R2 (ts <= tau) da K Kp >= 2 a un
@@ -82,12 +94,33 @@ se tiene que repetir el sentido de cada comparación.
       topes. Desde 150 rad/s, donde K es 2,5 veces mayor, x3 ya da Mp 17 %. No diverge:
       el recorte lo convierte en un ciclo límite. Con vel_win = 5 lo que aparece antes
       es el ruido: std(u) 8 % con x10.
-  3.5 De 200 a 560: con anti-windup sin sobrepico, ts 1,09 s; sin él llega a 588
+  3.5 Theta/U = K/(s (tau s + 1)). tau s^2 + s + K Kp = 0: zeta = 1/(2 sqrt(K Kp tau)),
+      así que Kp = 1/(K tau) = 0,204 %/rad da zeta = 0,5, wn = 1/tau, Mp 16 %, ts 4,8 s,
+      MF = 51,7 grados. Medido: Mp 9,6 %, ts 7,3 s (la K local es mayor que la del
+      modelo y la planta no es lineal). Error de seguimiento: -6,5 rad, una vuelta
+      entera. Sale de que u_ff no es exacto: equivale a una perturbación constante a la
+      entrada de la planta, y vale (lo que le sobra a u_ff)/Kp. A lazo abierto ese
+      mismo error de velocidad se integra y el ángulo se aleja sin límite.
+  3.6 Bloque (1/tau, 0) con Kc = 0,204: L = Kc K/(tau s^2), polos en +-j 1,24 rad/s,
+      MF = 0 (-0,1 grados con el retardo). Medido: el error oscila con período de unos
+      5 s y no se apaga: +-16 rad a los 20 s, +-116 rad a los 60 s, con u entre 12 y
+      84 %. Con Kc = 0,8 tampoco se apaga: +-7,5 rad a los 20 s, a 2,45 rad/s.
+  3.7 tau s^3 + s^2 + K Kc s + K Kc z = 0. Routh: K Kc > tau K Kc z, o sea z < 1/tau,
+      para cualquier Kc. Centro de las asíntotas: (z - 1/tau)/2, que cambia de signo
+      ahí mismo. En velocidad el cero en 1/tau dejaba UN integrador (MF 90 grados); acá
+      deja dos. z = 2/tau: par en +0,22 +- j1,49, crece hasta los topes en menos de
+      20 s. z = 1/(2 tau): estable, zeta = 0,2, MF 19 grados, Mp 68 %.
+  3.8 Dos referencias. PI lento, Kc = 0,204 y z = 0,1/tau: MF 44 grados, Mp 19 %, ts
+      9,0 s, y el integrador tarda decenas de segundos en absorber el error de u_ff.
+      PI más adelanto, Kc = 2 con (0,5/tau, 0) y (1/tau, 10/tau): MF 59 grados, Mp 21 %,
+      ts 5,6 s, error nulo; u(0+) del salto +12,6 %. Lo que se paga por el integrador:
+      fase, que se recupera con una cola lenta o con más esfuerzo de control.
+  3.10 De 200 a 560: con anti-windup sin sobrepico, ts 1,09 s; sin él llega a 588
       (Mp 7,6 %), ts 1,57 s. De 560 a 300 en B′: u = 0 durante 0,83 s, ts 1,62 s (a
       lazo abierto 3,6 s); sin anti-windup cae hasta 205 y tarda 3,5 s. En un banco B
       el comando puede ir a negativo y la bajada no depende del rozamiento: no está
       simulado.
-  3.7 Inercia x2: Mp 7,9 %, ts 2,0 s (el cero dejó de cancelar). Fuente de 4,2 V: ts
+  3.12 Inercia x2: Mp 7,9 %, ts 2,0 s (el cero dejó de cancelar). Fuente de 4,2 V: ts
       0,94 s, u llega al tope; a lazo abierto va de 337 a 398 en vez de 418 a 478.
 """
 import sys
@@ -117,7 +150,8 @@ en la placa y comprobar sobre el motor si hace lo que el modelo predijo.
 
 La pregunta que recorre los tres ejercicios es qué pasa cuando **el motor no es el del
 modelo**: porque se lo identificó en un solo punto de trabajo, porque se lo identificó con
-error, porque algo frena el eje, o porque el lazo real tiene cosas que el modelo no tiene.
+error, porque algo frena el eje, porque el lazo real tiene cosas que el modelo no tiene, o
+porque al mismo controlador se le pide otra cosa.
 A lazo abierto cada una de esas diferencias aparece entera en la velocidad. A lazo cerrado
 no, y el TP pide medir cuánto se reduce y cuál es "el precio".
 
@@ -142,7 +176,7 @@ Este mismo notebook, completado, con:
 
 ### Recorrido
 
-Los ítems marcados con ● forman el recorrido esencial, de unas 4 a 5 horas. Los marcados
+Los ítems marcados con ● forman el recorrido esencial, de unas 5 a 6 horas. Los marcados
 con ○ son de profundización: cada uno retoma un ítem esencial y lo lleva más lejos.
 
 ### Dónde buscar los comandos
@@ -154,7 +188,8 @@ sección 5, para todo lo que es capturar y guardar ensayos.
 md(r"""
 <div class="alert alert-block alert-danger">
 <b>BORRADOR.</b> El lazo de velocidad y la cadena de bloques todavía no están en el
-firmware. Los nombres de la sección <i>La interfaz</i> son provisionales, y el ítem 3.7
+firmware, y tampoco el seguimiento de un ángulo de la parte B del ejercicio 3. Los nombres
+de la interfaz son provisionales, y el ítem 3.12
 necesita que el banco simulado cierre el lazo. Ver la cabecera de
 <code>tp3/_fuentes/build_tp3.py</code>. Esta celda se quita al publicar.
 </div>
@@ -417,6 +452,8 @@ md(r"""
 
 El compensador de 2.2 **no se toca** en este ejercicio, salvo donde se lo dice.
 
+### A. La planta no es la del modelo
+
 **3.1 ●  Otro punto de trabajo.** Repetir un escalón del mismo tamaño que el de ensayo desde
 una velocidad baja, del orden de $\omega_0/3$, y desde $\omega_1$ con medio salto. Hacerlo
 con el compensador y a lazo abierto, con el modelo invertido de 1.1. Tabular valor final,
@@ -444,22 +481,75 @@ de ganancia de 3.3. Repetir desde la velocidad baja de 3.1: ¿dónde aparece ant
 oscilación, y por qué, a la luz de la $K$ local? La amplitud no crece sin límite: ¿qué la
 detiene?
 
-**3.5 ●  Escalón grande, y la bajada.** Volver a `vel_win = 5` y a la ganancia de 2.2. Medir un
-escalón de subida lo bastante grande para que el comando quede en el tope varias décimas de
-segundo, con el anti-windup de la placa activado y desactivado. Después, un escalón de
-bajada del mismo tamaño. Indicar qué actuador tiene el banco y explicar, con el recorte de
-$u$, qué limita la bajada. ¿Hay algún compensador que la haga más rápida?
+### B. Se le pide otra cosa: seguir un ángulo
 
-**3.6 ○  Ruido o estabilidad.** Repetir 3.3 y 3.4 con `vel_win = 5`. El margen de ganancia
+Hasta acá se reguló la velocidad. Ahora la referencia es un **ángulo que avanza** a velocidad
+constante, $\theta_r(t) = \omega_e\,t$, y el lazo se cierra sobre el ángulo medido:
+$e = \theta_r - \theta$. El eje gira siempre en el mismo sentido y alrededor del mismo punto
+de trabajo, así que el ensayo vale con cualquiera de los dos actuadores. La planta, del
+comando al ángulo, es la del TP2 con un integrador más:
+
+$$
+\frac{\Delta\Theta(s)}{\Delta U(s)} = \frac{K}{s\,(\tau s+1)} .
+$$
+
+El ángulo se usa como lo entrega el sensor: en este lazo no hay ventana de velocidad. $K_c$
+pasa a estar en $\%/\text{rad}$, y la prealimentación es el comando que, según el modelo, da
+$\omega_e$: el de 1.1. El ensayo es un **salto de una vuelta** ($2\pi$ rad) en la referencia
+mientras avanza, y se miran el error de seguimiento $e(t)$ y el comando.
+
+```python
+dev.seguir_angulo(w_e, uff=u_e)                       # la referencia avanza a w_e rad/s
+df = dev.step('ctl_fase', 2*np.pi, pre=5, post=30)    # salto de una vuelta; `e` es el error, en rad
+```
+
+> Si en un ensayo de esta parte el error crece en lugar de apagarse, se lo corta volviendo
+> a $K_c = 0$.
+
+**3.5 ●  Un proporcional.** Con $D = K_p$, obtener la ecuación característica y elegir $K_p$
+para $\zeta = 0{,}5$. Predecir el sobrepico y el tiempo de establecimiento al $5\,\%$ ante el
+salto de una vuelta, y medirlos. Antes del salto, con la referencia avanzando, ¿el error de
+seguimiento es nulo? La planta es de tipo 1: explicar de dónde sale ese error, a qué
+entrada del lazo equivale y de qué depende su tamaño. ¿Qué haría ese error a lazo abierto?
+
+**3.6 ●  Anular el error de seguimiento.** En el lazo de velocidad el error de régimen se
+anuló con un integrador, y un PI con el cero sobre el polo de la planta, $z = 1/\tau$, es
+ahí un diseño natural: cancela el polo y deja un lazo de primer orden. Cargar ese mismo
+bloque, $(1/\tau,\ 0)$, con la ganancia de 3.5, y medir el salto de una vuelta durante 30 s
+por lo menos. Describir qué hacen el error y el comando.
+
+**3.7 ●  Explicar lo que se vio.** Escribir $L(s)$ con ese compensador: ¿cuántos integradores
+tiene, y cuánto vale su margen de fase? Con un cero cualquiera, $D = K_c\,(s+z)/s$, obtener
+la ecuación característica y, por Routh, la condición de estabilidad. ¿Depende de $K_c$?
+Comprobarla con el centro de las asíntotas del lugar de las raíces. Simular sobre el modelo
+con $z = 2/\tau$ y con $z = 1/(2\tau)$, y medir uno de los dos en el banco. ¿Por qué el cero
+que en velocidad era una buena elección acá no lo es?
+
+**3.8 ●  Con cuidado.** Diseñar un compensador que anule el error de seguimiento con un margen
+de fase no menor que $40^\circ$ y un sobrepico no mayor que el $30\,\%$ ante el salto de una
+vuelta, sin que el comando llegue a los topes. Alcanza con un PI si su cero se elige bien;
+con un bloque más se puede recuperar fase. Predecir, medir, y comparar con el proporcional
+de 3.5: ¿qué se pagó por el integrador?
+
+**3.9 ●  Balance.** Completar la tabla del final y escribir la conclusión.
+
+### Profundización
+
+**3.10 ○  Escalón grande, y la bajada.** Con el lazo de velocidad, `vel_win = 5` y el
+compensador de 2.2, medir un escalón de subida lo bastante grande para que el comando quede
+en el tope varias décimas de segundo, con el anti-windup de la placa activado y desactivado.
+Después, un escalón de bajada del mismo tamaño. Indicar qué actuador tiene el banco y
+explicar, con el recorte de $u$, qué limita la bajada. ¿Hay algún compensador que la haga
+más rápida?
+
+**3.11 ○  Ruido o estabilidad.** Repetir 3.3 y 3.4 con `vel_win = 5`. El margen de ganancia
 predicho es varias veces mayor: ¿se lo alcanza? ¿Qué aparece antes? Relacionarlo con 1.4 y
 con 2.6.
 
-**3.7 ○  Otro motor.** En el banco simulado se pueden cambiar los parámetros del motor. Con
+**3.12 ○  Otro motor.** En el banco simulado se pueden cambiar los parámetros del motor. Con
 el compensador de 2.2 y con el lazo abierto de 1.1, repetir el escalón de ensayo con la
 inercia al doble y con la fuente a un $85\,\%$ de su tensión. ¿Qué cambia en cada estrategia?
 ¿Cuál de los dos cambios se ve en $u$ y cuál no?
-
-**3.8 ●  Balance.** Completar la tabla y escribir la conclusión.
 
 <div class="alert alert-block alert-info">
 <b>En la industria.</b> La ganancia que cambia con el punto de trabajo (3.1) se trata con
@@ -467,10 +557,17 @@ inercia al doble y con la fuente a un $85\,\%$ de su tensión. ¿Qué cambia en 
 estática del actuador. Los márgenes de 3.3 se especifican --6 dB y 45° son valores usuales--
 no porque el modelo los necesite, sino como presupuesto para lo que el modelo no tiene. El
 ensayo de 3.4 es, en esencia, lo que hace el autoajuste de un controlador comercial: lleva el
-lazo a una oscilación controlada y lee de ahí la ganancia límite. Y la bajada de 3.5 es la
-razón por la que un variador trae rampas de aceleración y de frenado configurables, y una
-resistencia de frenado cuando la carga tiene que detenerse rápido: ningún controlador da la
-autoridad que el actuador no tiene.
+lazo a una oscilación controlada y lee de ahí la ganancia límite.
+<br/><br/>
+Seguir un ángulo que avanza es lo que hace un <i>eje electrónico</i>: dos motores que giran
+sincronizados sin un eje mecánico que los una, como en una impresora rotativa o en una
+bobinadora. Y lo que aparece en 3.6 explica la estructura de casi todos los
+servoamplificadores: un lazo de velocidad PI por dentro y, por fuera, un lazo de posición
+sólo proporcional. El integrador va en el lazo de velocidad.
+<br/><br/>
+La bajada de 3.10 es la razón por la que un variador trae rampas de aceleración y de frenado
+configurables, y una resistencia de frenado cuando la carga tiene que detenerse rápido:
+ningún controlador da la autoridad que el actuador no tiene.
 </div>
 """)
 
@@ -485,10 +582,11 @@ md(r"""
 | otro punto de trabajo (3.1) | | | |
 | una $K$ mal identificada (3.2) | | | |
 | un retardo que no está en el modelo (3.3, 3.4) | | | |
-| un escalón que satura al actuador (3.5) | | | |
+| seguir un ángulo en lugar de una velocidad (3.5 a 3.8) | | | |
 
 **Conclusión del ejercicio 3:** *(escribirla acá: qué hizo robusto al lazo, frente a qué no
-lo es, y qué decisiones de diseño tomó el modelo y cuáles lo que al modelo le falta)*
+lo es, qué cambió al cerrar el lazo sobre el ángulo, y qué decisiones de diseño tomó el
+modelo y cuáles lo que al modelo le falta)*
 """)
 
 md(r"""

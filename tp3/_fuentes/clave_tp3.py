@@ -8,9 +8,10 @@ identificado. Los números son de ESE motor, con actuador de un cuadrante: en un
 banco real cambian, y lo que tiene que repetirse es el orden de magnitud y el
 sentido de cada comparación. El resumen está en la cabecera de `build_tp3.py`.
 """
+import control as ctrl
 import numpy as np
 
-from lazo_simulado import TS, medir, simular
+from lazo_simulado import TS, medir, seguir, simular
 
 U0, U1 = 40.0, 60.0             # %, el escalón de identificación del TP2
 VEL_WIN = 5                     # períodos de la ventana de velocidad, por omisión
@@ -164,7 +165,73 @@ for ventana in (VEL_WIN_LARGA, VEL_WIN):
             t, w, _, u = simular(escalon(a, c), k=PI_KC * g, bloques=PI, vel_win=ventana, post=3)
             fila(f'vel_win {ventana}, x{g}, desde {a:.0f}', t, w, u, a, c)
 
-titulo('3.5  Escalón grande, y la bajada (actuador de un cuadrante)')
+
+# ------------------------------------------- ejercicio 3, el lazo sobre el ángulo
+
+VUELTA = 2 * np.pi
+TD_POS = TS / 2 + 0.9e-3        # sin ventana de velocidad: media retención y ~1 ms
+
+
+def angulo(nombre, kc, bloques, post=20.0, cierre=-6.0):
+    """Un salto de una vuelta en la referencia que avanza a WE, con u_ff del modelo.
+
+    `cierre` es cuánto antes del salto se cierra el lazo: un integrador lento
+    necesita decenas de segundos para absorber lo que le falta a u_ff.
+    """
+    t, e, w, u = seguir(WE, VUELTA, U_WE, k=kc, bloques=bloques, pre=6 - cierre, post=post,
+                        cierre=cierre)
+    antes, despues, cola = (t > -1) & (t < 0), t >= 0, t > t[-1] - 4
+    e0, final = e[antes].mean(), e[cola].mean()
+    afuera = np.abs(e[despues] - final) > 0.05 * VUELTA
+    ts = t[despues][np.nonzero(afuera)[0][-1]] + TS if afuera.any() else 0.0
+    print(f'  {nombre:34s} e antes {e0:6.2f} rad   sobrepico {max(final - e[despues].min(), 0) / VUELTA * 100:6.1f} %   '
+          f'ts(5 %) {ts:5.2f} s   e final {final:6.2f} rad, oscilando +-{np.ptp(e[cola]) / 2:5.2f}   '
+          f'u de {u[despues].min():5.1f} a {u[despues].max():5.1f} %')
+
+
+def margen_de_fase(kc, bloques):
+    lazo = ctrl.tf([kc * K], [TAU, 1, 0])
+    for z, p in bloques:
+        lazo = lazo * ctrl.tf([1, z], [1, p])
+    _, mf, _, wc = ctrl.margin(lazo)
+    return mf - np.degrees(wc * TD_POS), wc
+
+
+titulo('3.5  Seguir un ángulo con un proporcional: Theta/U = K/(s (tau s + 1))')
+KP_POS = 1 / (K * TAU)          # zeta = 1/(2 sqrt(K Kp tau)) = 0,5
+mf, wc = margen_de_fase(KP_POS, [])
+print(f'  Kp = 1/(K tau) = {KP_POS:.3f} %/rad: zeta = 0,5, wn = 1/tau = {1 / TAU:.2f} rad/s, Mp = 16,3 %, '
+      f'ts(5 %) ~ 3/(zeta wn) = {6 * TAU:.1f} s, MF = {mf:.1f} grados en {wc:.2f} rad/s')
+print('  error de seguimiento: (lo que le falta o le sobra a u_ff)/Kp')
+angulo(f'P, Kp = {KP_POS:.3f}', KP_POS, [])
+
+titulo('3.6  El PI de velocidad (cero sobre el polo de la planta), cerrado sobre el ángulo')
+mf, wc = margen_de_fase(KP_POS, PI)
+print(f'  L = Kc K/(tau s^2): polos en +-j {np.sqrt(K * KP_POS / TAU):.2f} rad/s, MF = {mf:.2f} grados')
+for post in (20.0, 60.0):
+    angulo(f'PI, cero en 1/tau, {post:.0f} s', KP_POS, PI, post=post)
+angulo(f'PI, cero en 1/tau, Kc = {PI_KC}', PI_KC, PI)
+
+titulo('3.7  El borde: tau s^3 + s^2 + K Kc s + K Kc z = 0 es estable si y sólo si z < 1/tau')
+for factor in (2, 1, 0.5, 0.2, 0.1):
+    z = factor / TAU
+    polos = np.roots([TAU, 1, K * KP_POS, K * KP_POS * z])
+    par = polos[np.argmax(np.abs(polos.imag))]
+    mf, _ = margen_de_fase(KP_POS, [(z, 0.0)])
+    print(f'  z = {factor}/tau: par en {par.real:6.3f} +- j{abs(par.imag):.3f} '
+          f'(zeta {-par.real / abs(par):6.3f}), MF = {mf:5.1f} grados, centro de asíntotas {(z - 1 / TAU) / 2:6.3f}')
+    angulo(f'PI, cero en {factor}/tau', KP_POS, [(z, 0.0)], cierre=-6.0 if factor >= 1 else -40.0)
+
+titulo('3.8  Con cuidado: dos diseños de referencia')
+for nombre, kc, bloques in (
+        ('PI lento, cero en 0,1/tau', KP_POS, [(0.1 / TAU, 0.0)]),
+        ('PI + adelanto (1/tau, 10/tau)', 2.0, [(0.5 / TAU, 0.0), (1 / TAU, 10 / TAU)])):
+    mf, wc = margen_de_fase(kc, bloques)
+    print(f'  {nombre}, Kc = {kc:.2f}: MF = {mf:.1f} grados en {wc:.2f} rad/s, '
+          f'u(0+) del salto = +{kc * VUELTA:.1f} %')
+    angulo(nombre, kc, bloques, cierre=-40.0)
+
+titulo('3.10  Escalón grande, y la bajada (actuador de un cuadrante)')
 for a, c in ((200.0, 560.0), (560.0, 300.0)):
     for aw in (True, False):
         t, w, _, u = simular(escalon(a, c), k=PI_KC, bloques=PI, antiwindup=aw, post=6)
@@ -174,7 +241,7 @@ for a, c in ((200.0, 560.0), (560.0, 300.0)):
         saturado = np.sum((u[despues] >= 100) | (u[despues] <= 0)) * TS
         print(f'  {"":32s} extremo {extremo:.1f} rad/s, {saturado:.2f} s con el comando en el tope')
 
-titulo('3.7  Otro motor (sólo simulado), con el PI y con el lazo abierto sin tocar')
+titulo('3.12  Otro motor (sólo simulado), con el PI y con el lazo abierto sin tocar')
 for nombre, motor in (('nominal', {}), ('inercia x2', {'J': 1.5e-6}),
                       ('fuente de 4,2 V', {'Vs': 4.2}), ('viscoso x3', {'B': 7e-7})):
     t, w, _, u = simular(ensayo, k=PI_KC, bloques=PI, motor=motor)

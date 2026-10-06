@@ -1,9 +1,10 @@
-"""El lazo de velocidad del TP3, cerrado sobre el banco simulado.
+"""Los lazos del TP3 --el de velocidad y el de ángulo--, cerrados sobre el banco simulado.
 
 Es la referencia de lo que el sketch tiene que hacer, escrita del lado de la
 computadora para poder sacar la clave antes de que exista el firmware:
 
   - la velocidad sale de la diferencia del ángulo medido sobre `vel_win` períodos;
+  - el lazo de ángulo usa el ángulo medido tal cual, contra una referencia que avanza;
   - el controlador es una ganancia por una cadena de bloques (s + z)/(s + p), cada
     uno discretizado por Tustin, con p = 0 para un integrador;
   - el comando se recorta a lo que el actuador puede dar, y un bloque integrador
@@ -46,13 +47,14 @@ class Bloque:
         return y
 
 
-def simular(ref, k=0.0, bloques=(), uff=lambda t: 0.0, pre=4.0, post=4.0, motor=None,
-            vel_win=5, antiwindup=True, carga=lambda t: 0.0, semilla=0):
-    """Corre el lazo `pre` segundos antes de t = 0 y `post` después.
+def _correr(ref, k=0.0, bloques=(), uff=lambda t: 0.0, pre=4.0, post=4.0, motor=None,
+            vel_win=5, antiwindup=True, carga=lambda t: 0.0, semilla=0, cierre=None):
+    """El lazo, sobre la velocidad o --con `cierre`-- sobre el ángulo.
 
-    `ref(t)` en rad/s, `uff(t)` en % --la prealimentación, que con k = 0 es el lazo
-    abierto--, `carga(t)` en N·m de par resistente agregado. Devuelve t, la
-    velocidad del eje, la medida y el comando.
+    Con `cierre` el eje gira a lazo abierto con `uff` hasta ese instante; ahí se
+    cierra el lazo de posición, con la referencia `ref(t)` en radianes contados
+    desde el ángulo que había al cerrar. Devuelve t, la velocidad del eje, la
+    medida, el comando y el error.
     """
     banco = bs.BancoSimulado(motor=motor, semilla=semilla)
     banco._w = banco._i = 0.0
@@ -61,9 +63,10 @@ def simular(ref, k=0.0, bloques=(), uff=lambda t: 0.0, pre=4.0, post=4.0, motor=
     cadena = [Bloque(z, p) for z, p in bloques]
     n = int(round((pre + post) / TS))
     t = np.arange(n) * TS - pre
-    w, wm, u = np.empty(n), np.empty(n), np.empty(n)
+    w, wm, u, err = np.empty(n), np.empty(n), np.empty(n), np.zeros(n)
     angulos = [0] * (vel_win + 1)
     saturado = False
+    origen = None                               # el ángulo al cerrar el lazo de posición
 
     hechos = 0                                  # períodos de PWM ya integrados
 
@@ -76,15 +79,26 @@ def simular(ref, k=0.0, bloques=(), uff=lambda t: 0.0, pre=4.0, post=4.0, motor=
         cuenta = int(np.rint(theta + banco._error_sensor(theta, np.array([banco._w]))
                              + banco._rng.normal(0, banco.ruido))[0])
         angulos = angulos[1:] + [cuenta]
-        medida = (angulos[-1] - angulos[0]) * RAD_POR_CUENTA / (vel_win * TS)
+        if cierre is None:
+            medida = (angulos[-1] - angulos[0]) * RAD_POR_CUENTA / (vel_win * TS)
+            e = ref(t[i]) - medida
+        elif t[i] < cierre:
+            medida, e = 0.0, None
+        else:
+            if origen is None:
+                origen = cuenta
+            medida = (cuenta - origen) * RAD_POR_CUENTA
+            e = ref(t[i]) - medida
 
-        e = ref(t[i]) - medida
-        x = k * e
-        for b in cadena:
-            x = b.paso(x, congelar=antiwindup and saturado)
+        x = 0.0
+        if e is not None:
+            x = k * e
+            for b in cadena:
+                x = b.paso(x, congelar=antiwindup and saturado)
+            err[i] = e
         pedido = uff(t[i]) + x
         salida = min(100.0, max(0.0, pedido))
-        saturado = (pedido > 100.0 and e > 0) or (pedido < 0.0 and e < 0)
+        saturado = e is not None and ((pedido > 100.0 and e > 0) or (pedido < 0.0 and e < 0))
 
         w[i], wm[i], u[i] = banco._w, medida, salida
 
@@ -94,7 +108,29 @@ def simular(ref, k=0.0, bloques=(), uff=lambda t: 0.0, pre=4.0, post=4.0, motor=
         banco.motor['Tc'] = tc0 + carga(t[i])
         banco._integrar(np.full(periodos, round(salida * 2.55)))
 
-    return t, w, wm, u
+    return t, w, wm, u, err
+
+
+def simular(ref, **kw):
+    """El lazo de velocidad, `pre` segundos antes de t = 0 y `post` después.
+
+    `ref(t)` en rad/s, `uff(t)` en % --la prealimentación, que con k = 0 es el lazo
+    abierto--, `carga(t)` en N·m de par resistente agregado. Devuelve t, la
+    velocidad del eje, la medida y el comando.
+    """
+    return _correr(ref, **kw)[:4]
+
+
+def seguir(velocidad, salto, uff, cierre=-6.0, **kw):
+    """El lazo de posición, siguiendo un ángulo que avanza a `velocidad` rad/s.
+
+    El eje llega a régimen a lazo abierto con `uff` %, en t = `cierre` se cierra el
+    lazo sobre el ángulo y en t = 0 la referencia salta `salto` radianes. Devuelve
+    t, el error de seguimiento en radianes, la velocidad del eje y el comando.
+    """
+    ref = lambda t: velocidad * (t - cierre) + (salto if t >= 0 else 0.0)
+    t, w, _, u, err = _correr(ref, uff=lambda t: uff, cierre=cierre, **kw)
+    return t, err, w, u
 
 
 def medir(t, w, w0, r1, banda=0.05, cola=1.0):
