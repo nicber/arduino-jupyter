@@ -166,6 +166,20 @@ int main()
         pid.reset(0);
         for (long k = 0; k < 20000L; k++) { pid.step(-30000, -255, 255, 0); }
         check(pid.step(-30000, -255, 255, 0) == -255, "y abajo con el error al reves");
+
+        // Lo de arriba no llega a desbordar: el proporcional satura el comando desde
+        // el primer paso, el integrador no carga y la suma entra en un int32_t. Con
+        // un error que por si solo pasa de 2^31 al multiplicarlo por kp, si: sumado
+        // en 32 bits el comando saldria con el signo cambiado.
+        Pid solo_p;
+        solo_p.kp = Pid::Kp::from_float(400.0f).raw();
+        solo_p.ki = 0;
+        solo_p.kd = 0;
+        solo_p.set_alpha(Pid::Alpha::from_int(1));
+        solo_p.refresh(255);
+        solo_p.configure(1, 0, 0);
+        check(solo_p.step(6000000L, -255, 255, 0) == 255,
+              "un proporcional que no entra en 32 bits satura arriba y no da la vuelta");
     }
 
     // ------------------------------------------- el signo de la corriente medida

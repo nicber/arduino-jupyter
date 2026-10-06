@@ -87,7 +87,16 @@ class FirstOrderFilter
 
     // Es seguro llamarlo con el filtro corriendo: el estado está en unidades de
     // salida, así que la salida no salta cuando se mueve la frecuencia de corte.
-    void set_alpha(Alpha alpha) { m_alpha = alpha; }
+    //
+    // Acotado a [0, 1]: el polo suele llegar de la computadora, que puede escribir
+    // cualquier entero, y con alpha > 2 el filtro diverge. Sin expandir en cada
+    // llamada, que en un sketch con varios filtros se nota en la flash.
+    __attribute__((noinline)) void set_alpha(Alpha alpha)
+    {
+        const int32_t one = Alpha::from_int(1).raw();
+        const int32_t raw = alpha.raw();
+        m_alpha = Alpha::from_raw(raw < 0 ? 0 : (raw > one ? one : raw));
+    }
 
     void reset(int32_t x)
     {

@@ -1,8 +1,8 @@
 // Un ángulo de una vuelta convertido en uno que no salta al dar la vuelta.
 //
 // No sabe de qué sensor viene la cuenta. La recibe por update(), y de la
-// calibración tampoco sabe nada: Banco le pasa la cuenta cruda y suma la
-// corrección después, sobre lo ya desenrollado. Eso deja a este módulo entero
+// calibración tampoco sabe nada: Banco le pasa la cuenta cruda y resta la
+// corrección después, sobre lo ya desenrollado (ver AngleLut::correction()). Eso deja a este módulo entero
 // del lado de la aritmética, comprobable en la máquina de escritorio, y deja la
 // decisión de corregir o no en manos de quien la toma.
 //

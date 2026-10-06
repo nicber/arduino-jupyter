@@ -32,7 +32,7 @@
 // circunferencia amplifican el redondeo de cada sección: en cuartos de cuenta eso le
 // sumaba a la corriente unos 3,5 mA RMS de ruido, medido en el banco con la ventana de
 // 10 filas. El precio es el rango: la entrada va de -2047 a 2047 cuentas, que es la
-// corriente alrededor de su cero (el fondo del ACS712 de 5 A son ~735). Los
+// corriente alrededor de su cero (el fondo del ACS712 de 5 A son ~740). Los
 // coeficientes se calculan con punto flotante en apply(), que corre sólo cuando la
 // computadora mueve algo.
 //
@@ -186,7 +186,7 @@ class MainsNotch
     // Una fila, en dieciseisavos de cuenta a la entrada y a la salida: la unidad en la
     // que el filtro trabaja. Sin secciones activas devuelve la entrada tal cual. El
     // rango es el de int16 en esa unidad, o sea -2047 a 2047 cuentas alrededor del cero
-    // (el fondo del ACS712 de 5 A son ~735).
+    // (el fondo del ACS712 de 5 A son ~740).
     int16_t step_q4(int16_t counts_q4)
     {
         if (!m_active)

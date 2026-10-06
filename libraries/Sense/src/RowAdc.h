@@ -1,4 +1,4 @@
-// El ADC corriendo libre, acumulando todas sus conversiones, y entregando la suma de
+// El ADC convirtiendo de corrido, acumulando todas sus conversiones, y entregando la suma de
 // las que cayeron en cada fila. Sobre un canal, o alternando entre el del sensor y el
 // de su alimentación (ver SupplyRatio.h).
 //
@@ -7,7 +7,7 @@
 // por fila cae siempre en la misma fase del período, y la corriente adentro del
 // período es un escalón de cientos de mA: medido en el banco, según la fase, la
 // lectura se desvía de la media entre -230 y +315 mA. Promediar unas pocas fases
-// fijas tampoco alcanza (±40 mA con cinco). Con el ADC libre, en cambio, las
+// fijas tampoco alcanza (±40 mA con cinco). Con el ADC convirtiendo de corrido, las
 // conversiones no caen siempre en la misma y el promedio de la fila da la media sin
 // sesgo, a cambio de un error de patrón chico (≤ 13 mA medidos) que se promedia en las
 // filas siguientes. Que no quede sesgo está medido y no supuesto: ver el bloque de la
@@ -37,7 +37,7 @@
 // saltaba entre dos niveles. Lo resuelve el relleno del bloque siguiente, que es el mismo
 // problema visto en reposo.
 //
-// **La paridad de las conversiones, y por qué hay un relleno de 3 us.** Alternando dos
+// **La paridad de las conversiones, y por qué hay un relleno.** Alternando dos
 // canales, la secuencia de conversiones tiene período 2, y la interrupción del
 // muestreador le roba tiempo a una conversión de cada tick. Si en un tick entra un número
 // PAR de conversiones, la paridad se conserva de un tick al siguiente y esa perturbación
@@ -60,15 +60,17 @@
 // con un canal solo, no aparece).
 //
 // De ahí el relleno de `SETTLE_US`: no deja entrar una cuarta conversión, así que el
-// conteo se queda en 3 y nunca cae en un par. Medido con el firmware final, en reposo y
-// con un solo canal emitiendo, que es el caso sensible: el rango entre veinte capturas
-// pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los cinco canales de 3,6 a 1,4 mA.
-// El ruido entre filas no cambia (0,53 mA) y no se pierde ningún período.
+// conteo se queda en 3 y nunca cae en un par. Medido en reposo y con un solo canal
+// emitiendo, que es el caso sensible, con el relleno que correspondía a la versión
+// anterior de la interrupción (3 us; cómo se eligió el de ahora está en SETTLE_US): el
+// rango entre veinte capturas pasa de 24,7 mA a 1,1 mA, sin dos niveles, y con los
+// cinco canales de 3,6 a 1,4 mA. El ruido entre filas no cambia (0,53 mA) y no se
+// pierde ningún período.
 //
-// **Esto vale para el clon a /32, no para un UNO.** `SETTLE_US = 3` está elegido para
-// que a /32 --32 us por conversión-- el tick cierre con 3 y no con 4. En un UNO el
-// preescalador es /128 y la conversión son 104 us: entran 1,92 conversiones por tick, y
-// el relleno las lleva a 1,87. Eso no impide que un tick cierre con 2, que es par, o sea
+// **Esto vale para el clon a /32, no para un UNO.** `SETTLE_US` está elegido para que
+// a /32 el tick cierre con 3 y no con 4. En un UNO el preescalador es /128 y la
+// conversión son 104 us: entran 1,92 conversiones por tick, y el relleno las lleva a
+// 1,90. Eso no impide que un tick cierre con 2, que es par, o sea
 // que alternando canales en un UNO el salto de dos niveles volvería. Un UNO funciona a
 // 5 V y no necesita el divisor (`cur_div = 0` y sin alternancia), así que hoy no se
 // alcanza; quien ponga el divisor en un UNO tiene que volver a elegir `SETTLE_US` con
@@ -148,16 +150,18 @@
 // interrupciones. El binario por omisión es el mismo que sin este bloque, verificado
 // comparando el .hex.
 //
-// Se compila agregando la bandera a las propiedades de compilación de `python/placa.py`:
+// Se compila agregando la bandera a las propiedades de compilación de `python/placa.py`,
+// al final de las que ya están:
 //
-//   compiler.cpp.extra_flags=-O2 -DSENSE_DIAG=1
+//   compiler.cpp.extra_flags=-O2 -DSERIAL_TX_BUFFER_SIZE=128 -DSENSE_DIAG=1
 //
 // y ahí aparecen, en la tabla del enlace, `dbg_settle` (el relleno, para barrerlo),
 // `dbg_lock` (una ráfaga de N conversiones por tick), `dbg_pre` (el preescalador),
 // `dbg_mix` (el canal elegido por un LFSR), `dbg_ocr` (el TOP del Timer2, que mueve el
 // ritmo del tick sin tocar esta interrupción) y `dbg_i2c` (corta las transferencias del
 // AS5600); y los canales `a0`, `a1` y `conv`, que son las medias crudas de cada canal y
-// cuántas conversiones entraron en la fila. Cuestan 874 bytes de flash y 15 de RAM.
+// cuántas conversiones entraron en la fila. En Banco cuestan unos 1050 bytes de flash y
+// 35 de RAM.
 #ifndef SENSE_DIAG
 #define SENSE_DIAG 0
 #endif
@@ -192,17 +196,15 @@ class RowAdc
     // que engancha el salto; de 1 en adelante no, y lo que crece es lo que el
     // muestreador pierde. Uno es el más chico que cumple las dos cosas.
     //
-    // Era 3 cuando la interrupción del ADC hacía su trabajo DESPUÉS de arrancar la
-    // conversión siguiente y close_tick() corría el historial a mano. Los dos cambios
-    // juntos liberan unos 2 us de relleno: medido alternando las dos versiones, el
-    // techo de filas atendidas con los cinco canales pasa de 673 a 748 por segundo.
-    // La tabla de arriba y la de cualquier otra versión no se pueden comparar fila a
-    // fila: lo que se elige es la columna, no el número.
+    // El trabajo que on_conversion() hace antes del ADSC ya cubre unos 2 us de hueco
+    // entre conversiones, y por eso el relleno es 1 y no más. La tabla depende de
+    // cuánto tarden las dos interrupciones, así que no se compara fila a fila con una
+    // medida sobre otra versión de ellas: lo que se elige es la columna, no el número.
     //
-    // Y no elegirlo bien se paga en el acto: con el relleno que quedó viejo (3 us
-    // sobre la interrupción nueva) el conteo vuelve a clavarse en un par y el salto
-    // de dos niveles reaparece --medido, el rango del reposo entre veinte capturas
-    // pasa de 2,3 a 7,9 mA, con la distribución partida en dos grupos--.
+    // Y no elegirlo bien se paga en el acto: con 3 us sobre esta interrupción el
+    // conteo vuelve a clavarse en un par y el salto de dos niveles reaparece --medido,
+    // el rango del reposo entre veinte capturas pasa de 2,3 a 7,9 mA, con la
+    // distribución partida en dos grupos--.
     static const uint8_t SETTLE_US = 1;
 
     // 1 pasa cada tick por una media de los últimos MA_TICKS ticks antes de sumarlo a
@@ -216,16 +218,17 @@ class RowAdc
     // No es una cota teórica: `close_tick()` es lo único que pone la suma del tick en
     // cero, y corre en la ISR del muestreador. Cualquiera que enmascare esa
     // interrupción con el ADC andando deja las conversiones acumulándose en un solo
-    // "tick" que dura lo que dure la pausa. Y eso pasa: `apply_sensor_filter()` llama
+    // "tick" que dura lo que dure la pausa. Y eso pasa: AS5600::write_slow_filter() llama
     // a SampleClock::pause() y se toma de 2 a 7 ms --hasta 5 esperando el bus y 2 de
     // holgura-- con el conversor libre. A /32 son de 62 a 218 conversiones, o sea una
     // suma de hasta 892 710.
     //
-    // Sin acotarlo, con la suma en 16 bits eso da la vuelta 27 veces. Y aun con la de
-    // 32, que no desborda, el tick siguiente a la pausa informaba 218 conversiones
-    // como si fueran de un tick: la media móvil se las come durante cuatro ticks y la
-    // fila entera queda corrida. Acotar acá arregla las dos cosas, y cuesta una
-    // comparación por conversión sobre un valor que ya se estaba incrementando.
+    // Sin acotarlo, con la suma en 16 bits eso da la vuelta 27 veces. Y aun en 32
+    // bits, que no desborda, el tick siguiente a la pausa llevaría 218 conversiones
+    // como si fueran de un tick, y la media móvil las arrastraría durante cuatro
+    // ticks. Acotado, ese tick lleva a lo sumo MAX_TICK_CONV: no desborda y pesa
+    // menos de tres ticks normales. Cuesta una comparación por conversión sobre un
+    // valor que ya se estaba incrementando.
     //
     // Ocho: a /32 y en el tick más lento que el reloj RC de esta placa puede dar
     // entran 7, así que nunca se alcanza en operación normal, y 8 x 4095 = 32 760
@@ -256,8 +259,6 @@ class RowAdc
         , lock_n(0)
         , pre(0)
         , mix(0)
-        , m_burst(0)
-        , m_lfsr(0xACE1)
 #endif
         , m_sum()
         , m_n()
@@ -269,6 +270,10 @@ class RowAdc
         , m_row_n()
         , m_channel(0)
         , m_alternate(false)
+#if SENSE_DIAG
+        , m_burst(0)
+        , m_lfsr(0xACE1)
+#endif
         , m_lgt(false)
         , m_shift(0)
     {
@@ -298,25 +303,36 @@ class RowAdc
     //
     // Se compila SIEMPRE, no sólo con SENSE_DIAG. on_conversion() rearranca la cadena
     // en cada conversión, pero si la cadena se corta por cualquier motivo no queda
-    // quién la vuelva a arrancar, y esto era lo único que lo hacía. Medido con ADEN
+    // quién la vuelva a arrancar, y esto es lo único que lo hace. Medido con ADEN
     // bajado y subido sin ADSC: la corriente publicada se fue a +13648 mA y se quedó
     // ahí a través de tres capturas, sin que nada del diagnóstico lo delatara.
-    // Cuesta ~10 ciclos por escritura de parámetro, que ocurre entre corridas.
+    // Cuesta ~10 ciclos por escritura de parámetro.
+    //
+    // Con la ISR afuera, y mirando ADIF además de ADSC. Una conversión recién
+    // terminada tiene ADSC en cero y la cadena no está parada: su interrupción está
+    // pendiente y la va a rearrancar. Y el AVR ejecuta una instrucción del programa
+    // después de cada RETI antes de atender la siguiente interrupción, así que ese
+    // estado se ve desde acá: justo después de la ISR del muestreador, que es larga.
+    // Rearrancar ahí pisaría ADMUX en medio de la conversión que la ISR del conversor
+    // acaba de lanzar sobre el otro canal.
     void reconfigure(void)
     {
-        const uint8_t p = prescaler();
-        if ((ADCSRA & 0x07) != p)
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
         {
-            ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | p);
-        }
-        if (!(ADCSRA & _BV(ADSC)))
-        {
+            const uint8_t p = prescaler();
+            if ((ADCSRA & 0x07) != p)
+            {
+                ADCSRA = (uint8_t)(_BV(ADEN) | _BV(ADIE) | p);
+            }
+            if (!(ADCSRA & (_BV(ADSC) | _BV(ADIF))))
+            {
 #if SENSE_DIAG
-            m_burst = 0;
+                m_burst = 0;
 #endif
-            m_channel = 0;
-            ADMUX = (uint8_t)((ADMUX & ~0x1F) | (Channel & 0x1F));
-            ADCSRA |= _BV(ADSC);
+                m_channel = 0;
+                ADMUX = (uint8_t)((ADMUX & ~0x1F) | (Channel & 0x1F));
+                ADCSRA |= _BV(ADSC);
+            }
         }
     }
 
@@ -501,15 +517,15 @@ class RowAdc
 
     private:
 
-    // Lo que puede juntar un tick. A /32 la conversión son 32 us y en un tick de
-    // 200 us entran 6 como mucho: 6 x 4095 = 24570, que sobra en 16 bits. Con
-    // SENSE_DIAG el preescalador baja a /8 y entran 25 (102 375), así que ahí hace
-    // falta el de 32. Vale la pena la diferencia: en el camino que se graba, cada
-    // suma y cada movimiento del anillo cuestan la mitad.
+    // Lo que puede juntar un tick: MAX_TICK_CONV conversiones, 8 x 4095 = 32 760, que
+    // entra en 16 bits. Con SENSE_DIAG el preescalador baja a /8 y entran 25 (102 375),
+    // así que ahí hace falta el de 32. Vale la pena la diferencia: en el camino que se
+    // graba, cada suma y cada movimiento del anillo cuestan la mitad.
 #if SENSE_DIAG
     typedef int32_t TickSum;
 #else
     typedef int16_t TickSum;
+    static_assert(MAX_TICK_CONV * 4095L <= 32767L, "la suma de un tick no entra en el int16");
 #endif
 
     typedef MovingAverage<TickSum, MA_TICKS, int32_t> SumaMovil;

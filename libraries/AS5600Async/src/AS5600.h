@@ -276,6 +276,50 @@ class AS5600
     // meterle una escritura al bus por encima de una lectura a medio hacer.
     static bool busy(void) { return m_inflight; }
 
+    // Escribe los bits SF del CONF, el filtro lento del sensor. Lee-modifica-escribe,
+    // porque CONF también lleva la histéresis, el modo de potencia y la salida.
+    //
+    // La lectura viaja en un tick del muestreador, así que hace falta que ya esté
+    // corriendo. La escritura no puede (ver write_registers()), así que `clock` --lo
+    // que llama a do_transfer() desde su ISR; alcanza con que tenga pause() y
+    // resume()-- se para un par de milisegundos: se espera, acotado, a que termine
+    // la transferencia que ya estaba en el aire, y se deja holgura para la
+    // escritura. Devuelve false si el sensor no contestó.
+    template <class Clock>
+    static bool write_slow_filter(uint8_t sf, Clock& clock)
+    {
+        uint8_t conf[2];
+
+        if (!read_registers(REG_CONF_H, conf, 2))
+        {
+            return false;
+        }
+
+        uint16_t value = (uint16_t)(((uint16_t)conf[0] << 8) | conf[1]);
+        value = (uint16_t)((value & ~0x0300u) | ((uint16_t)(sf & 0x03) << 8));
+
+        conf[0] = (uint8_t)(value >> 8);
+        conf[1] = (uint8_t)value;
+
+        clock.pause();
+
+        // Sin sensor en el bus esto no puede quedarse esperando para siempre.
+        const uint32_t deadline = millis() + 5;
+        while (busy() && (int32_t)(millis() - deadline) < 0)
+        {
+        }
+
+        const bool queued = write_registers(REG_CONF_H, conf, 2);
+
+        // Cuatro bytes a 400 kHz son unos 100 us; dos milisegundos es holgura, no
+        // cálculo.
+        delay(2);
+
+        clock.resume();
+
+        return queued;
+    }
+
     private:
 
     // Contabiliza una transferencia fallida y, pasadas MISSING_AFTER seguidas,

@@ -68,10 +68,21 @@ class AngleLut
     // Las entradas, públicas porque quien las cargue de PROGMEM copia sobre ellas.
     Eighths entry[Size];
 
-    constexpr AngleLut() : entry(), m_applied(NOTHING) {}
+    // El checksum() de la tabla, al día con cada apply(). Público porque la tabla del
+    // enlace toma su dirección: así la computadora verifica las Size entradas con
+    // una sola lectura. Arranca en cero, que es el de la tabla vacía.
+    uint16_t sum;
+
+    constexpr AngleLut() : entry(), sum(0), m_applied(NOTHING) {}
 
     // La corrección en cuentas para un ángulo crudo, interpolada linealmente entre
-    // las dos entradas que lo rodean.
+    // las dos entradas que lo rodean: el ángulo corregido es `raw - correction(raw)`.
+    //
+    // La tabla se indexa con la cuenta cruda, porque una vez desenrollado ese ángulo
+    // ya no está. Quien desenrolla antes de corregir, como Banco, resta la corrección
+    // del ángulo ya desenrollado: son a lo sumo MAX / 8 = 512 cuentas, menos de media
+    // vuelta, así que restarla ahí da lo mismo que corregir adentro de la vuelta y
+    // desenrollar después.
     Counts correction(Counts raw) const
     {
         // Sin signo antes de partir el ángulo en índice y fracción: el índice sale de
@@ -94,20 +105,6 @@ class AngleLut
         // sirve para los dos signos; el `e < 0 ? -4 : 4`, que parece la alternativa
         // natural, redondea mal los negativos chicos: -3/8 daría -1 en lugar de 0.
         return (Counts)((eighths + 4) >> 3);
-    }
-
-    // El ángulo corregido, adentro de la vuelta. La tabla se indexa con la cuenta
-    // cruda, porque una vez desenrollado ese ángulo ya no está. Quien desenrolla
-    // antes de corregir, como Banco, suma al ángulo desenrollado la diferencia
-    // entre el corregido y el crudo (AngleTracker::wrapped_error()), que son unas
-    // pocas cuentas.
-    //
-    // Se llama corrected() y no apply() para no quedar sobrecargado contra la
-    // escritura de una entrada: los dos tomarían un entero y el compilador elegiría
-    // por el ancho del tipo, una resolución de sobrecarga difícil de seguir al leer.
-    Counts corrected(Counts raw) const
-    {
-        return (Counts)((raw - correction(raw)) & (Counts)(PerRev - 1));
     }
 
     // Suma de Fletcher sobre la tabla, para que las Size escrituras se verifiquen
@@ -190,13 +187,16 @@ class AngleLut
         return true;
     }
 
-    // Lo mismo, pero sólo cuando el parámetro efectivamente cambió desde la última vez.
+    // Lo mismo, pero sólo cuando el parámetro efectivamente cambió desde la última
+    // vez, y con `sum` al día.
     //
     // Quien llama corre después de cada escritura de cualquier parámetro, así que sin
     // esto un barrido de ganancia reescribiría la misma entrada de la tabla una vez
-    // por comando. El valor ya aplicado es un miembro de la tabla y no una variable
-    // escondida adentro de la función de ajuste: es la tabla la que sabe qué tiene
-    // puesto.
+    // por comando. Y el checksum, sólo cuando una entrada se movió: recorrer la tabla
+    // cuesta del orden de 700 ciclos, y un `set ctl_uff` en medio de una captura cae
+    // en el mismo período de control que esto. El valor ya aplicado es un miembro de
+    // la tabla y no una variable escondida adentro de la función de ajuste: es la
+    // tabla la que sabe qué tiene puesto.
     bool apply(uint32_t packed)
     {
         if (packed == m_applied)
@@ -205,7 +205,13 @@ class AngleLut
         }
 
         m_applied = packed;
-        return write_packed(packed);
+        if (!write_packed(packed))
+        {
+            return false;
+        }
+
+        sum = checksum();
+        return true;
     }
 
     private:

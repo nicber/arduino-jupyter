@@ -93,6 +93,19 @@ int main()
         check(f.update(123456) == 123456, "tau = 0 is a pass-through", f.update(123456), 123456);
     }
 
+    // alpha from the host is clamped to [0, 1]: alpha > 2 would diverge
+    {
+        typedef FirstOrderFilter<8> F;
+        F f;
+        f.set_alpha(F::Alpha::from_raw(5L << 16));
+        int32_t y = 0;
+        for (int n = 0; n < 50; n++) y = f.update(1000);
+        check(y == 1000, "alpha > 1 is clamped to a pass-through", (double)y, 1000);
+        f.set_alpha(F::Alpha::from_raw(-100));
+        for (int n = 0; n < 50; n++) y = f.update(-1000);
+        check(y == 1000, "alpha < 0 is clamped to a frozen filter", (double)y, 1000);
+    }
+
     // headroom: guard 4 must survive a free-running position counter
     {
         FirstOrderFilter<4> f(FirstOrderFilter<4>::alpha_for(0.05f, 0.001f));

@@ -59,6 +59,7 @@ class SampleClock
         , missed(0)
         , m_due(false)
         , m_hold(false)
+        , m_streaming(false)
         , m_fired_us(0)
         , m_missed_isr(0)
         , m_divider(initial_divide)
@@ -186,13 +187,21 @@ class SampleClock
             divide = 1;
         }
 
-        m_divider = divide;
-
-        // Y el contador arranca de cero: si no, el primer período después de mover
-        // `loop_div` dura cualquier cosa entre 1 y el divisor viejo, o sea una fila
-        // con marca de tiempo mentirosa justo después de cada `set loop_div`. La
-        // escritura es de un byte, que en un AVR es atómica contra la ISR.
-        m_count = 0;
+        // Con un divisor nuevo el contador arranca de cero: si no, el primer período
+        // después de mover `loop_div` dura cualquier cosa entre 1 y el divisor viejo,
+        // o sea una fila con marca de tiempo mentirosa. Y sólo entonces: esto corre
+        // con CADA escritura de parámetro --el `set` de un escalón incluido--, y
+        // reiniciar la cuenta sin motivo estiraría justo el período en el que cae.
+        //
+        // Los dos juntos y con la ISR afuera: entre uno y otro, la ISR vería el
+        // divisor nuevo con la cuenta vieja y podría cerrar un período corto.
+        if (divide != m_divider)
+        {
+            noInterrupts();
+            m_divider = divide;
+            m_count   = 0;
+            interrupts();
+        }
 
         return (uint32_t)divide * 1000000UL / (uint32_t)hz;
     }
@@ -223,9 +232,27 @@ class SampleClock
         m_hold = false;
     }
 
-    // Congela `late` y `missed` en lo que describieron la ventana. Se llama al
-    // cerrarla; clear_health() los descongela al abrir la siguiente.
-    void hold_health(void) { m_hold = true; }
+    // Abre y cierra la ventana de medición al ritmo de la emisión. Se llama en cada
+    // pasada de loop() con CtrlLink::streaming(), después de CtrlLink::poll(), que
+    // es donde se atiende `start` y se imprime el encabezado: así la ventana empieza
+    // a contar recién cuando ya salió.
+    //
+    // Al abrirla, clear_health(). Al cerrarla, `late` y `missed` se congelan en lo
+    // que describieron la ventana: la computadora los lee varios comandos después
+    // del `stop`, y lo que pase entre medio no describe la captura.
+    void window(bool streaming)
+    {
+        if (streaming && !m_streaming)
+        {
+            clear_health();
+        }
+        else if (!streaming && m_streaming)
+        {
+            m_hold = true;
+        }
+
+        m_streaming = streaming;
+    }
 
     // Para una pausa acotada en la que nadie puede pedirle el bus al sensor. Se usa
     // para escribirle un registro: encolar una escritura reserva memoria, y el
@@ -237,6 +264,7 @@ class SampleClock
 
     volatile bool     m_due;
     bool              m_hold;     // fuera de una ventana de emisión: no acumular salud
+    bool              m_streaming;  // lo que window() vio la última vez
     volatile uint32_t m_fired_us;
     volatile uint16_t m_missed_isr;
     volatile Divider  m_divider;

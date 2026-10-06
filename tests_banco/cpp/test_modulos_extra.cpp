@@ -55,6 +55,25 @@ static void check_eq(long dio, long esperaba, const char* que)
     else                 { printf("PASA   %s\n", que); }
 }
 
+// Un sensor para SensorHealth::refresh_mounting(): contesta o no, y anota qué
+// registro se le pidió.
+struct SensorFalso
+{
+    static const uint8_t REG_STATUS = 0x0B, REG_AGC = 0x1A, REG_MAGNITUDE_H = 0x1B;
+    static bool    contesta;
+    static uint8_t pedido;
+    static bool present(void) { return contesta; }
+    static bool read_registers(uint8_t reg, uint8_t* buf, uint8_t n)
+    {
+        pedido = reg;
+        buf[0] = (reg == REG_MAGNITUDE_H) ? 0xF7 : (uint8_t)(reg + 1);
+        if (n > 1) { buf[1] = 0x08; }
+        return true;
+    }
+};
+bool    SensorFalso::contesta = true;
+uint8_t SensorFalso::pedido   = 0;
+
 static bool pwm_conectado(void) { return (TCCR1A & _BV(COM1A1)) != 0; }
 
 static int nivel(uint8_t pin)
@@ -130,6 +149,38 @@ int main()
     reloj.clear_health();
     check_eq(reloj.missed + reloj.late, 0, "clear_health() pone la salud en cero");
 
+    // apply() corre con cada `set`, el del escalón incluido: con el divisor igual no
+    // puede reiniciar la cuenta, o estiraría el período en el que cae el `set`.
+    SampleClock fase(10);
+    fase.begin(5000);
+    int k_fila = 0;
+    for (int k = 1; k <= 14; k++) { if (fase.on_isr()) { fase.take(); } }
+    fase.apply(5000);
+    for (int k = 15; k <= 30 && !k_fila; k++) { if (fase.on_isr()) { k_fila = k; } }
+    check_eq(k_fila, 20, "apply() con el mismo divisor no corre la fase de las filas");
+    fase.take();
+    fase.divide = 4;
+    fase.apply(5000);
+    k_fila = 0;
+    for (int k = 21; k <= 30 && !k_fila; k++) { if (fase.on_isr()) { k_fila = k; } }
+    check_eq(k_fila, 24, "con un divisor nuevo la cuenta arranca de cero");
+    fase.take();
+
+    // La ventana: se limpia al abrir una captura y se congela al cerrarla.
+    for (int k = 0; k < 12; k++) { fase.on_isr(); }         // tres filas, una atendida
+    fase.take();
+    fase.window(true);
+    check_eq(fase.missed, 0, "window() limpia la salud al abrir la ventana");
+    for (int k = 0; k < 8; k++) { fase.on_isr(); }          // dos filas, una atendida
+    fase.take();
+    check_eq(fase.missed, 1, "y adentro de la ventana cuenta");
+    fase.window(false);
+    for (int k = 0; k < 8; k++) { fase.on_isr(); }
+    fase.take();
+    check_eq(fase.missed, 1, "al cerrarla se congela en lo que describió la captura");
+    fase.window(true);
+    check_eq(fase.missed, 0, "y la ventana siguiente arranca de cero");
+
     // -------------------------------------------------------- SensorHealth
     SensorHealth salud;
     salud.accumulate(10, 2, true);
@@ -143,17 +194,33 @@ int main()
     salud.accumulate(0xFFFF, 3, true);
     salud.accumulate(2, 3, true);
     check_eq(salud.overruns, (long)(3 + (0xFFFF - 18) + 3), "el contador del sensor puede dar la vuelta");
+    salud.accumulate(2 + 600, 3, true);
+    check_eq(salud.overruns, 0xFFFF, "y el total publicado satura en lugar de dar la vuelta");
 
-    // La primera vuelta va al ritmo rápido; cuando se completa, afloja. La prueba
-    // vieja hacía las tres vueltas ANTES de comprobar el ritmo rápido, así que pedía
-    // los 50 ms cuando el objeto ya estaba en 500: no fallaba porque en esta máquina
-    // no había g++ de escritorio y sólo se comprobaba que compilara.
-    check(salud.due(1000), "el primer diagnóstico vence enseguida");
-    check(!salud.due(1020), "y el siguiente no antes de 50 ms");
-    check(salud.due(1060), "después de 50 ms sí");
-    for (int k = 0; k < 3; k++) { salud.advance(3); }
-    check(!salud.due(1300), "completada una vuelta de registros, espera 500 ms");
-    check(salud.due(1650), "y vence a los 500 ms");
+    // El montaje: un registro por refresco, la primera vuelta al ritmo rápido y
+    // después al lento.
+    SensorHealth montaje;
+    SensorFalso::pedido = 0;
+    montaje.refresh_mounting<SensorFalso>(1000);
+    check(SensorFalso::pedido == SensorFalso::REG_STATUS && montaje.status == 0x0C,
+          "el primer refresco vence enseguida y lee el estado");
+    SensorFalso::pedido = 0;
+    montaje.refresh_mounting<SensorFalso>(1020);
+    check_eq(SensorFalso::pedido, 0, "el siguiente no antes de 50 ms");
+    montaje.refresh_mounting<SensorFalso>(1060);
+    check(SensorFalso::pedido == SensorFalso::REG_AGC && montaje.agc == 0x1B,
+          "después de 50 ms sí, y lee la ganancia");
+    montaje.refresh_mounting<SensorFalso>(1120);
+    check_eq(montaje.magnitude, 0x708, "el módulo sale de dos bytes, en 12 bits");
+    SensorFalso::pedido = 0;
+    montaje.refresh_mounting<SensorFalso>(1300);
+    check_eq(SensorFalso::pedido, 0, "completada una vuelta de registros, espera 500 ms");
+    montaje.refresh_mounting<SensorFalso>(1650);
+    check_eq(SensorFalso::pedido, SensorFalso::REG_STATUS, "y vence a los 500 ms");
+    SensorFalso::contesta = false;
+    montaje.refresh_mounting<SensorFalso>(2200);
+    check(montaje.status == 0 && montaje.agc == 0 && montaje.magnitude == 0,
+          "sin sensor en el bus olvida el montaje");
 
     // ------------------------------------------------- AngleTracker: el límite
     // Un eje a 700 rad/s (111 rev/s): desenrollado a 5 kHz sigue la vuelta; una vez por

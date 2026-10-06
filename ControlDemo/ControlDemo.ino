@@ -44,8 +44,10 @@
 // también lo es cada parámetro que lee: cada uno se guarda en la forma de punto
 // fijo que la aritmética necesita, y la tabla de parámetros declara la escala
 // que lo convierte. La computadora multiplica a la ida y divide a la vuelta, así
-// que el alumno sigue escribiendo `dev.pid_kp = 0.5` y este sketch no ejecuta una
-// sola instrucción de punto flotante.
+// que el alumno sigue escribiendo `dev.pid_kp = 0.5` y la ley de control no ejecuta
+// una sola instrucción de punto flotante. El único punto flotante que queda es el de
+// los coeficientes del notch de la red, que refresh_tuning() recalcula cuando la
+// computadora escribe un parámetro, fuera del paso de control.
 //
 // Los nombres de los parámetros llevan un prefijo de módulo, y eso es lo que hace
 // que una tabla de tres docenas de entradas planas diga quién es dueño de cada
@@ -67,14 +69,9 @@
 // antes que el cable se acaba la CPU: formatear una fila y sacarla por la UART le
 // cuesta a esta placa más que el paso PID. Por eso la computadora elige qué canales
 // emitir en cada captura --`chans`, o `capture(..., canales=[...])` del lado de
-// Python--. Medido en el banco con el PID corriendo, la frecuencia más alta sin
-// perder períodos es:
-//
-//   los 7 canales, 45 bytes                  1 kHz    (loop_div = 5, antes de y_rep)
-//   ref, y_uw, e, u, 29 bytes                1250 Hz  (loop_div = 4)
-//   y_uw, u, 17 bytes                        1667 Hz  (loop_div = 3)
-//
-// y a 1 kHz el peor retardo de atención baja de ~880 us con todos a ~300 con dos.
+// Python--. Los techos medidos en PROTOCOL.md son de Banco; éste corre además la ley
+// de control, así que los suyos son más bajos y no están medidos con el muestreo del
+// AS5600 a 5 kHz.
 //
 // Periféricos de los que se apropia este sketch: el Timer2, así que analogWrite()
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
@@ -145,7 +142,7 @@ static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 // fase con el muestreador de 5 kHz, que sale del mismo cristal; y lo que queda del
 // rizado del PWM después de promediar cada período del lazo se pliega a 1050 - 1000 =
 // 50 Hz y sus armónicos, que es donde la ventana de 20 ms de la corriente y el notch
-// de la red tienen ceros. A 1010 Hz, en cambio, caía en 10 Hz. Ver Banco.ino. Con un
+// de la red tienen ceros. A 1010 Hz, en cambio, caía en 10 Hz. Con un
 // puente MOSFET --un TB6612FNG, un DRV8833-- se podría modular mucho más rápido.
 static const uint16_t PWM_TOP_DEFAULT = 7619;   // 1050 Hz
 
@@ -168,9 +165,8 @@ static const float SENSE_MV_PER_A = 185.0f;
 // corriente adentro del período es un escalón de cientos de mA. Contra AVCC, porque
 // es donde un ACS712 --bipolar y ratiométrico-- reposa con margen para los dos
 // sentidos. La corriente de base del transistor carga la alimentación del micro y
-// corre la lectura mientras conduce; se compensa con el ciclo de trabajo
-// (con el divisor de los 5 V del sensor en A1 y `cur_div`, la corriente sale de A0/A1:
-// ver Sense/SupplyRatio.h y el comentario de Banco.ino). Las
+// corre la lectura mientras conduce; con el divisor de los 5 V del sensor en A1 y
+// `cur_div`, la corriente sale de A0/A1 y eso se cancela: ver Sense/SupplyRatio.h. Las
 // referencias internas del LGT8F328P se probaron y no sirven con el I2C del AS5600
 // funcionando: ver Sense/RowAdc.h.
 //
@@ -236,7 +232,7 @@ static Motor        g_motor(PWM_TOP_DEFAULT);
 // Son dos campos y no dos globales sueltas, y ninguno es un static escondido
 // adentro de la función de ajuste: escribirle al sensor puede fallar --viaja por el
 // bus-- y entonces el intento siguiente tiene que volver a probar, así que hace
-// falta saber qué quedó puesto. Ver apply_sensor_filter().
+// falta saber qué quedó puesto. Ver AS5600::write_slow_filter().
 struct SensorFilter
 {
     uint8_t want;       // el parámetro que fija la computadora
@@ -246,6 +242,13 @@ struct SensorFilter
 // SF_2X es el más rápido: el retardo de respuesta al escalón son 0,286 ms contra
 // los 2,2 ms de 16x, y para un lazo esos 1,9 ms son mucho más caros que el ruido.
 static SensorFilter g_sfilt = { 3, 0xFF };
+
+// Una sola instancia de la escritura, para setup() y para refresh_tuning(): este sketch
+// va justo de flash.
+static bool __attribute__((noinline)) write_sensor_filter(void)
+{
+    return Sensor::write_slow_filter(g_sfilt.want, g_clock);
+}
 
 // Lo que la placa mide de sí misma al arrancar, publicado para que la computadora
 // no tenga que adivinarlo. Ver BoardStart.h.
@@ -282,8 +285,7 @@ static uint16_t g_y_raw = 0;
 static uint8_t g_cal = 0;
 
 // Una entrada de la tabla de calibración por escritura. Ver AngleLut::apply().
-static uint32_t g_lutw   = Lut::NOTHING;
-static uint16_t g_lutsum = 0;
+static uint32_t g_lutw = Lut::NOTHING;
 
 // Los polos de los tres filtros. El estado filtrado vive adentro de cada módulo,
 // pero el polo es un parámetro y se publica desde acá: alpha = dt / (tau + dt), una
@@ -297,12 +299,10 @@ static int32_t g_alpha_y = Angle::Alpha::from_int(1).raw();                  // 
 static int32_t g_alpha_i = LoopCurrent::Alpha::from_float(0.1667f).raw();   // corriente
 static int32_t g_alpha_e = Pid::Alpha::from_float(0.0909f).raw();            // error
 
-// Si había flujo en la pasada anterior del lazo, y el contador de escrituras que se
-// vio la última vez. Los dos son de este archivo y no static adentro de una
-// función, por la misma razón que todo lo demás: estado escondido en un lugar donde
-// nadie lo busca.
-static bool     g_was_streaming = false;
-static uint16_t g_last_writes   = 0;
+// El contador de escrituras que se vio la última vez. Es de este archivo y no
+// static adentro de una función, por la misma razón que todo lo demás: estado
+// escondido en un lugar donde nadie lo busca.
+static uint16_t g_last_writes = 0;
 
 // ------------------------------------------------------------ la calibración
 
@@ -347,7 +347,7 @@ static const CtrlParam PROGMEM g_params[] =
     { "ang_cal",     CTRL_U8,  &g_cal,               0                 },
     { "ang_sfilt",    CTRL_U8,  &g_sfilt.want,        0                 },
     { "ang_lutw",    CTRL_U32, &g_lutw,              0                 },
-    { "ang_lutsum",  CTRL_U16, &g_lutsum,            0                 },
+    { "ang_lutsum",  CTRL_U16, &g_lut.sum,           0                 },
     { "ang_y",       CTRL_I16, &g_angle.track.y,     0                 },
     { "ang_y_uw",    CTRL_I32, &g_angle.track.y_uw,  0                 },
     { "ang_status",  CTRL_U8,  &g_health.status,     0                 },
@@ -438,54 +438,6 @@ ISR(ADC_vect)
 
 // ------------------------------------------------------------------- el lazo
 
-// Escribe los bits SF del CONF del sensor.
-//
-// El muestreador se para para escribir: nI2C encola la escritura y la completa su
-// propia ISR, pero encolar reserva memoria y el muestreador llama a nI2C desde una
-// ISR de temporizador. Con el muestreador quieto no hay nadie más pidiendo el bus.
-// Cuesta un par de milisegundos de lazo detenido, y pasa sólo cuando alguien mueve
-// el parámetro.
-//
-// Lee-modifica-escribe en lugar de escribir la palabra entera: CONF también lleva
-// la histéresis, el modo de potencia y la salida, y ninguno de ésos es asunto de
-// este parámetro.
-static bool apply_sensor_filter(void)
-{
-    uint8_t conf[2];
-
-    // La lectura sí pasa por el lazo de muestreo, así que va con el muestreador
-    // todavía corriendo.
-    if (!Sensor::read_registers(Sensor::REG_CONF_H, conf, 2))
-    {
-        return false;
-    }
-
-    uint16_t value = (uint16_t)(((uint16_t)conf[0] << 8) | conf[1]);
-    value = (uint16_t)((value & ~0x0300u) | ((uint16_t)(g_sfilt.want & 0x03) << 8));
-
-    conf[0] = (uint8_t)(value >> 8);
-    conf[1] = (uint8_t)value;
-
-    g_clock.pause();
-
-    // Dejar terminar la transferencia que ya estaba en el aire. Acotado: sin sensor
-    // en el bus esto no puede quedarse esperando para siempre.
-    const uint32_t deadline = millis() + 5;
-    while (Sensor::busy() && (int32_t)(millis() - deadline) < 0)
-    {
-    }
-
-    const bool queued = Sensor::write_registers(Sensor::REG_CONF_H, conf, 2);
-
-    // Cuatro bytes a 400 kHz son unos 100 us; dos milisegundos es holgura, no
-    // cálculo.
-    delay(2);
-
-    g_clock.resume();
-
-    return queued;
-}
-
 // Lee los sensores y actualiza todas las variables medidas. Corre una vez por
 // período de control cualquiera sea el modo, así que la telemetría sigue viva en
 // lazo abierto.
@@ -495,9 +447,8 @@ static bool apply_sensor_filter(void)
 // o no queda donde se toma. La tabla se indexa con la cuenta cruda, que es la
 // única que conserva el ángulo de adentro de la vuelta.
 //
-// La corriente del período se compensa con el ciclo de trabajo que estuvo aplicado
-// mientras duró --el de la escritura anterior--, se promedia sobre `cur_filas`
-// períodos y pasa por el notch de la red, si está prendido. Después LoopCurrent le
+// La corriente se promedia sobre `cur_filas` períodos, contra la alimentación del
+// sensor si hay divisor, y pasa por el notch de la red, si está prendido. Después LoopCurrent le
 // resta el cero, le da el signo y la filtra para el lazo.
 static void measure(void)
 {
@@ -528,8 +479,7 @@ static void measure(void)
     const Lut::Counts raw = (Lut::Counts)raw16;
 
     g_y_raw = (uint16_t)raw;
-    const int32_t corrected_uw = raw_uw
-        + (g_cal ? Angle::Tracker::wrapped_error(g_lut.corrected(raw), raw) : 0);
+    const int32_t corrected_uw = raw_uw - (g_cal ? g_lut.correction(raw) : 0);
     g_angle.update_unwrapped(corrected_uw);
 }
 
@@ -591,9 +541,9 @@ static void control_step(void)
 
 // Aplica lo que la computadora acaba de escribir. Los parámetros llegan ya en la
 // forma que quiere la aritmética --esa conversión es trabajo de la computadora--
-// así que esto no hace más que avisarle a cada dueño que su parámetro se movió.
-// Sin punto flotante, que es la razón por la que es seguro correrlo inmediatamente
-// después de un paso de control.
+// así que esto no hace más que avisarle a cada dueño que su parámetro se movió. Lo
+// único caro es el notch de la red, que recalcula sus coeficientes en punto
+// flotante; corre entre dos pasos de control, no adentro de uno.
 //
 // Una línea por dueño. Cada módulo se hace cargo de su propia detección de
 // cambios, así que un barrido de ganancia no sacude el puente ni reescribe la
@@ -617,102 +567,30 @@ static void refresh_tuning(void)
     g_ratio.apply();
     g_adc.alternate(g_ratio.active());
 
+    // Siempre: si la cadena del ADC quedó parada, esto es lo único que la levanta.
+    g_adc.reconfigure();
+
     g_window.apply();
     g_supply_window.rows = g_window.rows;
     g_supply_window.apply();
     g_notch.apply((float)SAMPLE_HZ / (float)g_clock.divide);
 
-    // Se recalcula siempre y no sólo al escribir la tabla: así `ang_lutsum`
-    // describe lo que hay, incluso si alguien lo escribió a mano, y la computadora
-    // puede verificar 64 entradas con una sola lectura.
-    g_lutsum = g_lut.checksum();
-
     // El filtro del sensor, sólo cuando cambió: escribirlo en cada `set pid_kp`
-    // pararía el muestreador sin motivo. Y sólo con el muestreador corriendo,
-    // porque la lectura del CONF que precede a la escritura viaja en un tick de
-    // muestreo. Si la escritura no sale, no se marca como aplicada y el intento
-    // siguiente vuelve a probar.
+    // pararía el muestreador sin motivo. Sólo con el muestreador corriendo, porque
+    // la lectura del CONF que precede a la escritura viaja en un tick de muestreo;
+    // y nunca en medio de una captura, porque para el muestreador hasta 7 ms. Si la
+    // escritura no sale, no se marca como aplicada y la escritura siguiente de
+    // cualquier parámetro vuelve a probar.
     if (g_sfilt.want > Sensor::SF_2X)
     {
         g_sfilt.want = Sensor::SF_2X;
     }
 
-    if (g_clock.running() && g_sfilt.want != g_sfilt.applied && apply_sensor_filter())
+    if (g_clock.running() && !CtrlLink::streaming() && g_sfilt.want != g_sfilt.applied
+        && write_sensor_filter())
     {
         g_sfilt.applied = g_sfilt.want;
     }
-}
-
-// La visión que el propio AS5600 tiene del imán: detectado, muy débil, muy fuerte.
-// Leerla le cuesta al lazo de muestreo una muestra, así que sólo se hace entre
-// capturas; es decir, durante una verificación de puesta en marcha, que es la
-// única vez que a alguien le interesa.
-//
-// Un registro por vez, por turnos. AGC y MAGNITUDE son contiguos y saldrían en una
-// sola lectura de tres bytes, pero una lectura de tres bytes a 400 kHz no entra en
-// el período de muestreo de 200 us, así que el tick siguiente encuentra el bus
-// ocupado y se cuenta un desborde. Medido en el banco: 4,5 desbordes por segundo.
-// Lo caro no es la muestra perdida: es que la puesta en marcha informaba una falla
-// de bus en un equipo sano, y una verificación que grita en falso enseña a
-// ignorarla. Ver SensorHealth::turn().
-static void refresh_magnet_status(void)
-{
-    if (CtrlLink::streaming() || !g_health.due(millis()))
-    {
-        return;
-    }
-
-    if (!Sensor::present())
-    {
-        g_health.forget_mounting();
-        return;
-    }
-
-    uint8_t buf[2];
-
-    switch (g_health.turn())
-    {
-        case 0:
-            if (Sensor::read_registers(Sensor::REG_STATUS, buf, 1))
-            {
-                g_health.status = buf[0];
-            }
-            break;
-
-        case 1:
-            if (Sensor::read_registers(Sensor::REG_AGC, buf, 1))
-            {
-                g_health.agc = buf[0];
-            }
-            break;
-
-        default:
-            if (Sensor::read_registers(Sensor::REG_MAGNITUDE_H, buf, 2))
-            {
-                g_health.magnitude =
-                    (uint16_t)((((uint16_t)buf[0] << 8) | buf[1]) & 0x0FFF);
-            }
-            break;
-    }
-
-    g_health.advance(3);
-}
-
-// Los contadores de salud describen la ventana de emisión, así que se ponen en
-// cero cuando se abre una. Arrancarla cuesta unos milisegundos de puerto serie
-// --el encabezado son siete líneas, y escribir bloquea en cuanto se llena el
-// buffer de transmisión-- y los períodos que se pierden ahí son el precio de
-// arrancar la captura, no una falla del lazo.
-static void reset_health_on_capture(void)
-{
-    const bool now = CtrlLink::streaming();
-
-    if (now && !g_was_streaming)
-    {
-        g_clock.clear_health();
-    }
-
-    g_was_streaming = now;
 }
 
 // ------------------------------------------------------------------- Arduino
@@ -772,10 +650,15 @@ void setup()
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 
-    // El filtro del sensor se escribe recién ahora: la lectura del CONF que precede
-    // a la escritura viaja en un tick de muestreo, así que antes de esta línea no
-    // hay quién la lleve. refresh_tuning() lo sabe por g_clock.running().
-    refresh_tuning();
+    // El filtro del sensor, recién ahora: la lectura del CONF que precede a la
+    // escritura viaja en un tick de muestreo, así que antes de esta línea no hay
+    // quién la lleve. Unos pocos intentos, por si la primera muestra todavía no
+    // salió; sin sensor en el bus se sigue igual.
+    for (uint8_t i = 0; i < 10 && !write_sensor_filter(); i++)
+    {
+        delay(2);
+    }
+    g_sfilt.applied = g_sfilt.want;
 
     CtrlLink::note(F("ControlDemo listo"));
 }
@@ -800,11 +683,15 @@ void loop()
         refresh_tuning();
     }
 
-    refresh_magnet_status();
+    // El montaje del imán, sólo entre capturas: cada lectura le cuesta al muestreo
+    // dos muestras. Ver SensorHealth::refresh_mounting().
+    if (!CtrlLink::streaming())
+    {
+        g_health.refresh_mounting<Sensor>(millis());
+    }
 
     CtrlLink::poll();
 
-    // Después de poll(), que es donde se atiende `start` y se imprime el
-    // encabezado: así la ventana empieza a contar recién cuando ya salió.
-    reset_health_on_capture();
+    // Después de poll(): ver SampleClock::window().
+    g_clock.window(CtrlLink::streaming());
 }

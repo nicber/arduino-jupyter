@@ -1,15 +1,17 @@
 // Lo que hay que saber sobre un sensor para validar sus lecturas: si contesta, si
 // el bus lo sigue, y qué informa él mismo de su montaje.
 //
-// Recibe números por accumulate() y no le pregunta nada a nadie, así que no sabe qué
-// sensor es ni por qué bus habla. Lo que sí sabe son las dos formas que tiene un
+// No sabe por qué bus habla el sensor: los contadores le llegan por accumulate(), y
+// los registros de montaje los lee refresh_mounting() a través del sensor que se le
+// pase como parámetro de plantilla. Lo que sí sabe son las dos formas que tiene un
 // dato de salud, que no se tratan igual:
 //
 //   Las cuentas son totales acumulados. Los contadores de un sensor corren libres
 //   y no se pueden borrar, así que lo que se publica es el total de sus
 //   incrementos: eso es lo que hace que la computadora pueda poner uno en cero
 //   igual que cualquier otro parámetro, en lugar de que se lo pisen en el período
-//   siguiente.
+//   siguiente. Saturan en lugar de dar la vuelta, como `late` y `missed` en
+//   SampleClock: un bus trabado suma 512 desbordes de una vez.
 //
 //   Los estados son lecturas de ahora. Ponerlos en cero sería inventar una
 //   lectura, así que no se acumulan ni se limpian.
@@ -54,8 +56,8 @@ class SensorHealth
     // son miembros y no variables escondidas adentro de la función.
     void accumulate(uint16_t sensor_overruns, uint16_t sensor_errors, bool responds)
     {
-        overruns += (uint16_t)(sensor_overruns - m_last_overruns);
-        errors   += (uint16_t)(sensor_errors   - m_last_errors);
+        overruns = add_sat(overruns, (uint16_t)(sensor_overruns - m_last_overruns));
+        errors   = add_sat(errors,   (uint16_t)(sensor_errors   - m_last_errors));
 
         m_last_overruns = sensor_overruns;
         m_last_errors   = sensor_errors;
@@ -67,13 +69,81 @@ class SensorHealth
         present = responds ? 1 : 0;
     }
 
-    // Sin sensor en el bus no hay nada que informar del montaje, y dejar el último
-    // valor sería peor que no decir nada.
-    void forget_mounting(void)
+    // Refresca la visión que el propio sensor tiene del imán: el registro de estado,
+    // la ganancia con la que lee y el módulo del campo. Cada lectura le cuesta al
+    // muestreo dos muestras, así que quien llama lo hace sólo entre capturas.
+    //
+    // Un registro por vez, por turnos. AGC y MAGNITUDE son contiguos y saldrían en
+    // una sola lectura de tres bytes, pero una lectura de tres bytes a 400 kHz no
+    // entra en el período de muestreo de 200 us, así que el tick siguiente encuentra
+    // el bus ocupado y se cuenta un desborde: una verificación que informa una falla
+    // de bus en un equipo sano. El driver acepta a lo sumo dos bytes por pedido (ver
+    // AS5600::AUX_MAX).
+    //
+    // `Sensor` es el driver: present(), read_registers(reg, buf, n) y los registros
+    // REG_STATUS, REG_AGC y REG_MAGNITUDE_H, como en AS5600.
+    template <class Sensor>
+    void refresh_mounting(uint32_t now_ms)
     {
-        status    = 0;
-        agc       = 0;
-        magnitude = 0;
+        if (!due(now_ms))
+        {
+            return;
+        }
+
+        // Sin sensor en el bus no hay nada que informar del montaje, y dejar el
+        // último valor sería peor que no decir nada.
+        if (!Sensor::present())
+        {
+            status    = 0;
+            agc       = 0;
+            magnitude = 0;
+            return;
+        }
+
+        uint8_t buf[2];
+
+        switch (m_turn)
+        {
+            case 0:
+                if (Sensor::read_registers(Sensor::REG_STATUS, buf, 1))
+                {
+                    status = buf[0];
+                }
+                break;
+
+            case 1:
+                if (Sensor::read_registers(Sensor::REG_AGC, buf, 1))
+                {
+                    agc = buf[0];
+                }
+                break;
+
+            default:
+                if (Sensor::read_registers(Sensor::REG_MAGNITUDE_H, buf, 2))
+                {
+                    magnitude = (uint16_t)((((uint16_t)buf[0] << 8) | buf[1]) & 0x0FFF);
+                }
+                break;
+        }
+
+        // Cuando la ronda se completa, el ritmo se afloja.
+        m_turn = (uint8_t)((m_turn + 1) % TURNS);
+        if (m_turn == 0)
+        {
+            m_complete = true;
+        }
+    }
+
+    private:
+
+    static const uint8_t  TURNS   = 3;     // STATUS, AGC y MAGNITUDE
+    static const uint16_t FAST_MS = 50;    // la primera vuelta, para que no se lea un cero
+    static const uint16_t SLOW_MS = 500;   // después, el ritmo de algo que se mira entre corridas
+
+    static uint16_t add_sat(uint16_t total, uint16_t delta)
+    {
+        return (total > (uint16_t)(0xFFFF - delta)) ? (uint16_t)0xFFFF
+                                                     : (uint16_t)(total + delta);
     }
 
     // Si toca refrescar el diagnóstico de montaje.
@@ -95,30 +165,6 @@ class SensorHealth
         m_last_ms = now_ms;
         return true;
     }
-
-    // Qué registro toca leer, de a uno por refresco.
-    //
-    // De a uno y no todos juntos porque cada lectura de mantenimiento ocupa el bus
-    // en lugar de las muestras, y cuanto más larga es, más tiempo lo ocupa: el
-    // driver acepta a lo sumo dos bytes por pedido (ver AS5600::AUX_MAX).
-    uint8_t turn(void) const { return m_turn; }
-
-    // Cierra un refresco y pasa el turno. Cuando la ronda se completa, el ritmo se
-    // afloja.
-    void advance(uint8_t turns)
-    {
-        m_turn = (uint8_t)((m_turn + 1) % turns);
-
-        if (m_turn == 0)
-        {
-            m_complete = true;
-        }
-    }
-
-    private:
-
-    static const uint16_t FAST_MS = 50;    // la primera vuelta, para que no se lea un cero
-    static const uint16_t SLOW_MS = 500;   // después, el ritmo de algo que se mira entre corridas
 
     uint16_t m_last_overruns;   // la lectura anterior de los contadores del sensor
     uint16_t m_last_errors;

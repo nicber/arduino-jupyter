@@ -25,13 +25,15 @@ class LoopDrive
     // que llamar a apply() después; no se vigilan solos.
 
     Top     top;        // TOP del Timer1: f = F_CPU / (2 * top)
-    uint8_t bidir;      // 1: el puente acciona en los dos sentidos
+    uint8_t bidir;      // 1: el puente acciona en los dos sentidos. Arranca en 0, como
+                        // HBridge: con un transistor, un comando negativo del PID
+                        // empujaría para el mismo lado que uno positivo
     uint8_t invert;     // 1: un comando positivo hace bajar la magnitud realimentada
     Command u;          // el último comando pedido, antes de `invert`, para la telemetría
 
     constexpr explicit LoopDrive(Top initial_top)
         : top(initial_top)
-        , bidir(1)
+        , bidir(0)
         , invert(0)
         , u(0)
         , m_bridge(initial_top)
