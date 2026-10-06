@@ -436,7 +436,6 @@ libraries/ControlMath/   punto fijo, filtros enteros y la media móvil que usa S
 libraries/AngleSensor/   ángulo desenrollado, y salud del sensor
 libraries/Calibracion/   la corrección del error de ángulo
 libraries/AS5600Async/   lectura asincrónica del AS5600
-libraries/AS5600Regs/    el mapa de registros, sin ningún transporte
 libraries/nI2C/          bus I2C por interrupciones (submódulo, de terceros)
 libraries/BoardStart/    el reloj, el ADC y el destrabe del bus, antes de todo lo demás
 test/test_modulos.cpp    los módulos que son aritmética pura, en la de escritorio

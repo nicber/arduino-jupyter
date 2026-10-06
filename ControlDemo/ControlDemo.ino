@@ -607,9 +607,10 @@ void setup()
                     g_channels, sizeof(g_channels) / sizeof(g_channels[0]),
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
+    // El conversor antes que refresh_tuning(), que lo reconfigura.
+    g_adc.begin(g_board.adcfs);
     refresh_tuning();
 
-    g_adc.begin(g_board.adcfs);
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 
@@ -617,11 +618,19 @@ void setup()
     // escritura viaja en un tick de muestreo, así que antes de esta línea no hay
     // quién la lleve. Unos pocos intentos, por si la primera muestra todavía no
     // salió; sin sensor en el bus se sigue igual.
-    for (uint8_t i = 0; i < 10 && !write_sensor_filter(); i++)
+    // Si no sale, `applied` queda distinto de `want` y refresh_tuning() vuelve a
+    // probar con la próxima escritura de parámetro.
+    for (uint8_t i = 0; i < 10 && g_sfilt.applied != g_sfilt.want; i++)
     {
-        delay(2);
+        if (write_sensor_filter())
+        {
+            g_sfilt.applied = g_sfilt.want;
+        }
+        else
+        {
+            delay(2);
+        }
     }
-    g_sfilt.applied = g_sfilt.want;
 
     CtrlLink::note(F("ControlDemo listo"));
 }

@@ -290,7 +290,10 @@ class RowAdc
 
         const uint8_t prescaler = this->prescaler();
 
-        ADCSRA = 0;
+        // ADIF se borra escribiéndole un uno. Una conversión anterior --la sonda del
+        // ancho, el bandgap, el estado del bus-- lo deja puesto, y al habilitar ADIE
+        // su interrupción entraría enseguida y sumaría esa cuenta a la primera fila.
+        ADCSRA = _BV(ADIF);
         ADMUX  = (uint8_t)(_BV(REFS0) | (Channel & 0x1F));
         ADCSRB = (uint8_t)(ADCSRB & ~0x07);
         m_channel = 0;
@@ -299,7 +302,7 @@ class RowAdc
     }
 
     // Reaplicar el preescalador sin reiniciar el ADC entero, y levantar la cadena si
-    // quedó parada.
+    // quedó parada. Después de begin(), que es lo que fija el preescalador de la placa.
     //
     // Se compila SIEMPRE, no sólo con SENSE_DIAG. on_conversion() rearranca la cadena
     // en cada conversión, pero si la cadena se corta por cualquier motivo no queda

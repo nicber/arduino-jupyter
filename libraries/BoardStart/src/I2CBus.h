@@ -11,61 +11,6 @@
 
 namespace board
 {
-// -------------------------------------------------------------- el bus I2C
-
-// Destraba el bus cuando quedó tomado por un esclavo a medio hablar. Devuelve
-// cuántos pulsos de reloj hicieron falta; cero quiere decir que estaba libre.
-//
-// El caso es rutinario acá y no una rareza. Grabar la placa la resetea, y el
-// reset no le avisa al AS5600: si cayó en medio de una lectura, el sensor se
-// queda esperando los pulsos de reloj que le faltan, y mientras espera mantiene
-// SDA en bajo. Para el maestro que arranca de nuevo eso es un bus ocupado, así
-// que no llega a generar el START --TWSTA queda pedido y TWINT nunca se activa--
-// y se queda ahí indefinidamente. El muestreador de 5 kHz informa entonces cero
-// muestras y un desborde por tick, un síntoma que no apunta a la causa. Y como depende de en qué parte de una transferencia cayó el reset,
-// aparece y desaparece entre una grabación y la siguiente.
-//
-// El remedio es el de la especificación: darle al esclavo los pulsos de reloj
-// que le faltan --nueve alcanzan para terminar cualquier byte más su ACK-- hasta
-// que suelte SDA, y cerrar con un STOP para que quede en un estado conocido. Se
-// hace moviendo los pines a mano, así que hay que soltarlos del periférico
-// primero: mientras TWEN esté puesto, SDA y SCL los gobierna el TWI y no el
-// puerto.
-inline uint8_t bus_recover()
-{
-    const uint8_t twcr = TWCR;
-    TWCR = 0;
-
-    pinMode(SDA, INPUT_PULLUP);
-    pinMode(SCL, INPUT_PULLUP);
-    delayMicroseconds(10);
-
-    uint8_t pulses = 0;
-    while (digitalRead(SDA) == LOW && pulses < 9) {
-        // Bajar el pin es soltar el pull-up antes de pasar a salida: al revés,
-        // entre las dos instrucciones el pin queda en alto y entra en conflicto
-        // con el esclavo.
-        digitalWrite(SCL, LOW);
-        pinMode(SCL, OUTPUT);
-        delayMicroseconds(5);
-        pinMode(SCL, INPUT_PULLUP);   // colector abierto: sube por el pull-up
-        delayMicroseconds(5);
-        pulses++;
-    }
-
-    if (pulses) {
-        // STOP a mano: con SCL arriba, SDA pasa de bajo a alto.
-        digitalWrite(SDA, LOW);
-        pinMode(SDA, OUTPUT);
-        delayMicroseconds(5);
-        pinMode(SDA, INPUT_PULLUP);
-        delayMicroseconds(5);
-    }
-
-    TWCR = twcr;
-    return pulses;
-}
-
 // ------------------------------------------------- el estado eléctrico del bus
 
 // Mientras TWEN esté puesto, SDA y SCL los gobierna el TWI y no el puerto, así que
@@ -216,10 +161,10 @@ inline bool sw_byte(uint8_t sda, uint8_t scl, uint8_t valor)
     return ack;
 }
 
-// Suelta el bus antes de preguntar, con los roles dados. Es la misma maniobra que
-// bus_recover() --pulsos de reloj hasta que el esclavo largue la línea de datos,
-// y un STOP para dejarlo en un estado conocido-- pero con los pines explícitos,
-// porque acá se intercambian a propósito.
+// Destraba el bus con los roles dados: pulsos de reloj hasta que el esclavo largue
+// la línea de datos, y un STOP para dejarlo en un estado conocido. Los pines van
+// explícitos porque responds_swapped() los intercambia a propósito; bus_recover()
+// la usa con los del cableado.
 inline void sw_unwedge(uint8_t sda, uint8_t scl)
 {
     sw_release(sda);
@@ -237,6 +182,33 @@ inline void sw_unwedge(uint8_t sda, uint8_t scl)
     delayMicroseconds(SW_US);
     sw_release(sda);
     delayMicroseconds(SW_US);
+}
+
+// -------------------------------------------------------------- el bus I2C
+
+// Destraba el bus cuando quedó tomado por un esclavo a medio hablar.
+//
+// El caso es rutinario acá y no una rareza. Grabar la placa la resetea, y el
+// reset no le avisa al AS5600: si cayó en medio de una lectura, el sensor se
+// queda esperando los pulsos de reloj que le faltan, y mientras espera mantiene
+// SDA en bajo. Para el maestro que arranca de nuevo eso es un bus ocupado, así
+// que no llega a generar el START --TWSTA queda pedido y TWINT nunca se activa--
+// y se queda ahí indefinidamente. El muestreador de 5 kHz informa entonces cero
+// muestras y un desborde por tick, un síntoma que no apunta a la causa. Y como
+// depende de en qué parte de una transferencia cayó el reset, aparece y desaparece
+// entre una grabación y la siguiente.
+//
+// El remedio es el de la especificación: darle al esclavo los pulsos de reloj
+// que le faltan --nueve alcanzan para terminar cualquier byte más su ACK-- hasta
+// que suelte SDA, y cerrar con un STOP para que quede en un estado conocido. Se
+// hace moviendo los pines a mano, así que hay que soltarlos del periférico
+// primero: mientras TWEN esté puesto, SDA y SCL los gobierna el TWI y no el
+// puerto. Con el bus libre no hace más que un STOP, que no molesta a nadie.
+inline void bus_recover()
+{
+    const uint8_t twcr = release_twi();
+    sw_unwedge(SDA, SCL);
+    restore_twi(twcr);
 }
 
 // START, dirección, STOP. Devuelve si alguien dio ACK.

@@ -19,7 +19,6 @@
 #ifndef ANGLESENSOR_SENSORHEALTH_H
 #define ANGLESENSOR_SENSORHEALTH_H
 
-#include <Arduino.h>
 #include <stdint.h>
 
 class SensorHealth

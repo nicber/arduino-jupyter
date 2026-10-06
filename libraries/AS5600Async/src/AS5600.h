@@ -35,27 +35,30 @@
 #include <stdint.h>
 #include <util/atomic.h>
 
-#include <AS5600Regs.h>
-
 template <class Bus>
 class AS5600
 {
     public:
 
-    // El mapa de registros vive en AS5600Regs.h, porque la puesta en marcha lo
-    // necesita y habla por Wire en lugar de por este driver. Acá se reexporta con
-    // nombres propios del driver, así que quien lo use no necesita incluir nada más.
-    static const uint8_t DEVICE_ADDRESS  = as5600::DEVICE_ADDRESS;
-    static const uint8_t REG_CONF_H      = as5600::REG_CONF_H;
-    static const uint8_t REG_STATUS      = as5600::REG_STATUS;
-    static const uint8_t REG_RAWANGLE_H  = as5600::REG_RAWANGLE_H;
-    static const uint8_t REG_AGC         = as5600::REG_AGC;
-    static const uint8_t REG_MAGNITUDE_H = as5600::REG_MAGNITUDE_H;
+    // Los registros que usa el driver, de la hoja de datos.
+    static const uint8_t DEVICE_ADDRESS  = 0x36;  // 7 bits, 0110110b
+    static const uint8_t REG_CONF_H      = 0x07;  // filtro, histéresis, salida, potencia
+    static const uint8_t REG_STATUS      = 0x0B;
+    static const uint8_t REG_RAWANGLE_H  = 0x0C;  // sin recortar por ZPOS/MPOS
+    static const uint8_t REG_AGC         = 0x1A;
+    static const uint8_t REG_MAGNITUDE_H = 0x1B;
 
-    static const uint8_t SF_16X = as5600::SF_16X;
-    static const uint8_t SF_8X  = as5600::SF_8X;
-    static const uint8_t SF_4X  = as5600::SF_4X;
-    static const uint8_t SF_2X  = as5600::SF_2X;
+    // Bits SF del registro CONF (figura 22): el filtro lento.
+    //
+    // Con 16x --el valor de encendido-- el retardo de respuesta al escalón son 2,2 ms
+    // y el ruido de salida 0,015 grados RMS; con 2x son 0,286 ms y 0,043 grados. Para
+    // un lazo de control esos 1,9 ms son mucho más caros que el ruido, y para medir el
+    // error de ángulo del sensor son decisivos: a 5 vueltas por segundo, 2,2 ms son
+    // 45 cuentas de corrimiento sobre un error que se espera de unas pocas.
+    static const uint8_t SF_16X = 0;
+    static const uint8_t SF_8X  = 1;
+    static const uint8_t SF_4X  = 2;
+    static const uint8_t SF_2X  = 3;
 
     // Lo más largo que pide una lectura de mantenimiento. Dos bytes son el CONF
     // o el MAGNITUDE. Una lectura con dirección de registro ya le cuesta dos
@@ -63,9 +66,11 @@ class AS5600
     // todavía más tiempo. Quien necesite más registros que lea de a poco.
     static const uint8_t AUX_MAX = 2;
 
-    static const uint8_t STATUS_MH = as5600::STATUS_MH;
-    static const uint8_t STATUS_ML = as5600::STATUS_ML;
-    static const uint8_t STATUS_MD = as5600::STATUS_MD;
+    // Bits del registro STATUS (figura 23), los que decodifica la computadora en
+    // `ang_status`.
+    static const uint8_t STATUS_MH = _BV(3);   // desborde de ganancia mínima: imán muy fuerte
+    static const uint8_t STATUS_ML = _BV(4);   // desborde de ganancia máxima: imán muy débil
+    static const uint8_t STATUS_MD = _BV(5);   // se detectó el imán
 
     // Fallas de transferencia seguidas a partir de las cuales se da el sensor
     // por desconectado. Treinta y dos a 5 kHz son 6,4 ms: lo bastante como para
@@ -119,8 +124,13 @@ class AS5600
                 m_overruns++;
             }
 
-            // Y si lleva demasiados ticks así, el bus está trabado: reiniciar TWI
-            // es lo único que lo devuelve a un estado del que se pueda salir.
+            // Y si lleva demasiados ticks así, el bus está trabado, y se reinicia el
+            // TWI. Eso libera el hardware, pero no la cola de nI2C: el paquete
+            // trabado sigue al frente y nI2C no lo relanza hasta que la cola se llena
+            // (SIZE_QUEUE = 4), así que la salida tarda unos cuatro ciclos de
+            // STALL_TICKS, ~0,4 s, más una espera activa de nI2C de decenas de ms
+            // adentro de esta ISR. Destrabar la cola en el acto pide tocar nI2C. Sin
+            // verificar en el banco.
             if (++m_stall >= STALL_TICKS)
             {
                 m_stall = 0;
@@ -196,9 +206,6 @@ class AS5600
     // pull-ups. El muestreo sigue corriendo igual, en modo de sondeo espaciado.
     static bool present(void) { return m_present; }
 
-    // Fallas seguidas; vuelve a cero con cada transferencia exitosa.
-    static uint8_t consecutive_errors(void) { return m_consecutive; }
-
     // Busca uno o varios registros contiguos. Le encarga el trabajo al lazo de
     // muestreo, que lo hace en su próximo tick en lugar de una muestra, y después
     // espera el resultado. Quien llama se bloquea a lo sumo un período de
@@ -252,17 +259,12 @@ class AS5600
         return true;
     }
 
-    static bool read_status(uint8_t& out, uint16_t timeout_ms = 5)
-    {
-        return read_registers(REG_STATUS, &out, 1, timeout_ms);
-    }
-
     // Escribe registros contiguos. A diferencia de las lecturas, esto NO pasa por
     // el lazo de muestreo: nI2C encola la escritura y la completa su propia ISR,
     // pero encolar reserva memoria, y hacer malloc adentro de una ISR de
     // temporizador puede fallar de forma esporádica y difícil de reproducir. Así
-    // que quien llama tiene que parar el muestreador primero;
-    // ver busy(). Configurar el sensor pasa entre corridas, no dentro de una.
+    // que quien llama tiene que parar el muestreador primero, como hace
+    // write_slow_filter(). Configurar el sensor pasa entre corridas, no dentro de una.
     //
     // El puntero de direcciones queda donde lo deje la escritura, así que la
     // muestra siguiente vuelve a fijarlo.

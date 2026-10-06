@@ -407,12 +407,14 @@ void setup()
                     g_channels, sizeof(g_channels) / sizeof(g_channels[0]),
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
+    // El conversor antes que refresh_tuning(), que lo reconfigura.
+    g_adc.begin(adc_full);
+
     g_current.notch.harmonics = MAINS_HARMONICS;
     g_current.notch.nyquist   = 1;
     g_adc.ma                  = 1;
     refresh_tuning();
 
-    g_adc.begin(adc_full);
     Sensor::begin();
     g_clock.begin(SAMPLE_HZ);
 

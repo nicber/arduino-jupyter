@@ -157,8 +157,6 @@ class CtrlLink
     static bool emit(void);
 
     static bool     streaming(void) { return m_streaming; }
-    static uint32_t rows(void)      { return m_rows; }
-    static uint32_t drops(void)     { return m_drops; }
 
     // Cuenta las escrituras de parámetros aceptadas de la computadora. Un sketch
     // con constantes derivadas de sus parámetros —una ganancia convertida a
@@ -172,7 +170,6 @@ class CtrlLink
     // ejecución siempre que se lo avise al enlace, para que el encabezado que lee
     // la computadora siga siendo correcto.
     static void     set_period_us(uint32_t dt_us) { m_dt_us = dt_us; }
-    static uint32_t period_us(void)               { return m_dt_us; }
 
     // Texto adicional para la respuesta de "id", por ejemplo el nombre del
     // sketch. Tiene que ser una cadena en PROGMEM; se guarda como puntero, no se
