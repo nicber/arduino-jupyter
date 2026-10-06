@@ -43,8 +43,9 @@ a tabla y un `swap` por byte, contra las divisiones sucesivas de `itoa`—, pero
 `itoa` de avr-libc está escrito a mano en assembler, así que la diferencia es
 como un 20 % del costo de codificar, no un orden de magnitud. Codificar una fila
 de 4 × int16 cuesta del orden de 350 ciclos, que la escritura serie de Arduino
-aproximadamente duplica; digamos 70 µs, o el 7 % de un período de control de
-1 ms. Las dos cosas son secundarias frente a las ventajas de encuadre de arriba.
+aproximadamente duplica; digamos 70 µs, o el 3,5 % del período de control de
+2 ms con el que corre `Banco` por omisión. Las dos cosas son secundarias frente a
+las ventajas de encuadre de arriba.
 
 Un encuadre binario (COBS + CRC) ahorraría otro ~40 % de los bytes, pero a
 1 Mbaud el ancho de banda no es la restricción activa, y costaría la posibilidad
@@ -75,7 +76,13 @@ igual sin telemetría confirma que lo que se come los bytes es el muestreador y 
 la emisión.
 
 Por eso la computadora espacia los bytes de un comando 0,5 ms (`_BYTE_GAP` en
-`ctrllink.py`), que los lleva a 60 de 60 en las dos condiciones.
+`ctrllink.py`), que los lleva a 60 de 60 en las dos condiciones. Los comandos son
+raros y cortos --un `set` tarda del orden de 10 ms en enviarse--, así que no cuesta
+nada, y el tick que informa `# mark` hace que incluso un escalón enviado en medio de
+una captura quede ubicado en la muestra exacta. Encima de eso, la computadora
+reintenta todo comando que el dispositivo declare no haber entendido, y verifica el
+valor que devuelve un `set` en lugar de confiar en él: un *comando* deformado se
+rechaza a los gritos, pero un *valor* deformado se aceptaría en silencio.
 
 Marcar el muestreador como `ISR_NOBLOCK` sí lo arreglaría, y conviene decir por
 qué no se hizo con los números a la vista en lugar del argumento que estaba acá
@@ -102,15 +109,6 @@ el enlace queda marcado y la operación siguiente lo intenta de nuevo antes de
 mandar nada. Nunca hace falta reiniciar el kernel para recuperar el control de
 la placa.
 
-Por eso la computadora separa los bytes de un comando medio milisegundo, lo que
-elimina la pérdida por completo. Los comandos son raros y cortos —un `set` tarda
-unos 6 ms en enviarse—, así que no cuesta nada, y el tick que informa `# mark`
-hace que incluso un escalón enviado en medio de una captura quede ubicado en la
-muestra exacta. Encima de eso, la computadora reintenta todo comando que el
-dispositivo declare no haber entendido, y verifica el valor que devuelve un `set`
-en lugar de confiar en él: un *comando* deformado se rechaza a los gritos, pero
-un *valor* deformado se aceptaría en silencio.
-
 **Flujo continuo, no captura en buffer.** Un ATmega328P tiene 2 KB de SRAM, así
 que una captura en buffer entra unas 175 muestras: 350 ms a 500 Hz, mucho menos
 que un transitorio hasta el establecimiento. El flujo continuo no tiene límite de
@@ -118,17 +116,21 @@ duración; lo que queda acotado es la frecuencia de muestreo, y a 1 Mbaud ese
 tope está muy por encima de lo que puede muestrear un UNO.
 
 **Nunca bloquear el muestreo.** `Serial.write` bloquea en cuanto se llena el
-buffer de transmisión de 64 bytes, lo que frenaría el muestreo y distorsionaría
-justamente la dinámica que se está midiendo. `emit()` consulta primero
+buffer de transmisión --128 bytes en `Banco`, que se compila con
+`-DSERIAL_TX_BUFFER_SIZE=128`; el core trae 64--, lo que frenaría el muestreo y
+distorsionaría justamente la dinámica que se está midiendo. `emit()` consulta primero
 `availableForWrite()` y descarta la fila si no hay lugar, contando el descarte.
 Una fila descartada deja un hueco visible en la secuencia de ticks; una escritura
 bloqueante dejaría un error de temporización invisible.
 
 Con una excepción, que conviene anotar en lugar de afirmar que no la hay:
-`cmd_set()` escribe su respuesta (~45 bytes) con `Serial.print` sin consultar
+`cmd_set()` escribe su respuesta con `Serial.print` sin consultar
 `availableForWrite()`, así que un `set` en medio de una captura es la única
-escritura bloqueante que queda en el camino del flujo. Está acotada --decenas de
-µs con el buffer casi lleno-- y aparece medida en `loop_late`, pero existe.
+escritura bloqueante que queda en el camino del flujo. Durante un flujo esa respuesta
+son unos 48 bytes --`# mark`, `# v` y `# ok`--: con el buffer de 128 bytes casi
+siempre entran sin esperar, pero con el buffer casi lleno la escritura espera a que
+salgan, hasta ~480 µs a 1 Mbaud. Está acotada y aparece medida en `loop_late`, pero
+existe.
 
 ## Ancho de banda
 
@@ -250,9 +252,12 @@ El encabezado lista sólo los canales activos, en el orden de la tabla:
 0413CDB90C830074
 ```
 
-La columna cero es siempre un contador de ticks de 16 bits, que se incrementa una
-vez por período de control se emita o no una fila. Da la vuelta cada 65536
-períodos y la computadora la desenrolla. Multiplicar por `dt_us` para obtener
+La columna cero es siempre un contador de ticks de 16 bits, que avanza una vez por
+cada llamada a `emit()`, se emita o no una fila: las que saltea `dec` y las que se
+descartan por falta de buffer igual consumen su número. Un período de control
+que el lazo no llegó a atender, en cambio, no llama a `emit()` y no deja hueco en
+`tick`: ése lo cuenta el sketch (en `Banco`, `loop_missed`). Da la vuelta cada 65536
+llamadas y la computadora la desenrolla. Multiplicar por `dt_us` para obtener
 segundos; multiplicar un canal por su `escala` para obtener unidades de
 ingeniería. Todos los valores son hexadecimal sin signo del almacenamiento crudo,
 con el nibble más significativo primero: un float son sus cuatro bytes IEEE-754,
@@ -347,26 +352,21 @@ descartar todas las muestras en silencio.
 
 ## Medido
 
-Sobre un clon de UNO con puente CH340G, a 1 Mbaud, con cuatro canales int16 a
-1 kHz:
-
-| | |
-|---|---|
-| frecuencia de muestreo | 1000,2 Hz durante 5 s |
-| filas | 4983 enviadas, 4983 recibidas |
-| filas descartadas | 0 |
-| huecos de tick | 0 |
-| uso del enlace | 21 kB/s, 21 % de 1 Mbaud |
-| peor retardo de atención | 344 µs sobre un período de 1000 µs |
+Los números de `Banco` están donde se usan: la pérdida de bytes de los comandos en
+*Diseño*, y cuántas filas por segundo atiende la placa --922 con los cinco canales,
+1138 con dos y 1396 con uno, sin descartar ninguna-- en *Ancho de banda*.
 
 El CH340 merece un párrafo aparte: es el puente que traen la mayoría de los
-clones de UNO y el que suele darse por limitado a velocidades bajas, y aguantó
-1 Mbaud sin perder una sola fila. El retardo de atención es el costo honesto de
-hacer el paso dentro de `loop()` al lado del manejo del puerto serie; el muestreo
-en sí es rígido, porque lo gobierna el Timer2, así que una atención tardía aparece
-como fluctuación en `u`, no en `y`. `loop_late` lo informa, y se
-puede escribir, así que conviene ponerlo en cero antes de una corrida para medir
-esa corrida.
+clones de UNO y el que suele darse por limitado a velocidades bajas, y sobre un clon
+con CH340G aguantó 1 Mbaud sin perder una sola fila: 4983 filas de 21 bytes
+enviadas en 5 s, a 1 kHz, y 4983 recibidas, sin huecos de tick.
+
+El retardo de atención es el costo honesto de hacer el paso dentro de `loop()` al
+lado del manejo del puerto serie; el muestreo en sí es rígido, porque lo gobierna el
+Timer2, así que una atención tardía aparece como fluctuación en `u`, no en `y`.
+`loop_late` informa el peor retardo y `loop_missed` los períodos que no se llegaron
+a atender. `start` pone los dos en cero y `stop` los congela, así que describen la
+captura y nada más, y se pueden leer después de terminada.
 
 ## Instalación
 
@@ -392,12 +392,16 @@ python3 -m venv .venv
 ```
 arduino-cli compile --fqbn arduino:avr:uno --libraries ./libraries \
   --build-property compiler.c.extra_flags=-O2 \
-  --build-property compiler.cpp.extra_flags=-O2 \
+  --build-property "compiler.cpp.extra_flags=-O2 -DSERIAL_TX_BUFFER_SIZE=128" \
   --build-property compiler.c.elf.extra_flags=-O2 \
   Banco
 arduino-cli upload  --fqbn arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 ```
 
 `Banco` se apropia del Timer2 para el muestreador de 5 kHz, así que
-`analogWrite` deja de funcionar en los pines 3 y 11; los pines 9 y 10 (Timer1) y
-5 y 6 (Timer0) no se ven afectados.
+`analogWrite` deja de funcionar en los pines 3 y 11, y `tone()` también; del Timer1
+para el PWM de 1250 Hz del pin 9, así que tampoco hay `analogWrite` en los pines 9 y
+10 ni `Servo`; y lleva el Timer0 a 1000 Hz exactos, en fase fija con el muestreador,
+así que `millis()` y `delay()` quedan un 2,4 % rápidos y el PWM de los pines 5 y 6
+deja de servir. La lista completa, con el ADC, el USART y el TWI, está en
+`notebooks/hardware.ipynb`, sección 0.

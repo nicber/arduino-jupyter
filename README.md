@@ -86,22 +86,15 @@ girando con el comando en cero--: `hardware.ipynb`, secciones 2.1 y 2.2.
 la placa sobre `cur_filas` filas (20 ms por omisión, con ~10 ms de retardo). En una
 placa a 3,3 V, como el clon del banco, A1 lee los 5 V del sensor por un divisor y la
 placa usa el cociente A0/A1. La relación de ese divisor se mide con
-`dev.medir_divisor()`, contra el reposo del sensor --que está en la mitad de su
-alimentación, así que no hace falta saber cuánto vale ésta--, o se declara a mano con
-`dev.declarar_divisor(5100, 2000)`, y ahí la tolerancia de las resistencias entra en la
-escala. `bringup()` compara las dos. **Un divisor suelto no da error**: corre la
-corriente cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar.
-Antes de promediar, la placa saca el rizado del PWM con una media de 4 ticks
-(`cur_ma`) y un notch en 250 Hz (`cur_nyq`), los dos prendidos. El notch de la red
-arranca apagado; `cur_notch` lo prende, cada armónico por separado. El canal `i` no
-publica cuentas del ADC sino **dieciseisavos de cuenta** (`cur_frac`), o sea 0,42 mA por
-unidad en lugar de 6,8: redondear a cuenta entera era lo que más ruido le ponía a la
-medición, y el sensor usa 735 de las 2047 cuentas que entran en la telemetría con esa
-unidad. `cur_zero`, en cambio, sigue
-en cuentas enteras, que es como se mide. La escala en mA no
-está verificada con un multímetro y depende de `SENSE_MV_PER_A`, en el sketch, y de la
-relación del divisor. El montaje, los números medidos y la confiabilidad del
-canal: `hardware.ipynb`, sección 4.
+`dev.medir_divisor()` o se declara con `dev.declarar_divisor(5100, 2000)`, y
+`bringup()` compara las dos. **Un divisor suelto no da error**: corre la corriente
+cientos de mA, y `sync_board()` avisa si A1 lee fuera de lo que puede dar. Los dos
+filtros del rizado del PWM, `cur_ma` y `cur_nyq`, arrancan prendidos, y el notch de
+la red, `cur_notch`, apagado. El canal `i` publica **dieciseisavos de cuenta** del
+ADC (`cur_frac`), o sea 0,42 mA por unidad; `cur_zero`, en cambio, va en cuentas
+enteras. La escala en mA no está verificada con un multímetro y depende de
+`SENSE_MV_PER_A`, en el sketch, y de la relación del divisor. Por qué es así cada
+cosa, los números medidos y la confiabilidad del canal: `hardware.ipynb`, sección 4.
 
 El AS5600 necesita un imán **magnetizado diametralmente** girando sobre el chip,
 a un par de milímetros. Las plaquetas de AS5600 traen su propio regulador y los
@@ -438,7 +431,8 @@ Banco/                   el banco: PWM afuera, ángulo y corriente adentro, tele
 libraries/CtrlLink/      el protocolo, lado placa
 libraries/Actuator/      el puente en H, o el transistor desde ENA
 libraries/Sampler/       el reloj del muestreo: período rígido y divisor
-libraries/Sense/         la corriente: ADC libre, promedio por ventana, contra la alimentación del sensor, notch de la red
+libraries/Sense/         la corriente: conversiones del ADC encadenadas, promedio por ventana, contra la alimentación del sensor, notch de la red
+libraries/ControlMath/   punto fijo, filtros enteros y la media móvil que usa Sense
 libraries/AngleSensor/   ángulo desenrollado, y salud del sensor
 libraries/Calibracion/   la corrección del error de ángulo
 libraries/AS5600Async/   lectura asincrónica del AS5600
@@ -468,7 +462,7 @@ Compilar y grabar a mano, si hiciera falta:
 ```
 arduino-cli compile -b arduino:avr:uno --libraries ./libraries \
   --build-property compiler.c.extra_flags=-O2 \
-  --build-property compiler.cpp.extra_flags=-O2 \
+  --build-property "compiler.cpp.extra_flags=-O2 -DSERIAL_TX_BUFFER_SIZE=128" \
   --build-property compiler.c.elf.extra_flags=-O2 \
   Banco
 arduino-cli upload  -b arduino:avr:uno --libraries ./libraries -p <puerto> Banco
@@ -476,10 +470,6 @@ arduino-cli upload  -b arduino:avr:uno --libraries ./libraries -p <puerto> Banco
 
 Las tres `--build-property` son las que compilan con optimización plena. El core
 de AVR trae `-Os` --optimizar por tamaño--, y en este sketch importa la velocidad
-y no el tamaño; `sync_board()` las pasa solas, así que sólo hacen falta al compilar a
-mano.
-
-Lo que **no** se pasa es `-flto`, porque no cambia nada.
-Todas las librerías de este proyecto son sólo de cabecera, así que el sketch
-entero ya es una sola unidad de traducción y no hay ninguna frontera que LTO pueda
-disolver.
+y no el tamaño. La del medio además lleva el buffer de transmisión del puerto serie
+de 64 a 128 bytes. `sync_board()` las pasa solas, así que sólo hacen falta al
+compilar a mano. `-flto` no hace falta pasarlo: el core ya compila y enlaza con él.

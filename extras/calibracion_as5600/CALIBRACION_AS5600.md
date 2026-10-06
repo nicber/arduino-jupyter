@@ -71,9 +71,9 @@ Lo que tenemos, y que es bastante:
 - Telemetría a 500 Hz por omisión (`loop_div = 10`), con número de tick en cada
   fila, así que un hueco se ve y no se confunde con una muestra.
 - `y_uw`, el ángulo ya desenrollado en cuentas, en el flujo.
-- Lazo abierto con `mode = 0` y `ctl_uff` como comando, y `capture(duración,
-  events=[...])` para cambiar un parámetro en un tick conocido en mitad de la
-  corrida.
+- Lazo abierto: la placa no tiene ley de control y `ctl_uff` va derecho al
+  actuador, y `capture(duración, events=[...])` cambia un parámetro en un tick
+  conocido en mitad de la corrida.
 - 4096 cuentas por vuelta: una cuenta son 0,0879°.
 
 ### El modelo
