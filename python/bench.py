@@ -35,7 +35,7 @@ import serial
 import catalogo
 import ensayo
 import placa
-from ctrllink import CtrlLink, CtrlLinkError
+from ctrllink import CtrlLink, CtrlLinkError, _quiso_decir
 
 __all__ = ['sync_board', 'Bench', 'CtrlLinkError', 'CABLEADO']
 
@@ -58,6 +58,38 @@ _MAGNET_STRONG, _MAGNET_WEAK, _MAGNET_PRESENT = 0x08, 0x10, 0x20
 _ADC_FULL     = 4095
 _ADC_RAIL     = 80    # a menos de esto de cualquiera de los dos extremos
 _ADC_HEADROOM = 400   # cuentas de margen que se le piden al reposo
+
+# El reposo del sensor en cuentas equivalentes: la mitad de sus 5 V son 2500 mV, y una
+# cuenta equivalente es 1,25 mV (`UV_PER_COUNT` en Sense/SupplyRatio.h). Con el
+# divisor de A1 declarado, la placa publica en esa escala sea cual sea el divisor, así
+# que un reposo lejos de acá es una relación declarada que no es la del divisor.
+_REPOSO_EQUIVALENTE = 2000
+
+# Entre qué fracciones de la escala tiene que leer A1 con el divisor puesto. Por
+# debajo, una resistencia no hace contacto. Por arriba no alcanza con no estar contra
+# el riel: la gracia del divisor es que AVCC se mueve --en el clon, 1,35 % con el
+# transistor a fondo, más la tolerancia del regulador--, y un A1 a pocos puntos del
+# tope satura en cuanto AVCC baja, con lo que el cociente deja de cancelar la
+# alimentación sin ningún aviso. El 5 % cubre eso con lugar de sobra, y deja entrar
+# cualquier divisor que `medir_divisor()` acepte: 0,6 de 5 V en una placa a 3,3 V es
+# el 91 % de la escala.
+_A1_MIN, _A1_MAX = 0.05, 0.95
+
+
+def _lejos_de_los_rieles(cuentas):
+    """True si `cuentas` no está contra ninguno de los dos rieles del conversor."""
+    return _ADC_RAIL <= cuentas <= _ADC_FULL - _ADC_RAIL
+
+
+def _a1_con_divisor(a1):
+    """True si A1 lee lo que da un divisor de 5 V conectado; ver `_A1_MIN`."""
+    fondo = _ADC_FULL + 1
+    return _A1_MIN * fondo < a1 < _A1_MAX * fondo
+
+
+class _ContraUnRiel(CtrlLinkError):
+    """El sensor de corriente reposa contra un riel del conversor: no hay cero que medir."""
+
 
 # Cuánto tiene que girar el eje en un tirón para que signifique algo. Por debajo de
 # esto lo que se mide es el ruido del sensor, no un motor que arrancó.
@@ -98,10 +130,13 @@ def _sin_arranque(df):
     return resto
 
 
-def leer_cableado(ruta=CABLEADO):
-    """Los signos guardados por `bringup()`, como dict, o None si no hay."""
+def leer_cableado(ruta=None):
+    """Los signos guardados por `bringup()`, como dict, o None si no hay.
+
+    Por omisión, `CABLEADO`, leído al llamar y no al importar.
+    """
     try:
-        return json.loads(Path(ruta).read_text(encoding='utf-8'))
+        return json.loads(Path(CABLEADO if ruta is None else ruta).read_text(encoding='utf-8'))
     except (OSError, ValueError, TypeError):
         return None
 
@@ -217,13 +252,9 @@ class Bench:
         # porque los notebooks usan ésta.
         if (link is not None and not name.startswith('_')
                 and name not in self._PROPIOS and name not in self.__dict__):
-            import difflib
-            parecidos = difflib.get_close_matches(name, link._params, n=3)
-            sugerencia = (f' ¿Quiso decir {" o ".join(map(repr, parecidos))}?'
-                          if parecidos else '')
             raise AttributeError(
                 f'{name!r} no es un parámetro de la placa ni un atributo del banco, '
-                f'así que asignarlo no llegaría al equipo.{sugerencia}')
+                f'así que asignarlo no llegaría al equipo.{_quiso_decir(name, link._params)}')
 
         object.__setattr__(self, name, value)
 
@@ -315,9 +346,10 @@ class Bench:
         # ausencia y no un offset: tomarlo como cero deja un canal que informa ceros
         # perfectos sin haber medido nada, y nada aguas abajo lo vuelve a mirar.
         # bringup() ya hace esta comprobación; acá hace falta igual, porque
-        # zero_current() se llama sola desde los notebooks y desde declarar_divisor().
-        if not _ADC_RAIL <= reposo <= _ADC_FULL - _ADC_RAIL:
-            raise RuntimeError(
+        # zero_current() se llama sola desde los notebooks, desde configurar() y desde
+        # declarar_divisor().
+        if not _lejos_de_los_rieles(reposo):
+            raise _ContraUnRiel(
                 f'el sensor reposa en {reposo:.0f} cuentas de {_ADC_FULL}, contra un '
                 f'riel del conversor: eso es una entrada al aire o una saturación, no '
                 f'un offset. No se calibra nada; revisar A0. El cero queda en '
@@ -370,16 +402,19 @@ class Bench:
 
     # ------------------------------------------------------- el cableado
 
-    def configurar(self, bidir=None, cableado=CABLEADO, cero=True, say=print):
+    def configurar(self, bidir=None, cableado=None, cero=True, say=print):
         """Le dice a la placa lo que no puede saber sola. Lo llama `sync_board()`.
 
         `bidir` es qué actuador tiene el banco, y lo declara quien lo conecta: un
         puente en H acciona en los dos sentidos, un transistor en uno. Sin
         declararlo la placa queda en un solo cuadrante, que nunca invierte un motor
         que no lo esperaba. Los signos salen de `cableado`, que escribe
-        `bringup()`. `cero` mide el cero de la corriente, que cada reset pierde.
+        `bringup()`, y por omisión son `CABLEADO`. `cero` mide el cero de la
+        corriente, que cada reset pierde.
         """
         params = self.link._params
+        if cableado is None:
+            cableado = CABLEADO
 
         if 'mot_bidir' in params:
             if bidir is None:
@@ -402,7 +437,7 @@ class Bench:
                 # corriente sale de un cociente sin sentido, con un cero corrido.
                 time.sleep(0.2)
                 a1 = int(self.cur_a1)
-                if not 0.05 * (_ADC_FULL + 1) < a1 < 0.95 * (_ADC_FULL + 1):
+                if not _a1_con_divisor(a1):
                     say(f'  Atención: A1 lee {a1} cuentas, fuera de lo que da un divisor de 5 V: está '
                         f'suelto o mal conectado, y la corriente no es válida. Revisar las dos '
                         f'resistencias del divisor.')
@@ -427,12 +462,12 @@ class Bench:
                     + f' ({Path(cableado).name})')
 
         # Contra un riel no hay un offset que medir sino una entrada al aire, y
-        # "calibrarla" dejaría un canal que informa ceros perfectos. Eso lo explica
-        # bringup(); acá sólo no se toca.
+        # zero_current() no lo calibra. Eso lo explica bringup(); acá sólo no se toca.
         if cero and 'cur_zero' in params:
-            adc = self._reposo_de_corriente()
-            if _ADC_RAIL <= adc <= _ADC_FULL - _ADC_RAIL:
-                self.cur_zero = round(adc)
+            try:
+                self.zero_current()
+            except _ContraUnRiel:
+                pass
 
     def medir_divisor(self, guardar=True, say=print):
         """Mide la relación del divisor de A1 contra el reposo del sensor.
@@ -480,22 +515,21 @@ class Bench:
         # mala que dejara `cur_div` puesto y el cero recalibrado contra él daría un
         # canal corrido de amperes, sin ningún aviso y para siempre.
         a1 = int(self.cur_a1)
-        fondo = _ADC_FULL + 1
-        if not 0.05 * fondo < a1 < 0.97 * fondo:
+        if not _a1_con_divisor(a1):
             raise CtrlLinkError(
-                f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala): el divisor no está '
-                f'conectado, o su salida supera la alimentación del micro. No se mide '
-                f'nada; queda {antes_div / 10000:.4f}, el de antes.')
+                f'A1 lee {a1} cuentas ({a1 / (_ADC_FULL + 1):.0%} de la escala): el '
+                f'divisor no está conectado, o su salida supera la alimentación del '
+                f'micro. No se mide nada; queda {antes_div / 10000:.4f}, el de antes.')
 
         reposo = self._reposo_de_corriente()
-        if not _ADC_RAIL <= reposo <= _ADC_FULL - _ADC_RAIL:
+        if not _lejos_de_los_rieles(reposo):
             raise CtrlLinkError(
                 f'el sensor reposa en {reposo:.0f} cuentas equivalentes, contra un riel '
                 f'del conversor: eso es una entrada al aire o una saturación, no un '
                 f'reposo. Revisar A0 y el divisor de A1. Queda '
                 f'{antes_div / 10000:.4f}, el de antes.')
 
-        medido = int(round(2000.0 * antes_div / reposo))
+        medido = int(round(_REPOSO_EQUIVALENTE * antes_div / reposo))
         if not 1000 <= medido <= 6000:
             raise CtrlLinkError(
                 f'la relación medida, {medido / 10000:.4f}, no es la de un divisor que '
@@ -515,13 +549,13 @@ class Bench:
         say(f'divisor de A1 medido contra el reposo del sensor: relación '
             f'{medido / 10000:.4f} ({medido}), {medido / antes_div - 1:+.1%} de lo que '
             f'estaba puesto; el sensor queda en {self.cur_zero} cuentas equivalentes '
-            f'(2000 es la mitad de su alimentación)')
+            f'({_REPOSO_EQUIVALENTE} es la mitad de su alimentación)')
 
         if guardar:
             _actualizar_cableado(cur_div=medido, cur_div_medido=True)
         return medido
 
-    def declarar_divisor(self, arriba_ohm, abajo_ohm, guardar=True):
+    def declarar_divisor(self, arriba_ohm, abajo_ohm, guardar=True, say=print):
         """Declara el divisor de los 5 V del sensor en A1, y mide la corriente contra ellos.
 
         Hace falta cuando la placa no funciona a 5 V --el clon del banco va a 3,3 V--:
@@ -548,7 +582,6 @@ class Bench:
         # `cur_zero` calibrado contra un divisor que ya no está. Medido sobre el
         # simulador, eso movía el cero de 3233 a 4095 y el reposo de +2,3 mA a
         # -5823 mA. Es el mismo defecto que tenía medir_divisor().
-        fondo = _ADC_FULL + 1
         try:
             self.cur_div = int(round(relacion * 10000))
 
@@ -556,10 +589,10 @@ class Bench:
             # informar antes de decidir.
             self.capture(0.2, warn=False)
             a1 = int(self.cur_a1)
-            print(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relación {relacion:.4f}; '
-                  f'A1 lee {a1} cuentas ({a1 / fondo:.0%} de la escala)')
-            if a1 < 0.05 * fondo or a1 > 0.97 * fondo:
-                raise RuntimeError(
+            say(f'divisor {arriba_ohm:g} / {abajo_ohm:g} ohm: relación {relacion:.4f}; '
+                f'A1 lee {a1} cuentas ({a1 / (_ADC_FULL + 1):.0%} de la escala)')
+            if not _a1_con_divisor(a1):
+                raise CtrlLinkError(
                     f'A1 lee {a1} cuentas: el divisor no está conectado, o la salida '
                     f'supera la alimentación del micro. No queda declarado: la placa '
                     f'vuelve a medir como venía. Revisar el cableado y volver a '
@@ -572,19 +605,19 @@ class Bench:
             self.cur_zero = antes_cero
             raise
 
-        # El sensor reposa en la mitad de su alimentación, que en cuentas equivalentes
-        # son 2000. Lejos de eso, la relación declarada no es la del divisor puesto: la
-        # misma cuenta, dada vuelta, es la relación que mide `medir_divisor()`.
-        desvio = self.cur_zero / 2000 - 1
-        medido = 2000 * self.cur_div / max(self.cur_zero, 1)
-        print(f'el sensor reposa en {self.cur_zero} cuentas equivalentes: '
-              f'{desvio:+.1%} de la mitad de su alimentación, o sea que medido contra '
-              f'ese reposo el divisor da {medido / 10000:.4f} ({medido / self.cur_div - 1:+.1%})')
+        # Lejos de `_REPOSO_EQUIVALENTE`, la relación declarada no es la del divisor
+        # puesto: la misma cuenta, dada vuelta, es la relación que mide
+        # `medir_divisor()`.
+        desvio = self.cur_zero / _REPOSO_EQUIVALENTE - 1
+        medido = _REPOSO_EQUIVALENTE * self.cur_div / max(self.cur_zero, 1)
+        say(f'el sensor reposa en {self.cur_zero} cuentas equivalentes: '
+            f'{desvio:+.1%} de la mitad de su alimentación, o sea que medido contra '
+            f'ese reposo el divisor da {medido / 10000:.4f} ({medido / self.cur_div - 1:+.1%})')
         if abs(desvio) > 0.08:
-            print('  Atención: más de un 8 %. O la relación declarada no es la del divisor, o el '
-                  'sensor no reposa en la mitad: revisar las resistencias.')
-        print('  dev.medir_divisor() usa ese reposo en lugar de las resistencias, y no depende '
-              'de la tolerancia de ellas.')
+            say('  Atención: más de un 8 %. O la relación declarada no es la del divisor, o el '
+                'sensor no reposa en la mitad: revisar las resistencias.')
+        say('  dev.medir_divisor() usa ese reposo en lugar de las resistencias, y no depende '
+            'de la tolerancia de ellas.')
 
         if guardar:
             # `cur_div_medido` en falso: esta relación sale de las resistencias
@@ -709,7 +742,7 @@ class Bench:
         # mapeado adentro del rango, o sea que bringup() daba por bueno el cero de
         # una entrada al aire.
         adc = self.cur_zero + self._signo_corriente() * df['i'].mean() / cuenta
-        sensed = _ADC_RAIL <= adc <= (_ADC_FULL - _ADC_RAIL)
+        sensed = _lejos_de_los_rieles(adc)
         rest_ma = noise = 0.0
 
         if not sensed:
@@ -756,7 +789,7 @@ class Bench:
             # la escala de un canal es una decisión de quien arma el banco-- pero sí se
             # dice cuánto difiere de lo declarado. Ver medir_divisor().
             if self.cur_div and self.cur_zero > 0:
-                medido = 2000 * int(self.cur_div) / int(self.cur_zero)
+                medido = _REPOSO_EQUIVALENTE * int(self.cur_div) / int(self.cur_zero)
                 aparta = medido / int(self.cur_div) - 1
                 report('divisor de i', None if abs(aparta) > 0.03 else True,
                        f'declarado {int(self.cur_div) / 10000:.4f}, medido contra el '
@@ -995,10 +1028,7 @@ def sync_board(port=None, force_compile=False, force_upload=False, verbose=True,
 
     port, notes = placa.poner_al_dia(port, force_compile, force_upload, sketch, say,
                                      antes_de_cargar=soltar_puerto)
-
-    if _link is not None:
-        _link.close()
-        _link = None
+    soltar_puerto()
 
     try:
         _link = Bench(port)

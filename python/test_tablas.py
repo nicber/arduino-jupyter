@@ -3,8 +3,8 @@
 Los notebooks las usan como atributos de Python --`dev.ctl_uff`, `df['y_uw']`-- así
 que un nombre que cambia, una entrada que se reordena o un `frac` que queda con el
 del vecino rompen el otro lado sin ningún aviso. Ninguna otra prueba mira eso: las de
-ctrllink prueban el protocolo contra un dispositivo simulado, y las de calib
-prueban la aritmética de la tabla de calibración.
+ctrllink prueban el protocolo contra un dispositivo simulado, y las de
+extras/calibracion_as5600/test_calib.py la aritmética de la tabla de calibración.
 
 Éste compara las dos tablas contra un golden guardado en el repositorio. Lee el
 sketch en lugar de preguntarle a una placa, así corre sin hardware y sin compilar,
@@ -157,11 +157,16 @@ def main():
                              '' if hay == esperado else f'{esperado} -> {hay}')
 
     # El ancho de una fila de telemetría, que es lo que decide si entra en el buffer
-    # de transmisión. Lo recalcula el dispositivo, pero acá se ve sin grabar nada.
+    # de transmisión. Lo recalcula el dispositivo, pero acá se ve sin grabar nada. El
+    # buffer es el que compila placa.py (64 si no lo cambia), y es un anillo: le entra
+    # un byte menos que su tamaño.
+    import placa
+    m = re.search(r'-DSERIAL_TX_BUFFER_SIZE=(\d+)', ' '.join(placa.BUILD_PROPERTIES))
+    lugar = (int(m.group(1)) if m else 64) - 1
     ancho = {'CTRL_I8': 2, 'CTRL_U8': 2, 'CTRL_I16': 4, 'CTRL_U16': 4}
     fila  = 4 + 1 + sum(ancho.get(c['tipo'], 8) for c in tablas['chans'])
-    fallas = _contar(fallas, fila <= 63, 'la fila entra en el buffer de transmisión',
-                     f'{fila} bytes de 63')
+    fallas = _contar(fallas, fila <= lugar, 'la fila entra en el buffer de transmisión',
+                     f'{fila} bytes de {lugar}')
 
     print(f'\n{fallas} falla(s)')
     return 1 if fallas else 0

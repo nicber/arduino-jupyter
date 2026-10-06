@@ -66,6 +66,10 @@ cxx = shutil.which('g++') or shutil.which('clang++')
 if cxx:
     with tempfile.TemporaryDirectory() as tmp:
         for clave, fuente in fuentes.items():
+            # Control no va en el zip del TP2: contra un zip, su suite no está y no falta.
+            if clave == 'control' and not (RAIZ / 'libraries' / 'Control').is_dir():
+                print(f'[ nota] {fuente.name}: la biblioteca Control no viene en este proyecto')
+                continue
             exe = Path(tmp) / f'{clave}.exe'
             # _USE_MATH_DEFINES: con -std=c++11 el mingw define __STRICT_ANSI__ y
             # esconde M_PI, que avr-g++ sí da. Es la única diferencia que apareció

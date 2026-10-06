@@ -245,6 +245,13 @@ def _ended(buf):
     return buf.find(b'\n', end_of_line + 1) >= 0
 
 
+def _quiso_decir(name, candidatos):
+    """La sugerencia para un nombre mal escrito, o '' si no se parece a ninguno."""
+    import difflib
+    parecidos = difflib.get_close_matches(name, candidatos, n=3)
+    return f' ¿Quiso decir {" o ".join(map(repr, parecidos))}?' if parecidos else ''
+
+
 @dataclass
 class Param:
     """Un parámetro del dispositivo, y el formato de punto fijo en que se guarda.
@@ -320,13 +327,7 @@ class CtrlLink:
             if reset_wait:
                 self._reset_board(reset_wait)
 
-            self.info = self.sync()
-            # `_params` se asigna al final a propósito: es lo que __setattr__ usa
-            # para decidir si un nombre es un parámetro, y mientras no exista los
-            # atributos normales del objeto se asignan sin pasar por esa comprobación.
-            params = self._read_params()
-            self.channels = self._read_channels()
-            self._params = params
+            self._descubrir()
         except BaseException:
             # El puerto ya está abierto, y un puerto serie es exclusivo. En un
             # notebook el traceback de la celda sobrevive en sys.last_traceback,
@@ -606,6 +607,16 @@ class CtrlLink:
 
     # ----------------------------------------------------------- descubrimiento
 
+    def _descubrir(self):
+        """Confirma que el dispositivo escucha y lee su identidad, parámetros y canales."""
+        self.info = self.sync()
+        # `_params` se asigna al final a propósito: es lo que __setattr__ usa para
+        # decidir si un nombre es un parámetro, y mientras no exista los atributos
+        # normales del objeto se asignan sin pasar por esa comprobación.
+        params = self._read_params()
+        self.channels = self._read_channels()
+        self._params = params
+
     def _read_params(self) -> dict:
         """nombre -> Param, tal como los declara el dispositivo.
 
@@ -683,14 +694,14 @@ class CtrlLink:
                 return int(field[6:]) * 1e-6
         raise CtrlLinkError('el dispositivo no informó su período de control')
 
-    def _del_diagnostico(self, metodo):
+    def _del_diagnostico(self, metodo, *args):
         """Lo que el colaborador conteste a `metodo`, o nada si no hay colaborador.
 
         Todos sus métodos son opcionales, así que un objeto que sólo sepa nombrar
         parámetros no tiene que además saber redactar notas.
         """
         fn = getattr(self._diag, metodo, None) if self._diag is not None else None
-        return fn() if fn is not None else ()
+        return fn(*args) if fn is not None else ()
 
     @property
     def _health(self) -> tuple:
@@ -754,7 +765,7 @@ class CtrlLink:
         """
         stored = None
 
-        for attempt in range(tries):
+        for _ in range(tries):
             for text in self.cmd(f'set {name} {self._encode(name, value)}'):
                 if not text.startswith('# v '):
                     continue
@@ -764,11 +775,10 @@ class CtrlLink:
                 if self._agrees(name, stored, value):
                     return stored
                 break
-            if attempt + 1 == tries:
-                raise CtrlLinkError(
-                    f'se fijo {name} en {value!r} pero el dispositivo '
-                    f'informa {stored!r}')
-        return None
+
+        raise CtrlLinkError(
+            f'se fijo {name} en {value!r} pero el dispositivo '
+            f'informa {stored!r}')
 
     def _encode(self, name, value):
         """Unidades reales -> el entero (o float) que el dispositivo quiere en el cable.
@@ -848,14 +858,10 @@ class CtrlLink:
         # sin enterarse. Con un motor del otro lado eso es creer que se bajó una
         # ganancia y que el lazo siga con la vieja.
         if params and not name.startswith('_') and name not in self.__dict__:
-            import difflib
-            parecidos = difflib.get_close_matches(name, params, n=3)
-            sugerencia = (f' ¿Quiso decir {" o ".join(map(repr, parecidos))}?'
-                          if parecidos else '')
             raise AttributeError(
                 f'{name!r} no es un parámetro del dispositivo ni un atributo de '
                 f'este objeto, así que asignarlo no llegaría a la placa.'
-                f'{sugerencia}')
+                f'{_quiso_decir(name, params)}')
 
         super().__setattr__(name, value)
 
@@ -894,11 +900,11 @@ class CtrlLink:
         Ctrl-C—, el dispositivo queda callado igual antes de que la excepción
         llegue a la celda: ver _hold().
         """
-        # El valor previo se publica acá adentro y no por el valor devuelto: si la
-        # interrupción cae DENTRO de _select_channels --entre el `set chans` y la
-        # lectura de su respuesta-- el dispositivo ya aplicó la máscara nueva y
-        # `previous` todavía valdría None, así que no se restituía nada y la captura
-        # siguiente volvía con las columnas que dejó ésta.
+        # _select_channels publica el valor previo acá adentro y no lo devuelve: si
+        # la interrupción cae DENTRO de ella --entre el `set chans` y la lectura de
+        # su respuesta-- el dispositivo ya aplicó la máscara nueva y un valor
+        # devuelto no llegaría a nadie, así que no se restituiría nada y la captura
+        # siguiente volvería con las columnas que dejó ésta.
         self._chans_previo = None
 
         try:
@@ -923,9 +929,12 @@ class CtrlLink:
         return df
 
     def _select_channels(self, canales):
-        """Activa sólo `canales` y devuelve la máscara que había, o None si no se pidió nada."""
+        """Activa sólo `canales` y deja en `_chans_previo` la máscara que había.
+
+        Sin `canales` no toca nada.
+        """
         if canales is None:
-            return None
+            return
 
         if isinstance(canales, str):
             canales = [canales]
@@ -946,10 +955,8 @@ class CtrlLink:
 
         # Se publica ANTES de emitir el `set`: a partir de ahí la máscara puede
         # estar cambiada, y quien limpie tiene que saber a qué volver.
-        previous = self.get('chans')
-        self._chans_previo = previous
+        self._chans_previo = self.get('chans')
         self.set('chans', mask)
-        return previous
 
     def _capture(self, duration, events, poll, warn):
         pending = sorted(events, key=lambda e: e[0])
@@ -1030,8 +1037,7 @@ class CtrlLink:
         # Se leen una vez que el flujo paró, no durante: un `get` en medio de una
         # captura cuesta milisegundos de tráfico de comandos, que es justamente lo
         # que se está midiendo.
-        df.attrs.update({clave: self.get(param)
-                         for clave, param in self._health + self._state})
+        df.attrs.update(self.health())
 
         # Con qué configuración se midió, tal como quedó al terminar la captura. Es
         # lo que ensayo.guardar() escribe arriba del CSV.
@@ -1065,7 +1071,7 @@ class CtrlLink:
         dependa del hardware lo redacta el colaborador, y va antes o después de esto
         según importe más o menos que un período perdido.
         """
-        notes = list(self._notas_del_diagnostico('notas_primero', df))
+        notes = list(self._del_diagnostico('notas_primero', df))
         dt_us = df.attrs['dt_us']
         rate = 1e6 / dt_us if dt_us else 0
 
@@ -1143,12 +1149,32 @@ class CtrlLink:
             notes.append(f'{gaps} hueco(s) en la secuencia de ticks: faltan filas '
                          f'en la serie temporal.')
 
-        return notes + list(self._notas_del_diagnostico('notas_despues', df))
+        return notes + list(self._del_diagnostico('notas_despues', df))
 
-    def _notas_del_diagnostico(self, metodo, df):
-        """Las notas que aporte el colaborador, o ninguna si no hay."""
-        fn = getattr(self._diag, metodo, None) if self._diag is not None else None
-        return fn(df) if fn is not None else ()
+    def _marca_del_escalon(self, df, name, value):
+        """La marca del escalón de `name` en la captura, y su fila.
+
+        El `set` del evento se manda sin verificar a propósito --verificarlo costaría
+        tráfico en medio de la captura-- porque el `# mark` que devuelve el
+        dispositivo trae el valor que efectivamente guardó. Si no está, esa
+        verificación no ocurrió y el escalón puede no haber ocurrido tampoco: volver
+        con un DataFrame de aspecto normal, con `t` medido desde el arranque y sin
+        escalón adentro, es lo peor que se puede hacer.
+        """
+        filas = df.attrs.get('mark_rows') or [None] * len(df.attrs['marks'])
+        marks = [(m, f) for m, f in zip(df.attrs['marks'], filas) if m[1] == name]
+        if not marks:
+            raise CtrlLinkError(
+                f'el dispositivo nunca confirmó el escalón de {name!r}: no hay '
+                f'ninguna marca en la captura. El `set` se perdió en el cable, así '
+                f'que estos datos no tienen el escalón adentro.')
+
+        marca, fila = marks[0]
+        if not self._agrees(name, marca[2], value):
+            raise CtrlLinkError(
+                f'se pidió un escalón de {name} a {value!r} y el dispositivo marcó '
+                f'{marca[2]!r}: el valor se deformó en el cable.')
+        return marca, fila
 
     def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True, canales=None):
         """Captura una respuesta al escalón, con `t = 0` en el escalón mismo.
@@ -1160,12 +1186,14 @@ class CtrlLink:
         try:
             df = self.capture(pre + post, events=[(pre, name, value)], warn=warn,
                               canales=canales)
+            marca, fila = self._marca_del_escalon(df, name, value)
         except BaseException:
-            # El escalón ya salió: interrumpir la captura no lo deshace, y dejar un
-            # parámetro movido en un dispositivo que sigue corriendo no es un estado
-            # en el que convenga abandonarlo. El enlace ya quedó limpio para este
-            # punto, así que restituir es un comando común; si aun así no se puede,
-            # la excepción que viene saliendo es la noticia importante.
+            # El escalón ya salió, o puede haber salido: ni interrumpir la captura ni
+            # descubrir que la marca falta lo deshacen, y dejar un parámetro movido en
+            # un dispositivo que sigue corriendo no es un estado en el que convenga
+            # abandonarlo. El enlace ya quedó limpio para este punto, así que
+            # restituir es un comando común; si aun así no se puede, la excepción que
+            # viene saliendo es la noticia importante.
             if back is not None:
                 try:
                     self.set(name, back)
@@ -1173,33 +1201,11 @@ class CtrlLink:
                     pass
             raise
 
-        filas = df.attrs.get('mark_rows') or [None] * len(df.attrs['marks'])
-        marks = [(m, f) for m, f in zip(df.attrs['marks'], filas) if m[1] == name]
-        if not marks:
-            # El `set` del evento se manda sin verificar a propósito --verificarlo
-            # costaría tráfico en medio de la captura-- porque el `# mark` que
-            # devuelve el dispositivo trae el valor que efectivamente guardó. Si no
-            # está, esa verificación no ocurrió y el escalón puede no haber ocurrido
-            # tampoco: volver con un DataFrame de aspecto normal, con `t` medido
-            # desde el arranque y sin escalón adentro, es lo peor que se puede hacer.
-            raise CtrlLinkError(
-                f'el dispositivo nunca confirmó el escalón de {name!r}: no hay '
-                f'ninguna marca en la captura. El `set` se perdió en el cable, así '
-                f'que estos datos no tienen el escalón adentro.')
-
-        marca, fila = marks[0]
-        if not self._agrees(name, marca[2], value):
-            raise CtrlLinkError(
-                f'se pidió un escalón de {name} a {value!r} y el dispositivo marcó '
-                f'{marca[2]!r}: el valor se deformó en el cable.')
-
-        if marks:
-            # Se desplaza en el espacio de ticks, no en segundos: restar dos float
-            # que son cada uno un tick por un período deja un residuo de redondeo,
-            # y un t de -5e-17 pone la muestra del escalón del lado equivocado de
-            # t < 0.
-            origin = self._mark_tick(df, marca[0], fila)
-            df['t'] = (df.attrs['tick'] - origin) * (df.attrs['dt_us'] * 1e-6)
+        # Se desplaza en el espacio de ticks, no en segundos: restar dos float que
+        # son cada uno un tick por un período deja un residuo de redondeo, y un t de
+        # -5e-17 pone la muestra del escalón del lado equivocado de t < 0.
+        origin = self._mark_tick(df, marca[0], fila)
+        df['t'] = (df.attrs['tick'] - origin) * (df.attrs['dt_us'] * 1e-6)
 
         if back is not None:
             self.set(name, back)

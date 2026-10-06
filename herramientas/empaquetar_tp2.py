@@ -23,9 +23,9 @@ RAIZ = Path(__file__).resolve().parent.parent
 CARPETA = 'arduino-jupyter'
 
 # Lo mínimo indispensable para el TP2. Una entrada que termina en / es una carpeta
-# entera. Lo que queda afuera sigue en el repositorio: ControlDemo y las bibliotecas
-# del lazo (Control, ControlMath), PROTOCOL.md (el README trae «El enlace»), Docs/ y
-# las pruebas de tests_banco/.
+# entera. Lo que queda afuera sigue en el repositorio: ControlDemo y la biblioteca del
+# lazo (Control), PROTOCOL.md (el README trae «El enlace»), Docs/ y las pruebas de
+# tests_banco/. ControlMath sí va: Sense la usa (RowAdc.h incluye MovingAverage.h).
 INCLUIR = [
     'README.md',
     'dyc.yml',
@@ -45,7 +45,7 @@ INCLUIR = [
 # Adentro de lo incluido, lo que igual sobra. Se busca en la ruta con una / adelante,
 # así que '/.vscode/' saca la de cada sketch; la de la raíz entra por su nombre.
 EXCLUIR = ('/.vscode/', '/examples/', '.gitignore', '.gitmodules',
-           '/libraries/Control/', '/libraries/ControlMath/')
+           '/libraries/Control/')
 
 
 def git(*argumentos):

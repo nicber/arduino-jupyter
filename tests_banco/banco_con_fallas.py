@@ -129,12 +129,5 @@ def bench_sobre(banco, cableado):
     """Un `bench.Bench` real sobre `banco`, con `cableado.json` en `cableado`."""
     rig = bench.Bench.__new__(bench.Bench)
     object.__setattr__(rig, 'link', banco)
-    # Los caminos de cableado.json quedan fijados como argumentos por omisión al
-    # importar (leer_cableado(ruta=CABLEADO), configurar(cableado=CABLEADO)), así que
-    # hay que cambiar los valores por omisión además del global.
     bench.CABLEADO = cableado
-    bench.leer_cableado.__defaults__ = (cableado,)
-    d = list(bench.Bench.configurar.__defaults__)
-    d[1] = cableado
-    bench.Bench.configurar.__defaults__ = tuple(d)
     return rig

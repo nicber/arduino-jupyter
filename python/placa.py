@@ -289,7 +289,8 @@ def poner_al_dia(port=None, force_compile=False, force_upload=False, sketch=None
         uploaded[port] = binary
         state['uploaded'] = uploaded
         _save_state(state)
-        # algunos puentes se caen del bus mientras se resetean
-        port = _wait_for_port(timeout=15.0)
+        # algunos puentes se caen del bus mientras se resetean. Se vuelve a buscar
+        # el mismo puerto: sin acotar, con dos placas enchufadas no hay a cuál volver.
+        port = _wait_for_port(hint=port, timeout=15.0)
 
     return port, notes

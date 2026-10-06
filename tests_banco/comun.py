@@ -23,9 +23,10 @@ fallas = 0
 
 
 def check(que, ok, detalle=''):
+    """Informa una verificación. `detalle` explica una falla, así que sólo sale con ella."""
     global fallas
     if ok:
-        print(f'PASA   {que}' + (f'  -- {detalle}' if detalle else ''))
+        print(f'PASA   {que}')
     else:
         fallas += 1
         print(f'FALLA  {que}' + (f'  -- {detalle}' if detalle else ''))

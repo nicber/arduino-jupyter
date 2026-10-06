@@ -3,10 +3,8 @@
 Vive aparte de las pruebas que la usan porque ya son dos --el enlace y la
 calibración-- y un archivo de pruebas que importa a otro corre al otro entero.
 """
-import sys, time, struct
+import sys, time
 sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
-
-import numpy as np
 
 # nombre -> (tipo de cable, bits fraccionarios, valor crudo almacenado). `kq` y
 # `alpha` se guardan en punto fijo tal como un sketch guarda sus ganancias, así
@@ -248,12 +246,7 @@ def connect(uno, diagnostico=None):
     dev = ctrllink.CtrlLink.__new__(ctrllink.CtrlLink)
     dev._diag = diagnostico
     dev.ser = FakeSerial(uno)
-    dev.info = dev.sync()
-    # En el mismo orden que CtrlLink.__init__: `_params` al final, que es lo que
-    # habilita la comprobación de __setattr__.
-    params = dev._read_params()
-    dev.channels = dev._read_channels()
-    dev._params = params
+    dev._descubrir()
     # Permite que una verificación mire lo que el dispositivo realmente guardó, en
     # lugar de lo que informa la computadora después de reescalarlo.
     dev._uno_raw = lambda name: uno.params[name][2]

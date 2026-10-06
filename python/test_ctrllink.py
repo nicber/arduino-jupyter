@@ -4,7 +4,7 @@ El simulacro reproduce lo que CtrlLink.cpp realmente pone en el cable —CRLF en
 líneas de println() y sólo LF en las filas de telemetría incluidos—, así que el
 decodificador se prueba contra el encuadre real y no contra una versión idealizada.
 """
-import sys, time, struct
+import sys, time
 sys.path.insert(0, __import__("os").path.dirname(__file__) or ".")
 
 import numpy as np
@@ -351,9 +351,8 @@ check('la captura informa su duración real',
 uno_old = OldFakeUno()
 dev8 = _cl.CtrlLink.__new__(_cl.CtrlLink)
 dev8.ser = FakeSerial(uno_old)
-dev8.info = dev8.sync()
 try:
-    dev8._read_params()
+    dev8._descubrir()
     check('el firmware desactualizado se explica', False)
 except Exception as exc:
     check('el firmware desactualizado se explica',
@@ -459,7 +458,7 @@ check('guardar y cargar devuelven lo mismo',
       np.allclose(_leido.to_numpy(), _n.to_numpy(), rtol=1e-5, atol=1e-6))
 
 # El archivo dice con qué configuración se midió.
-_df.attrs['config'] = {'dispositivo': 'CtrlLink 1 Banco', 'loop_div': 10, 'cur_div': 0.2817}
+_df.attrs['config'] = {'dispositivo': 'CtrlLink 1 Banco', 'loop_div': 10, 'cur_div': 2817}
 with tempfile.TemporaryDirectory() as _tmp:
     _ruta = ensayo.guardar(_df, Path(_tmp) / 'c.csv', ventana=0.02)
     _texto = _ruta.read_text(encoding='utf-8')
@@ -468,7 +467,7 @@ with tempfile.TemporaryDirectory() as _tmp:
 check('guardar escribe la configuración arriba de las columnas',
       '# loop_div: 10' in _texto and _texto.index('# loop_div') < _texto.index('t,u,'), _texto[:200])
 check('cargar devuelve la configuración en attrs',
-      _leido.attrs['config'].get('loop_div') == 10 and _leido.attrs['config'].get('cur_div') == 0.2817
+      _leido.attrs['config'].get('loop_div') == 10 and _leido.attrs['config'].get('cur_div') == 2817
       and _leido.attrs['config'].get('ventana') == 0.02
       and _leido.attrs['config'].get('dispositivo') == 'CtrlLink 1 Banco', str(_leido.attrs['config']))
 check('pandas lo lee salteando el encabezado', list(_pandas.columns) == ensayo.COLUMNAS)

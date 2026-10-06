@@ -75,8 +75,10 @@ PWM_T = 1 / 1250    # s, como PWM_TOP en Banco.ino
 # el ADC libre, y eso da la media de la corriente sin sesgo de fase. Acá se modela
 # igual: la media de cada período de PWM, promediada sobre la ventana, más un ruido
 # de 120 mA RMS por conversión (medido en el clon) dividido por la raíz de las
-# conversiones que entran. A /32 son 45,5 por fila de 2 ms.
-CONVERSIONES_POR_S = 1e6 / 44.0
+# conversiones que entran. En el clon, a /32 y con el relleno de Sense/RowAdc.h,
+# entran 3 por tick de 200 us: 30 por fila de 2 ms. Con el divisor la mitad son de A1;
+# el modelo no tiene divisor y las cuenta todas como de A0.
+CONVERSIONES_POR_S = 3 * 5000
 RUIDO_CONVERSION_MA = 120.0
 
 # El retardo entre el eje y lo que informa el sensor: el filtro del AS5600 en 2x
@@ -492,10 +494,10 @@ class BancoSimulado:
         return df
 
     def step(self, name, value, pre=0.1, post=0.9, back=None, warn=True, canales=None):
-        antes = self.get(name)
         df = self.capture(pre + post, events=[(pre, name, value)], canales=canales)
         df['t'] -= pre
-        self.set(name, antes if back is None else back)
+        if back is not None:
+            self.set(name, back)
         return df
 
     # ---------------------------------------------------- puesta en marcha

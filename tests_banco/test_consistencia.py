@@ -58,7 +58,7 @@ check('el banco simulado integra con el período real del PWM',
 # simulado.
 def _entero(patron, texto, archivo):
     m = re.search(patron, texto)
-    check(m is not None, f'{archivo} declara {patron}', patron)
+    check(f'{archivo} declara {patron}', m is not None)
     return int(m.group(1)) if m else 0
 
 
@@ -132,7 +132,7 @@ def publicos(obj):
     return {n for n in dir(obj)}
 
 disponibles = {
-    'dev': publicos(bench.Bench) | {'capture', 'step', 'set', 'get', 'close', 'resync'},
+    'dev': publicos(bench.Bench) | publicos(bench.CtrlLink),
     'ensayo': publicos(ensayo),
     'bench': publicos(bench),
 }
@@ -166,19 +166,40 @@ check('y Banco desenrolla en la ISR, no en la fila',
       re.search(r'ISR\(TIMER2_COMPA_vect\)[\s\S]{0,1000}g_turns\.update', BANCO) is not None)
 
 # ------------------------------------------------------------- lo que no va en el zip
-# Las librerías del lazo siguen en el repositorio, para ControlDemo, pero Banco no las
-# usa y el zip no las lleva.
-del_lazo = ('Control', 'ControlMath')
-check('Banco no incluye las librerías del lazo',
-      not any(f'#include <{h.name}>' in BANCO
-              for d in del_lazo for h in (RAIZ / 'libraries' / d / 'src').glob('*.h')))
+# La biblioteca del lazo sigue en el repositorio, para ControlDemo, pero Banco no la usa
+# y el zip no la lleva. Lo que Banco sí usa se sigue por los #include de cada archivo de
+# cada biblioteca, no sólo por los del sketch: RowAdc.h trae MovingAverage.h de
+# ControlMath, y un zip sin ControlMath no compila Banco.
+_archivos_de = {d.name: sorted(d.glob('src/*.h')) + sorted(d.glob('src/*.cpp'))
+                for d in (RAIZ / 'libraries').iterdir() if (d / 'src').is_dir()}
+_biblioteca_de = {h.name: nombre for nombre, hs in _archivos_de.items() for h in hs
+                  if h.suffix == '.h'}
+
+
+def bibliotecas_usadas(ruta, usadas):
+    for inc in re.findall(r'#include\s*[<"]([^>"]+)[>"]', texto(ruta)):
+        nombre = _biblioteca_de.get(inc)
+        if nombre is not None and nombre not in usadas:
+            usadas.add(nombre)
+            for otra in _archivos_de[nombre]:
+                bibliotecas_usadas(otra, usadas)
+    return usadas
+
+
+usadas = bibliotecas_usadas(RAIZ / 'Banco' / 'Banco.ino', set())
+check('Banco no usa la biblioteca del lazo', 'Control' not in usadas, ', '.join(sorted(usadas)))
 empaquetar = RAIZ / 'herramientas' / 'empaquetar_tp2.py'
 if empaquetar.exists():
     excluir = texto(empaquetar)
-    check('y empaquetar_tp2.py las deja fuera del zip',
-          all(f"'/libraries/{d}/'" in excluir for d in del_lazo))
+    check('empaquetar_tp2.py deja la biblioteca del lazo fuera del zip',
+          "'/libraries/Control/'" in excluir)
+    fuera = sorted(d for d in usadas if f"'/libraries/{d}/'" in excluir)
+    check('y lleva todas las que Banco incluye, directa o indirectamente', not fuera,
+          f'deja afuera {", ".join(fuera)}')
 else:
-    check('en un zip no vienen las librerías del lazo',
-          not any((RAIZ / 'libraries' / d).exists() for d in del_lazo))
+    check('en un zip no viene la biblioteca del lazo', not (RAIZ / 'libraries' / 'Control').exists())
+    faltan = sorted(d for d in usadas if not (RAIZ / 'libraries' / d).is_dir())
+    check('y vienen todas las que Banco incluye, directa o indirectamente', not faltan,
+          f'faltan {", ".join(faltan)}')
 
 terminar()

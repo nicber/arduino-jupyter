@@ -318,6 +318,21 @@ check('asegurar() no reescribe una tabla que ya está puesta',
       and uno.escrituras_lutw == escrituras_antes,
       f'{uno.escrituras_lutw - escrituras_antes} escrituras de ang_lutw')
 
+# El banco simulado (python/banco_simulado.py) tiene su propia copia de las dos
+# cuentas de la placa, para que los notebooks corran sin ella. Una copia se
+# desactualiza sin avisar, así que tiene que dar lo mismo que ésta.
+import banco_simulado
+
+sim = banco_simulado.BancoSimulado()
+cal.aplicar(sim)
+check('el banco simulado declara la misma suma que la computadora',
+      int(sim.get('ang_lutsum')) == cal.checksum(),
+      f'{int(sim.get("ang_lutsum")):#06x} vs {cal.checksum():#06x}')
+suyas = sim._lut_lookup(np.arange(calib.CUENTAS))
+check('y corrige igual, ángulo por ángulo',
+      np.array_equal(mias, suyas),
+      f'difieren en {int((mias != suyas).sum())} de {calib.CUENTAS} ángulos')
+
 
 print()
 print(f'{len(failures)} falla(s)' + (': ' + ', '.join(failures) if failures else ''))

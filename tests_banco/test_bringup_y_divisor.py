@@ -1,7 +1,7 @@
 """La lógica de bench.py contra un banco con las fallas reales.
 
 Lo que ninguna prueba del proyecto ejercita sin placa: bringup() y los signos,
-declarar_divisor(), configurar() y cableado.json, con la placa a 3,3 V, con y sin
+declarar_divisor(), medir_divisor(), configurar() y cableado.json, con la placa a 3,3 V, con y sin
 el divisor de A1, y con la fuente del motor prendida y apagada.
 """
 import contextlib
@@ -14,7 +14,9 @@ import numpy as np
 
 from comun import check, terminar
 from banco_con_fallas import BancoConFallas, DIVISOR_DEL_BANCO, bench_sobre
+import banco_simulado as bs
 import ensayo
+from ctrllink import CtrlLinkError
 
 DIV_E4 = round(DIVISOR_DEL_BANCO[1] / sum(DIVISOR_DEL_BANCO) * 10000)
 
@@ -149,6 +151,79 @@ for falla in (None, 'suelto'):
           int(rig.cur_zero) == cero_antes and abs(reposo_después - reposo_antes) < 50,
           f'cur_zero {cero_antes} -> {int(rig.cur_zero)}, '
           f'reposo {reposo_antes:+.1f} -> {reposo_después:+.1f} mA')
+
+# --------------------------------------------------------------- medir_divisor
+# La medición supone que el sensor reposa en la mitad de su alimentación. El simulado
+# reposa en REPOSO_I cuentas equivalentes y no en 2000 (ver banco_simulado.py), así
+# que lo que tiene que dar es la relación del divisor corrida en esa proporción. Y
+# tiene que dar lo mismo arranque del `cur_div` que arranque.
+esperado = DIV_E4 * 2000 / bs.REPOSO_I
+for inicial in (2500, DIV_E4, 3200):
+    banco = BancoConFallas(semilla=12)
+    cab = tmp / f'cableado_medido_{inicial}.json'
+    rig = bench_sobre(banco, cab)
+    rig.mot_bidir = 0
+    rig.cur_div = inicial
+    medido, _ = callado(rig.medir_divisor)
+    check(f'medir_divisor desde cur_div = {inicial} da la relación del divisor puesto',
+          abs(medido / esperado - 1) < 0.005 and rig.cur_div == medido,
+          f'{medido} contra {esperado:.0f}')
+    check(f'y desde {inicial} deja el sensor en 2000 cuentas equivalentes, y lo guarda como medido',
+          abs(rig.cur_zero / 2000 - 1) < 0.005 and leer(cab).get('cur_div') == medido
+          and leer(cab).get('cur_div_medido') is True,
+          f'cur_zero = {rig.cur_zero}, {leer(cab)}')
+
+# Con A1 suelto no hay nada que medir: no toca nada.
+banco = BancoConFallas(divisor='suelto', semilla=13)
+cab = tmp / 'cableado_medido_suelto.json'
+rig = bench_sobre(banco, cab)
+rig.mot_bidir = 0
+rig.cur_div = DIV_E4
+cero_antes = int(rig.cur_zero)
+try:
+    callado(rig.medir_divisor)
+    abortó = False
+except CtrlLinkError:
+    abortó = True
+check('medir_divisor rechaza A1 suelto, y no toca ni el divisor ni el cero',
+      abortó and rig.cur_div == DIV_E4 and int(rig.cur_zero) == cero_antes and not cab.exists(),
+      f'cur_div = {rig.cur_div}, cur_zero {cero_antes} -> {int(rig.cur_zero)}')
+
+
+# Una falla con la medición ya escrita: la placa guarda el cero nuevo, pero la
+# confirmación no vuelve. Tienen que volver los dos, el divisor y el cero, igual que
+# en declarar_divisor(): un cero calibrado contra un divisor que ya no está deja la
+# corriente corrida de amperes.
+class _SinConfirmarElCero(BancoConFallas):
+    cortar = False
+
+    def set(self, name, value, tries=3):
+        guardado = super().set(name, value, tries)
+        if name == 'cur_zero' and self.cortar:
+            self.cortar = False
+            raise CtrlLinkError('la confirmación de cur_zero no volvió')
+        return guardado
+
+
+banco = _SinConfirmarElCero(semilla=14)
+cab = tmp / 'cableado_medido_cortado.json'
+rig = bench_sobre(banco, cab)
+rig.mot_bidir = 0
+rig.cur_div = 2500
+cero_antes = int(rig.cur_zero)
+reposo_antes = float(rig.capture(0.5, warn=False)['i'].mean())
+banco.cortar = True
+try:
+    callado(rig.medir_divisor)
+    abortó = False
+except CtrlLinkError:
+    abortó = True
+reposo_después = float(rig.capture(0.5, warn=False)['i'].mean())
+check('si medir_divisor falla con la medición escrita, vuelven el divisor y el cero',
+      abortó and not banco.cortar and rig.cur_div == 2500 and int(rig.cur_zero) == cero_antes
+      and abs(reposo_después - reposo_antes) < 50 and not cab.exists(),
+      f'cur_div = {rig.cur_div}, cur_zero {cero_antes} -> {int(rig.cur_zero)}, '
+      f'reposo {reposo_antes:+.1f} -> {reposo_después:+.1f} mA')
 
 # ------------------------------------------------------------ configurar
 banco = BancoConFallas(angulo_invertido=True, sensor_invertido=True, semilla=7)
