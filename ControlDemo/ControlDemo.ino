@@ -4,8 +4,9 @@
 // Hardware:
 // Arduino UNO
 // Sensor de posición de efecto Hall: AS5600 (I2C)   SDA -> A4, SCL -> A5
-// Medición de corriente (opcional): ACS712 en A0
-// Actuador (opcional): puente L298N, ENA -> 9 (PWM, 1050 Hz), IN1 -> 6, IN2 -> 7
+// Medición de corriente (opcional): ACS712 en A0, y en A1 los 5 V que lo alimentan
+// por un divisor resistivo, si la placa no funciona a 5 V
+// Actuador (opcional): puente L298N, ENA -> 9 (PWM, 1250 Hz), IN1 -> 6, IN2 -> 7
 //
 // Este archivo no hace casi nada por sí mismo: arma los módulos, los cablea entre
 // sí y publica sus parámetros. Cada cosa que se puede medir, accionar o ajustar
@@ -78,10 +79,9 @@
 // en los pines 3 y 11 y tone() dejan de funcionar; el Timer1, que modula el
 // puente con su propio TOP, así que analogWrite() en los pines 9 y 10 y Servo
 // dejan de servir; y el ADC, que se maneja directamente acá, así que no hay que
-// llamar a analogRead(). El Timer0 queda intacto: millis() y el PWM de los pines
-// 5 y 6 andan como siempre.
-
-#include <util/atomic.h>
+// llamar a analogRead(). El Timer0 sigue llevando millis(), pero a 1000 Hz en lugar
+// de 976,6 Hz, así que millis() queda un 2,4 % rápido y el PWM de los pines 5 y 6 deja
+// de servir (ver BoardStart/BoardClock.h).
 
 #include <nI2C.h>
 
@@ -116,9 +116,9 @@ static const int16_t  COUNTS_PER_REV = 4096;
 // igual y todo lo demás, telemetría incluida, se comporta idéntico.
 //
 // ENA va al pin 9 porque es OC1A, y el Timer1 es el único que queda libre: el
-// Timer0 (pines 5 y 6) lleva millis() y no se le puede tocar el preescalador, y el
-// Timer2 (pines 3 y 11) es el muestreador de 5 kHz. IN1 e IN2 son salidas
-// digitales comunes y pueden ir a cualquier pin. Ver HBridge.h.
+// Timer0 (pines 5 y 6) lleva millis() y el Timer2 (pines 3 y 11) es el muestreador
+// de 5 kHz. IN1 e IN2 son salidas digitales comunes y pueden ir a cualquier pin. Ver
+// HBridge.h.
 static const uint8_t MOTOR_PWM_PIN = 9;     // ENA del L298N, OC1A
 static const uint8_t MOTOR_IN1_PIN = 6;     // IN1
 static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
@@ -127,23 +127,16 @@ static const uint8_t MOTOR_IN2_PIN = 7;     // IN2
 // se guarda la frecuencia: f = 16 MHz / (2 * top). Se guarda el TOP y no los Hz
 // por la misma razón por la que el divisor del lazo se guarda como divisor y no
 // como frecuencia: es por lo que cuenta el hardware, es exacto, y la conversión la
-// hace el lado que tiene la aritmética. `dev.pwm(20000)` del lado del notebook.
+// hace el lado que tiene la aritmética: `dev.mot_top` del lado del notebook.
 //
-// En abstracto conviene modular rápido, pero este banco no lo tolera y el motivo
-// es instructivo. El L298 es un puente de Darlington bipolares: cae del orden de
-// 2 V entre sus dos lados y tarda unos 2 us en conmutar. Contra una alimentación
-// de 5 V eso deja unos 2,5 V para el motor, y a 20 kHz --períodos de 50 us-- lo
-// que se pierde en cada transición se lleva una fracción grande de un tiempo de
-// encendido que ya venía escaso: medido en este banco, a 20 kHz el motor
-// directamente no arranca, y a 1 kHz anda.
-//
-// Y no 1 kHz justo, sino 1050 Hz (TOP = 7619). A 1 kHz el PWM queda enganchado en
-// fase con el muestreador de 5 kHz, que sale del mismo cristal; y lo que queda del
-// rizado del PWM después de promediar cada período del lazo se pliega a 1050 - 1000 =
-// 50 Hz y sus armónicos, que es donde la ventana de 20 ms de la corriente y el notch
-// de la red tienen ceros. A 1010 Hz, en cambio, caía en 10 Hz. Con un
-// puente MOSFET --un TB6612FNG, un DRV8833-- se podría modular mucho más rápido.
-static const uint16_t PWM_TOP_DEFAULT = 7619;   // 1050 Hz
+// Por qué ~1 kHz y no 20 kHz con un L298N: notebooks/hardware.ipynb, sección 2.1.
+// Por qué 1250 Hz, lo mismo que en Banco: son exactamente 4 ticks del muestreador de
+// 5 kHz, que sale del mismo reloj, y la media de 4 ticks de RowAdc (`cur_ma`) tiene
+// ceros en todos los armónicos del PWM; lo que se pliega igual cae en el Nyquist de
+// los períodos, donde va el notch de `cur_nyq`. Las dos cosas valen para este TOP:
+// con otro `mot_top` hay que volver a elegirlas, o apagarlas. Con un puente MOSFET
+// --un TB6612FNG, un DRV8833-- se podría modular mucho más rápido.
+static const uint16_t PWM_TOP_DEFAULT = 6400;   // 1250 Hz
 
 // Medición de corriente en A0. Nada de este bloque entra en la ley de control
 // salvo que alguien ponga el objetivo en corriente: sobre todo fija las unidades
@@ -357,6 +350,8 @@ static const CtrlParam PROGMEM g_params[] =
     { "cur_a1",      CTRL_U16, &g_sense.ratio.supply,      0                 },
     { "cur_notch",   CTRL_U8,  &g_sense.notch.harmonics,   0                 },
     { "cur_notchr",  CTRL_U16, &g_sense.notch.pole_milli,  0                 },
+    { "cur_nyq",     CTRL_U8,  &g_sense.notch.nyquist,     0                 },
+    { "cur_ma",      CTRL_U8,  &g_adc.ma,                  0                 },
     { "cur_ma_lsb",  CTRL_U16, &g_board.malsb,       8                 },
 
     { "board_adcfs", CTRL_U16, &g_board.adcfs,       0                 },
@@ -564,6 +559,9 @@ void setup()
     // emite al ritmo equivocado y ni el mensaje de error llega. Ver BoardStart.h.
     board::clock_begin();
 
+    // millis() en fase fija con el muestreador. Ver BoardStart/BoardClock.h.
+    board::millis_1000hz();
+
     // El ancho del conversor primero, porque es lo que dice qué placa es; esa sonda
     // no necesita una referencia correcta, porque cae al CLKPR de arranque.
     g_board.adcfs = board::adc_full_scale();
@@ -607,8 +605,11 @@ void setup()
                     g_channels, sizeof(g_channels) / sizeof(g_channels[0]),
                     (uint32_t)g_clock.divide * 1000000UL / SAMPLE_HZ);
 
-    // El conversor antes que refresh_tuning(), que lo reconfigura.
+    // El conversor antes que refresh_tuning(), que lo reconfigura. Los dos filtros del
+    // PWM arrancan prendidos, como en Banco.
     g_adc.begin(g_board.adcfs);
+    g_sense.notch.nyquist = 1;
+    g_adc.ma              = 1;
     refresh_tuning();
 
     Sensor::begin();

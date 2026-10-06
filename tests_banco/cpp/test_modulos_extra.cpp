@@ -109,7 +109,7 @@ typedef HBridge<9, 6, 7> Puente;
 int main()
 {
     // ------------------------------------------------------------ HBridge
-    const uint16_t TOP = 7619;
+    const uint16_t TOP = 6400;     // el de los dos sketches: 1250 Hz
     Puente p(TOP);
     p.begin();
 
